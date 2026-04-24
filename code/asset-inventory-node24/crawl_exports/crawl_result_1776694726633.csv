@@ -1,0 +1,2 @@
+crawl_type,business_entity,model,skill,source_url,page_url,page_title,text_sample,status,error_message
+全量,供应链,gpt-5.4,Crawl4AI,https://www.chinaautosupplier.com/,https://www.chinaautosupplier.com/,,,http_403,HTTP 403

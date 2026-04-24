@@ -1,0 +1,218 @@
+import { ArrowLeftOutlined, SaveOutlined } from '@ant-design/icons'
+import { Button, Card, Form, Input, Modal, Select, Space, Tree, Typography, message } from 'antd'
+import { useEffect, useMemo, useState } from 'react'
+import { useNavigate, useParams } from 'react-router-dom'
+import {
+  createSupplyChainRecord,
+  fetchSupplyChainRecordDetail,
+  fetchSupplyChainTree,
+  updateSupplyChainRecord,
+} from '../api/supplyChainApi'
+
+const { Title, Text } = Typography
+
+function findNodeLabel(nodes = [], id) {
+  if (!id) return ''
+  for (const node of nodes) {
+    if (String(node.id) === String(id)) return node.title || ''
+    const child = findNodeLabel(node.children || [], id)
+    if (child) return child
+  }
+  return ''
+}
+
+function findNodePath(nodes = [], targetId, path = []) {
+  for (const node of nodes) {
+    const currentPath = [...path, String(node.id)]
+    if (String(node.id) === String(targetId)) return currentPath
+    const childPath = findNodePath(node.children || [], targetId, currentPath)
+    if (childPath.length > 0) return childPath
+  }
+  return []
+}
+
+function SupplyChainFormPage() {
+  const { id } = useParams()
+  const navigate = useNavigate()
+  const [form] = Form.useForm()
+  const [loading, setLoading] = useState(false)
+  const [treeData, setTreeData] = useState([])
+  const [parentPickerOpen, setParentPickerOpen] = useState(false)
+  const [selectedParentId, setSelectedParentId] = useState('')
+  const [pickerExpandedKeys, setPickerExpandedKeys] = useState([])
+  const [pickerSelectedKeys, setPickerSelectedKeys] = useState([])
+
+  const editId = useMemo(() => {
+    const val = Number(id)
+    return Number.isInteger(val) && val > 0 ? val : null
+  }, [id])
+
+  useEffect(() => {
+    fetchSupplyChainTree({})
+      .then((res) => setTreeData(res.roots || []))
+      .catch((error) => message.error(error.message || '加载供应链树失败'))
+  }, [])
+
+  useEffect(() => {
+    if (!editId) {
+      form.setFieldsValue({ nodeLevel: '1' })
+    }
+  }, [editId])
+
+  useEffect(() => {
+    if (!editId) return
+    setLoading(true)
+    fetchSupplyChainRecordDetail(editId)
+      .then((detail) => {
+        const pid = detail.parentId ? String(detail.parentId) : ''
+        setSelectedParentId(pid)
+        form.setFieldsValue({
+          nodeName: detail.nodeName || '',
+          parentId: pid,
+          nodeLevel: String(detail.nodeLevel || 1),
+          sourceUrl: detail.sourceUrl || '',
+        })
+      })
+      .catch((error) => message.error(error.message || '加载失败'))
+      .finally(() => setLoading(false))
+  }, [editId])
+
+  const parentLabel = useMemo(() => findNodeLabel(treeData, selectedParentId), [treeData, selectedParentId])
+  const parentDisplay = useMemo(() => (selectedParentId ? `${selectedParentId} - ${parentLabel || '(无名称)'}` : ''), [selectedParentId, parentLabel])
+
+  const openParentPicker = () => {
+    const targetId = selectedParentId
+    if (targetId) {
+      const pathKeys = findNodePath(treeData, targetId)
+      setPickerExpandedKeys(pathKeys)
+      setPickerSelectedKeys([String(targetId)])
+    } else {
+      const rootKey = treeData?.[0]?.id ? String(treeData[0].id) : ''
+      setPickerExpandedKeys(rootKey ? [rootKey] : [])
+      setPickerSelectedKeys([])
+    }
+    setParentPickerOpen(true)
+  }
+
+  const handleSubmit = async () => {
+    try {
+      const values = await form.validateFields()
+      setLoading(true)
+      const payload = {
+        nodeName: values.nodeName,
+        parentId: values.parentId ? Number(values.parentId) : null,
+        nodeLevel: Number(values.nodeLevel),
+        sourceUrl: values.sourceUrl || '',
+      }
+      if (editId) {
+        await updateSupplyChainRecord(editId, payload)
+        message.success('修改成功')
+      } else {
+        await createSupplyChainRecord(payload)
+        message.success('新增成功')
+      }
+      navigate('/supply-chain')
+    } catch (error) {
+      if (!error?.errorFields) message.error(error.message || '提交失败')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <Card className="app-elevated-card">
+      <Space direction="vertical" size={14} style={{ width: '100%' }}>
+        <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+          <Space direction="vertical" size={2}>
+            <Title level={4} style={{ margin: 0 }}>{editId ? '修改供应链节点' : '新增供应链节点'}</Title>
+            <Text className="muted">{editId ? `节点ID：${editId}` : '创建新节点'}</Text>
+          </Space>
+          <Space>
+            <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/supply-chain')}>返回列表</Button>
+            <Button type="primary" icon={<SaveOutlined />} loading={loading} onClick={handleSubmit}>保存</Button>
+          </Space>
+        </Space>
+
+        <Form form={form} layout="vertical" style={{ maxWidth: 760 }}>
+          <Form.Item name="nodeName" label="节点名称" rules={[{ required: true, message: '请输入节点名称' }]}>
+            <Input />
+          </Form.Item>
+
+          <Form.Item label="上级节点">
+            <Input
+              readOnly
+              value={parentDisplay}
+              placeholder="请选择上级节点"
+              addonAfter={(
+                <Button
+                  type="link"
+                  size="small"
+                  onClick={openParentPicker}
+                  style={{ padding: 0, height: 'auto' }}
+                >
+                  选择
+                </Button>
+              )}
+            />
+          </Form.Item>
+          <Form.Item name="parentId" hidden>
+            <Input />
+          </Form.Item>
+          <Text className="muted">已选上级节点：{selectedParentId ? `${selectedParentId} - ${parentLabel || '(无名称)'}` : '无（顶级节点）'}</Text>
+
+          <Form.Item name="nodeLevel" label="节点层级（1-5级）" rules={[{ required: true, message: '请选择层级' }]}>
+          <Select
+              options={[
+                { value: '1', label: '1级' },
+                { value: '2', label: '2级' },
+                { value: '3', label: '3级' },
+                { value: '4', label: '4级' },
+                { value: '5', label: '5级' },
+              ]}
+            />
+          </Form.Item>
+          <Form.Item name="sourceUrl" label="来源链接">
+            <Input />
+          </Form.Item>
+        </Form>
+      </Space>
+
+      <Modal
+        title="选择上级节点"
+        open={parentPickerOpen}
+        onCancel={() => setParentPickerOpen(false)}
+        onOk={() => setParentPickerOpen(false)}
+      >
+        <Space direction="vertical" size={8} style={{ width: '100%' }}>
+          <Button
+            onClick={() => {
+              setSelectedParentId('')
+              form.setFieldValue('parentId', '')
+            }}
+          >
+            设为顶级节点（无上级）
+          </Button>
+          <Tree
+            treeData={treeData}
+            expandedKeys={pickerExpandedKeys}
+            selectedKeys={pickerSelectedKeys}
+            onExpand={(keys) => setPickerExpandedKeys(keys.map((key) => String(key)))}
+            onSelect={(keys, info) => {
+              const picked = keys[0] || ''
+              setSelectedParentId(String(picked || ''))
+              setPickerSelectedKeys(picked ? [String(picked)] : [])
+              form.setFieldValue('parentId', String(picked || ''))
+              if (info?.node?.nodeLevel) {
+                const nextLevel = Math.min(5, Number(info.node.nodeLevel) + 1)
+                form.setFieldValue('nodeLevel', String(nextLevel))
+              }
+            }}
+            height={420}
+          />
+        </Space>
+      </Modal>
+    </Card>
+  )
+}
+
+export default SupplyChainFormPage

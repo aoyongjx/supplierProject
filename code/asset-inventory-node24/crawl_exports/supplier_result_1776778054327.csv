@@ -1,0 +1,2 @@
+node_id,node_name,model,skill,source_url,list_page_url,detail_url,company_name,main_products,fit_export,quality_system,region,contact_action,status,error_message
+1649,动力总成系统,gpt-5.4,Playwright（浏览器自动化）,https://www.chinaautosupplier.com/,https://www.qcgys.com/category.php?cid=107&pid=208&catid=209,,,,,,,,failed,未识别到供应商列表行（已尝试 2 个URL变体）

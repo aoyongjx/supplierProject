@@ -1,0 +1,2 @@
+node_id,node_name,model,skill,source_url,list_page_url,detail_url,company_name,main_products,fit_export,quality_system,region,contact_action,company_intro,fit_situation,export_situation,company_type,org_code,established_date,registered_capital,employees_count,legal_representative,news_summary,status,error_message
+,mid-50722-debug-3,gpt-5.4,Crawl4AI,https://www.qcgys.com/company.php?mid=50722,https://www.qcgys.com/company.php?mid=50722,,,,,,,,,,,,,,,,,,failed,未识别到供应商详情信息（已尝试 1 个URL变体）

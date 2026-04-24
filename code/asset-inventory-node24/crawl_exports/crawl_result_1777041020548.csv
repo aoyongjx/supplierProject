@@ -1,0 +1,2 @@
+crawl_type,business_entity,model,skill,source_url,page_url,page_title,text_sample,status,error_message,level1_url,level2_url,level3_url,supplier_url,level1_title,level2_title,level3_title,supply_chain_info
+增量,供应商,,playwright-script,https://kunshandaya.cn.gasgoo.com/,https://kunshandaya.cn.gasgoo.com/,,,http_468,HTTP 468,,,,,,,,

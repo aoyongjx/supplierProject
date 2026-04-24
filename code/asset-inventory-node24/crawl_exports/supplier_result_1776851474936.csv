@@ -1,0 +1,2 @@
+node_id,node_name,model,skill,source_url,list_page_url,detail_url,company_name,main_products,fit_export,quality_system,region,contact_action,company_intro,company_type,org_code,established_date,registered_capital,legal_representative,news_summary,status,error_message
+,供应商信息来源（选择）,gpt-5.4,Playwright（浏览器自动化）,https://www.chinaautosupplier.com/company.php?mid=78296,https://www.chinaautosupplier.com/company.php?mid=78296,,,,,,,,,,,,,,,failed,未识别到供应商列表行（已尝试 2 个URL变体）

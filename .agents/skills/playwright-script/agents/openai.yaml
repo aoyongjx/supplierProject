@@ -1,0 +1,4 @@
+interface:
+  display_name: "Playwright Script"
+  short_description: "Open webpages and return structured JSON"
+  default_prompt: "Use $playwright-script to open a target webpage and return the important fields as JSON."

@@ -1,0 +1,665 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Security-Policy" content="upgrade-insecure-requests">
+<title>
+ 汽车零部件供应商	 - 中国汽车供应商网</title>
+<meta name="keywords" content="" />
+<meta name="description" content=" " />
+<link rel="stylesheet" type="text/css" href="/css/style.css" />
+<link rel="stylesheet" type="text/css" href="/css/hdp.css" />
+<link rel="stylesheet" type="text/css" href="/css/common.css" />
+<link rel="stylesheet" type="text/css" href="/css/caigou.css" />
+<link rel="stylesheet" type="text/css" href="/css/self.css" />
+<link href="/zhanhuihdp/css/lrtk.css" rel="stylesheet" type="text/css" />
+<link rel="icon" href="https://www.qcgys.com/images/ico.png" sizes="32x32">
+<script src="/js/jquery-1.7.1.js"></script>
+<script src="/js/o.js"></script>
+<script type="text/javascript" src="/zhanhuihdp/js/koala.min.1.5.js"></script>
+<script src="/layer/build/layer.js"></script>
+<script src="/js/main.js"></script>
+</head>
+<body>
+<div id="msg"></div>
+<div class="top">
+  <div class="middle">
+    <p class="l login_status">欢迎来到中国汽车供应商网！
+
+          <a href="/member/login.php" class="lan" style="color:#F00">请登录</a>　<a href="/member/regist_free.php">免费注册</a><!--<span>丨</span><a href="">供应商入口</a>-->　
+      <!--<a href="" class="en">English</a>-->
+      
+
+
+    </p>
+    <p class="r"> <a href="/">首页</a>　
+            <a href="/article.html">资讯</a>　
+            <a href="/exhibition.html">会展</a>　
+            <a href="/caigou.html">采购</a>　
+            <a href="/ptlist.html">配套</a>　
+            <a href="/cklist.html">出口</a>　
+            <a href="/szlist.html">三资</a>　
+             <a href="/member/regist.php">供应商入口</a>
+       　<a href="/map.php">网站地图</a>
+    </p>
+    <div class="clear"></div>
+  </div>
+</div>
+
+
+
+<div class="head" style="height:auto">
+ <div class="middle">
+ <div class="head_top">
+ 
+
+    <a class="logo_bg" href="/">
+            
+    <i>汽车零部件供应商</i>
+	
+    </a>
+  <!--<style>
+  .head .search .tab_search label input {
+    left: 0px;
+    position: absolute;
+}
+  </style>-->
+
+
+  
+
+
+
+<div class="r search">
+
+  
+  
+
+  
+
+  
+
+  
+
+   <form method="get" action="/sou.php" id="formsousuo">
+
+      <select name="cid"  onchange="sou_changs(this.value)">
+        <option value="107" selected="selected">供应商</option>
+        <option value="144" >资讯</option>
+        <!--<option value="107" >产品</option>
+        <option value="4" >配套</option>
+        <option value="5" >出口</option>
+        <option value="6" >三资</option>-->
+      </select>
+
+    <!--<div class="tab_search" style="display:none">
+
+    
+
+    
+
+      <label data="/sou.php" class="ses">企业<input checked type="radio" name="cid"  value="107"></label>
+
+      
+
+      <label data="/sous.php" >产品<input  type="radio" name="cid"  value="107"></label>
+
+      
+
+      
+
+      
+
+      <label data="/parts.php" onclick="window.location.href='/parts.php?cid=4'" >配套<input type="radio" name="cid" value="4"  ></label>
+
+      <label data="/chukou.php" onclick="window.location.href='/chukou.php?cid=5'" >出口<input type="radio" name="cid" value="5"  ></label>
+
+      <label data="/sanzi.php" onclick="window.location.href='/sanzi.php?cid=6'" >三资<input type="radio" name="cid" value="6"  ></label>
+
+      <div class="clear"></div>
+
+    </div>-->
+
+    
+
+    
+    
+    
+    
+    
+    
+
+    
+
+    <input type="text" name="key" class="txt" value="" placeholder="请输入企业关键词" required>
+
+    <input type="submit" value="搜索" class="sub">
+
+   </form>
+
+   <!--<p>热门搜索：　
+   <a href="/">齿轮</a>　
+<a href="/">配套产品</a>　
+<a href="/">供应商大会</a>　
+  
+   
+   </p>-->
+
+  </div> </div>
+  <div class="clear"></div>
+    </div>
+</div>
+<div class="clear"></div>
+<div class="zhanhuis">
+  <div class="middle">
+   <div class="cengjis">
+   
+     
+   
+     <a href="/">首页</a> > 电动汽车零部件供应商专栏
+   </div>
+   <div class="clear"></div>
+   <div class="zhanhuis_l zhanhuis_l_parts">
+   <!--筛选start-->
+     <!--<div class="parts_title">
+       <span>电动汽车零部件供应商</span><i>按电动汽车零部件供应商查询<img src="/images/i.png"></i>
+     </div>-->
+
+
+     <div class="clear"></div>
+
+     <div class="zhanhui_shaixuan zhanhui_shaixuan_sanzi zhanhui_shaixuan_chukou">
+
+
+
+
+      <li class="chukou_fenlei">
+
+       <i class="i_fenlei" style="margin-top:0px;">按产品类别检索</i>
+       <a href="https://www.qcgys.com/category.php?cid=107&pid=208&catid=208"   >全部</a>
+       <p>
+
+
+
+
+
+                   <a class="margin4 ses" href="https://www.qcgys.com/category.php?cid=107&pid=208&catid=209" >动力总成系统</a>
+                  <a class="margin4 " href="https://www.qcgys.com/category.php?cid=107&pid=208&catid=210" >整车控制器</a>
+                  <a class="margin4 " href="https://www.qcgys.com/category.php?cid=107&pid=208&catid=211" >电机及控制系统</a>
+                  <a class="margin4 " href="https://www.qcgys.com/category.php?cid=107&pid=208&catid=213" >动力电池</a>
+                  <a class="margin4 " href="https://www.qcgys.com/category.php?cid=107&pid=208&catid=214" >超级电容器</a>
+                  <a class="margin4 " href="https://www.qcgys.com/category.php?cid=107&pid=208&catid=215" >电池管理系统</a>
+                  <a class="margin4 " href="https://www.qcgys.com/category.php?cid=107&pid=208&catid=216" >电池材料及配件</a>
+                  <a class="margin4 " href="https://www.qcgys.com/category.php?cid=107&pid=208&catid=376" >电池回收</a>
+                  <a class="margin4 " href="https://www.qcgys.com/category.php?cid=107&pid=208&catid=377" >储能电池及相关技术</a>
+                  <a class="margin4 " href="https://www.qcgys.com/category.php?cid=107&pid=208&catid=378" >其他附件</a>
+                  <a class="margin4 " href="https://www.qcgys.com/category.php?cid=107&pid=208&catid=218" >充电机</a>
+                  <a class="margin4 " href="https://www.qcgys.com/category.php?cid=107&pid=208&catid=219" >充电桩</a>
+                  <a class="margin4 " href="https://www.qcgys.com/category.php?cid=107&pid=208&catid=220" >其他充电设备</a>
+                  <a class="margin4 " href="https://www.qcgys.com/category.php?cid=107&pid=208&catid=277" >氢燃料电池</a>
+                  <a class="margin4 " href="https://www.qcgys.com/category.php?cid=107&pid=208&catid=278" >氢燃料电池核心部件</a>
+                  <a class="margin4 " href="https://www.qcgys.com/category.php?cid=107&pid=208&catid=279" >氢燃料电池供电系统</a>
+                  <a class="margin4 " href="https://www.qcgys.com/category.php?cid=107&pid=208&catid=280" >车载供氢系统</a>
+                  <a class="margin4 " href="https://www.qcgys.com/category.php?cid=107&pid=208&catid=379" >制氢储氢加氢站</a>
+                  <a class="margin4 " href="https://www.qcgys.com/category.php?cid=107&pid=208&catid=381" >IGBT功率半导体及电动化芯片</a>
+                  <a class="margin4 " href="https://www.qcgys.com/category.php?cid=107&pid=208&catid=382" >热管理系统</a>
+                  <a class="margin4 " href="https://www.qcgys.com/category.php?cid=107&pid=208&catid=221" >其他新能源汽车零部件</a>
+          
+       </p>
+       <div class="clear"></div>
+      </li>
+
+
+      	  		  <li class="chukou_fenleis">
+       <i>按地区检索</i>
+       <a href="https://www.qcgys.com/category.php?cid=107&pid=208&catid=209" class="ses">全部</a>
+
+      
+       <p >
+
+                          <a style="margin-bottom:0px; " class="huise a_chukou_area " href="javascript:layer_login('认证会员专区，登录后浏览更多信息。');">浙江</a>
+             <a style="margin-bottom:0px; " class="huise a_chukou_area " href="javascript:layer_login('认证会员专区，登录后浏览更多信息。');">辽宁</a>
+             <a style="margin-bottom:0px; " class="huise a_chukou_area " href="javascript:layer_login('认证会员专区，登录后浏览更多信息。');">吉林</a>
+             <a style="margin-bottom:0px; " class="huise a_chukou_area " href="javascript:layer_login('认证会员专区，登录后浏览更多信息。');">黑龙江</a>
+             <a style="margin-bottom:0px; " class="huise a_chukou_area " href="javascript:layer_login('认证会员专区，登录后浏览更多信息。');">上海</a>
+             <a style="margin-bottom:0px; " class="huise a_chukou_area " href="javascript:layer_login('认证会员专区，登录后浏览更多信息。');">江苏</a>
+             <a style="margin-bottom:0px; " class="huise a_chukou_area " href="javascript:layer_login('认证会员专区，登录后浏览更多信息。');">安徽</a>
+             <a style="margin-bottom:0px; " class="huise a_chukou_area " href="javascript:layer_login('认证会员专区，登录后浏览更多信息。');">福建</a>
+             <a style="margin-bottom:0px; " class="huise a_chukou_area " href="javascript:layer_login('认证会员专区，登录后浏览更多信息。');">江西</a>
+             <a style="margin-bottom:0px; " class="huise a_chukou_area " href="javascript:layer_login('认证会员专区，登录后浏览更多信息。');">山东</a>
+             <a style="margin-bottom:0px; " class="huise a_chukou_area " href="javascript:layer_login('认证会员专区，登录后浏览更多信息。');">河南</a>
+             <a style="margin-bottom:0px; " class="huise a_chukou_area " href="javascript:layer_login('认证会员专区，登录后浏览更多信息。');">湖北</a>
+             <a style="margin-bottom:0px; " class="huise a_chukou_area " href="javascript:layer_login('认证会员专区，登录后浏览更多信息。');">湖南</a>
+             <a style="margin-bottom:0px; " class="huise a_chukou_area " href="javascript:layer_login('认证会员专区，登录后浏览更多信息。');">广东</a>
+             <a style="margin-bottom:0px; " class="huise a_chukou_area " href="javascript:layer_login('认证会员专区，登录后浏览更多信息。');">北京</a>
+             <a style="margin-bottom:0px; " class="huise a_chukou_area " href="javascript:layer_login('认证会员专区，登录后浏览更多信息。');">重庆</a>
+             <a style="margin-bottom:0px; " class="huise a_chukou_area " href="javascript:layer_login('认证会员专区，登录后浏览更多信息。');">天津</a>
+             <a style="margin-bottom:0px; " class="huise a_chukou_area " href="javascript:layer_login('认证会员专区，登录后浏览更多信息。');">河北</a>
+             <a style="margin-bottom:0px; " class="huise a_chukou_area " href="javascript:layer_login('认证会员专区，登录后浏览更多信息。');">四川</a>
+             <a style="margin-bottom:0px; " class="huise a_chukou_area " href="javascript:layer_login('认证会员专区，登录后浏览更多信息。');">陕西</a>
+             <a style="margin-bottom:0px; " class="huise a_chukou_area " href="javascript:layer_login('认证会员专区，登录后浏览更多信息。');">其他</a>
+       
+
+
+
+
+       </p>
+       <em>>></em>
+       <div class="clear"></div>
+      </li>
+		  
+
+
+
+            <li>
+       <i>按质量体系检索</i>
+       <a href="https://www.qcgys.com/category.php?cid=107&pid=208&catid=208" class="ses">全部</a>
+       <p>
+                      <a href="https://www.qcgys.com/category.php?cid=107&pid=208&catid=209&iso=1" >16949系列</a>
+				           <a href="https://www.qcgys.com/category.php?cid=107&pid=208&catid=209&iso=2" >ISO9000系列</a>
+				           <a href="https://www.qcgys.com/category.php?cid=107&pid=208&catid=209&iso=3" >VDA认证</a>
+				           <a href="https://www.qcgys.com/category.php?cid=107&pid=208&catid=209&iso=4" >QS认证</a>
+				           <a href="https://www.qcgys.com/category.php?cid=107&pid=208&catid=209&iso=5" >ISO14000</a>
+				           <a href="https://www.qcgys.com/category.php?cid=107&pid=208&catid=209&iso=6" >OHSAS18001</a>
+				           <a href="https://www.qcgys.com/category.php?cid=107&pid=208&catid=209&iso=23" >ISO45001</a>
+				       </p>
+       <div class="clear"></div>
+      </li>
+
+
+
+
+     </div>
+     <div class="clear"></div>
+    <!--筛选end-->
+     <script>
+function allss() {
+        var sum = document.getElementsByName("mid[]");
+        for (var i = 0; i < sum.length; i++) {
+            if (sum[i].type == "checkbox") {
+                sum[i].checked = true;
+            }
+        }
+    }
+function unalls() {
+        var sum = document.getElementsByName("mid[]");
+        for (var i = 0; i < sum.length; i++) {
+            if (sum[i].type == "checkbox") {
+                sum[i].checked = false;
+            }
+        }
+    }
+function alls(){
+	  if($("input[name='isall']").is(':checked')){
+				allss();
+				}else{
+					unalls();
+					}
+	  }
+</script>
+                         <div class="sousuo_title">
+	                 <span>搜索到：<i>动力总成系统 </i>的<i>所有</i>企业<i>165</i>家</span>
+               <div class="clear"></div>
+     </div>
+     <div class="clear"></div>
+     <form method="post" action="" id="myForm" name="forms">
+      <div class="aitaochildren">
+       <ul>
+        <li class="at">
+		     <span class="s1">
+			 <input type="checkbox" name="isall" value="1" onclick="alls()" disabled="disabled" style="cursor:pointer">
+             <a href="javascript:;" style="cursor:pointer" onclick="alert('请您登录');">                  收藏</a>
+			 </span>
+             <span class="s2">公司名称/主营产品</span>
+             <span class="s3">质量体系</span>
+             <span class="s4">地区</span>
+             <span class="s5">联系方式</span>
+             <div class="clear"></div>
+        </li>
+                   <li class="alists f ">
+         <span class="s1"><input style="cursor:pointer; " type="checkbox"  disabled="disabled" onclick="alert('请您登录');" name="mid[]" value="18653"></span>
+         <!--<span style="cursor:pointer" class="s2 reds" onclick="location.href='/company.php?mid=18653'">联合汽车电子有限公司</span>-->
+		 <span style="cursor:pointer" class="s2 reds" onclick="location.href='/company.php?mid=18653'">联合汽车电子有限公司</span>
+         <span class="s3">16949系列,ISO9000系列,VDA认证,QS认证,ISO14000</span>
+         <span class="s4">上海</span>
+         <span class="s5"><a href="/free.php?mid=18653" class="sea">查看</a>/<a href="javascript:sc(18653);" >收藏</a></span>
+         <div class="clear"></div>
+         <p class="f">主要产品：电子控制器、喷油器、燃油分配管总成、燃油泵支架总成、节气门位置传感器、炭罐控制阀、油门踏板块、氧传感器、压力传感器、速度传感器、电子燃油泵、爆震传感器、怠速调节器、压力调...</p>
+                                                       <p class="f">配套/出口：为一汽集团、一汽-大众、哈航集团、吉林吉轻、一汽夏利、上海通用（东岳）、上海大众、上海通用、奇瑞汽车、吉利汽车、合肥昌河、昌河铃木、华晨汽车、上海通用（北盛）、北汽福田、河北长城、东风汽车（襄樊）、长安铃木、长安福特、长安集团、神龙汽车、上汽通用五菱、一汽海马、东风汽车（广州）、东南汽车、比亚迪等配套；</p>
+                  <div class="clear"></div>
+        </li>
+                   <li class="alists f ">
+         <span class="s1"><input style="cursor:pointer; " type="checkbox"  disabled="disabled" onclick="alert('请您登录');" name="mid[]" value="18636"></span>
+         <!--<span style="cursor:pointer" class="s2 reds" onclick="location.href='/company.php?mid=18636'">潍柴动力股份有限公司</span>-->
+		 <span style="cursor:pointer" class="s2 reds" onclick="location.href='/company.php?mid=18636'">潍柴动力股份有限公司</span>
+         <span class="s3">ISO9000系列,ISO14000,OHSAS18001</span>
+         <span class="s4">山东</span>
+         <span class="s5"><a href="/free.php?mid=18636" class="sea">查看</a>/<a href="javascript:sc(18636);" >收藏</a></span>
+         <div class="clear"></div>
+         <p class="f">主要产品：</p>
+                                                       <p class="f">配套/出口：应用于国内各大主机厂；产品远销印度、越南、俄罗斯、东南亚、中东等30多个国家和地区</p>
+                  <div class="clear"></div>
+        </li>
+                   <li class="alists f ">
+         <span class="s1"><input style="cursor:pointer; " type="checkbox"  disabled="disabled" onclick="alert('请您登录');" name="mid[]" value="74927"></span>
+         <!--<span style="cursor:pointer" class="s2 " onclick="location.href='/company.php?mid=74927'">一汽旗新动力（长春）科技有限公司</span>-->
+		 <span style="cursor:pointer" class="s2 " onclick="location.href='/company.php?mid=74927'">一汽旗新动力（长春）科技有限公司</span>
+         <span class="s3"></span>
+         <span class="s4">辽宁</span>
+         <span class="s5"><a href="/free.php?mid=74927" class="sea">查看</a>/<a href="javascript:sc(74927);" >收藏</a></span>
+         <div class="clear"></div>
+         <p class="f">主要产品：主要做新能源动力总成（发动机、变速箱、电池电驱），智能机器人和AI技术（如自动驾驶支持系统）</p>
+                                             <div class="clear"></div>
+        </li>
+                   <li class="alists f ">
+         <span class="s1"><input style="cursor:pointer; " type="checkbox"  disabled="disabled" onclick="alert('请您登录');" name="mid[]" value="74998"></span>
+         <!--<span style="cursor:pointer" class="s2 " onclick="location.href='/company.php?mid=74998'">锐湃动力科技有限公司</span>-->
+		 <span style="cursor:pointer" class="s2 " onclick="location.href='/company.php?mid=74998'">锐湃动力科技有限公司</span>
+         <span class="s3"></span>
+         <span class="s4">广东</span>
+         <span class="s5"><a href="/free.php?mid=74998" class="sea">查看</a>/<a href="javascript:sc(74998);" >收藏</a></span>
+         <div class="clear"></div>
+         <p class="f">主要产品：主要开展纯电汽车集成电驱动系统及电机电控、混合动力汽车电机电控等的设计、开发、制造</p>
+                                             <div class="clear"></div>
+        </li>
+                   <li class="alists f ">
+         <span class="s1"><input style="cursor:pointer; " type="checkbox"  disabled="disabled" onclick="alert('请您登录');" name="mid[]" value="75004"></span>
+         <!--<span style="cursor:pointer" class="s2 " onclick="location.href='/company.php?mid=75004'">柳州赛克科技发展有限公司</span>-->
+		 <span style="cursor:pointer" class="s2 " onclick="location.href='/company.php?mid=75004'">柳州赛克科技发展有限公司</span>
+         <span class="s3"></span>
+         <span class="s4">广西</span>
+         <span class="s5"><a href="/free.php?mid=75004" class="sea">查看</a>/<a href="javascript:sc(75004);" >收藏</a></span>
+         <div class="clear"></div>
+         <p class="f">主要产品：灵犀动力 1.5T 混动发动机、新能源汽车电驱系统、动力电池、智能语音交互相关技术产品</p>
+                                             <div class="clear"></div>
+        </li>
+                   <li class="alists f ">
+         <span class="s1"><input style="cursor:pointer; " type="checkbox"  disabled="disabled" onclick="alert('请您登录');" name="mid[]" value="74501"></span>
+         <!--<span style="cursor:pointer" class="s2 " onclick="location.href='/company.php?mid=74501'">长春市中昱汽车零部件有限公司</span>-->
+		 <span style="cursor:pointer" class="s2 " onclick="location.href='/company.php?mid=74501'">长春市中昱汽车零部件有限公司</span>
+         <span class="s3"></span>
+         <span class="s4">吉林</span>
+         <span class="s5"><a href="/free.php?mid=74501" class="sea">查看</a>/<a href="javascript:sc(74501);" >收藏</a></span>
+         <div class="clear"></div>
+         <p class="f">主要产品：新能源空调压缩机、增程器</p>
+                                             <div class="clear"></div>
+        </li>
+                   <li class="alists f ">
+         <span class="s1"><input style="cursor:pointer; " type="checkbox"  disabled="disabled" onclick="alert('请您登录');" name="mid[]" value="69888"></span>
+         <!--<span style="cursor:pointer" class="s2 " onclick="location.href='/company.php?mid=69888'">中车株洲电机有限公司</span>-->
+		 <span style="cursor:pointer" class="s2 " onclick="location.href='/company.php?mid=69888'">中车株洲电机有限公司</span>
+         <span class="s3">ISO 45001、ISO 14001</span>
+         <span class="s4">湖南</span>
+         <span class="s5"><a href="/free.php?mid=69888" class="sea">查看</a>/<a href="javascript:sc(69888);" >收藏</a></span>
+         <div class="clear"></div>
+         <p class="f">主要产品：新能源汽车电机、三合一动力总成</p>
+                                             <div class="clear"></div>
+        </li>
+                   <li class="alists f ">
+         <span class="s1"><input style="cursor:pointer; " type="checkbox"  disabled="disabled" onclick="alert('请您登录');" name="mid[]" value="50688"></span>
+         <!--<span style="cursor:pointer" class="s2 " onclick="location.href='/company.php?mid=50688'">科力远混合动力技术有限公司</span>-->
+		 <span style="cursor:pointer" class="s2 " onclick="location.href='/company.php?mid=50688'">科力远混合动力技术有限公司</span>
+         <span class="s3"></span>
+         <span class="s4">广东</span>
+         <span class="s5"><a href="/free.php?mid=50688" class="sea">查看</a>/<a href="javascript:sc(50688);" >收藏</a></span>
+         <div class="clear"></div>
+         <p class="f">主要产品：新能源汽车混合动力总成系统</p>
+                                             <div class="clear"></div>
+        </li>
+                   <li class="alists f ">
+         <span class="s1"><input style="cursor:pointer; " type="checkbox"  disabled="disabled" onclick="alert('请您登录');" name="mid[]" value="70146"></span>
+         <!--<span style="cursor:pointer" class="s2 " onclick="location.href='/company.php?mid=70146'">无锡凌博电子技术股份有限公司</span>-->
+		 <span style="cursor:pointer" class="s2 " onclick="location.href='/company.php?mid=70146'">无锡凌博电子技术股份有限公司</span>
+         <span class="s3">ISO 9001</span>
+         <span class="s4">江苏</span>
+         <span class="s5"><a href="/free.php?mid=70146" class="sea">查看</a>/<a href="javascript:sc(70146);" >收藏</a></span>
+         <div class="clear"></div>
+         <p class="f">主要产品：电机控制系统（PDU）、锂电池管理系统BMS、中央控制单元VCU、动力总成、智能电动车车身控制系统、整车通讯系统（RS485、CAN Bus）、车载诊断系统（OBD）等，用于电动摩托车、电动高尔...</p>
+                                             <div class="clear"></div>
+        </li>
+                   <li class="alists f z">
+         <span class="s1"><input style="cursor:pointer; " type="checkbox"  disabled="disabled" onclick="alert('请您登录');" name="mid[]" value="44551"></span>
+         <!--<span style="cursor:pointer" class="s2 " onclick="location.href='/company.php?mid=44551'">苏州达思灵新能源科技有限公司</span>-->
+		 <span style="cursor:pointer" class="s2 " onclick="location.href='/company.php?mid=44551'">苏州达思灵新能源科技有限公司</span>
+         <span class="s3">IATF 16949、高新技术企业</span>
+         <span class="s4">江苏</span>
+         <span class="s5"><a href="/free.php?mid=44551" class="sea">查看</a>/<a href="javascript:sc(44551);" >收藏</a></span>
+         <div class="clear"></div>
+         <p class="f">主要产品：车载增程动力系统总成(增程器)、直流发电机、驱动电机等</p>
+                                             <div class="clear"></div>
+        </li>
+               </ul>
+      </div>
+     </form>
+     <div class="clear"></div>
+     <div class="manu">当前总数：&nbsp;<b>165</b>&nbsp;每页&nbsp;<b>10</b>&nbsp;条<span class="disabled">首页</span><span class="disabled">上一页</span><span class="current">1</span><a href='/category.php?cid=107&pid=208&catid=209&page=2'>2</a><a href='/category.php?cid=107&pid=208&catid=209&page=3'>3</a><a href='/category.php?cid=107&pid=208&catid=209&page=4'>4</a><a href='/category.php?cid=107&pid=208&catid=209&page=5'>5</a>...<a href='/category.php?cid=107&pid=208&catid=209&page=17'>17</a><a href='/category.php?cid=107&pid=208&catid=209&page=2'>下一页</a><a href='/category.php?cid=107&pid=208&catid=209&page=17'>尾页</a></div>
+	 
+   </div>
+   <div class="zhanhuis_r zhanhuis_r_parts">
+
+                 <!--<a href="https://www.baidu.com/link?url=cLt_aSoMlV3SnPAYbd7NgexBHlh0vBSlY-dSsVwxqsDykS2yo_dmdIbCL9uRYe4S&amp;wd=&amp;eqid=eb8c9d40002f18540000000363b6722c" target="_blank" class="hasdiv caigou_r_ad peitao_r_ad" style="margin-top:0px;">
+     <span class="bkg" style="background-image:url(/data/upload/20220428112510_815.jpg)"></span>
+    </a>-->
+
+
+    <div class="clear"></div>
+        <div class="clear"></div>
+    <div class="guoneinew guoneinew_parts">
+                <div class="zhanhuis_r_title zhanhuis_r_title_parts">
+
+     <span>零部件厂商</span>
+     <a href="/article.php?cid=21">更多</a>
+     <div class="clear"></div>
+    </div>
+    <div class="clear"></div>
+     <ul class="ulzhanhuicommon" style="padding:9px 0px;">
+                                        <li><a href="/show_article.php?aid=89305">全球最大电量 80kWh 插混电池量产！蜂巢能源堡垒 2.0 常州下线 实现 400km + 纯电续航</a><div class="clear"></div></li>
+
+                                                                 <li><a href="/show_article.php?aid=89292">富奥股份：2026年一季度新增订单85项 预计生命周期收入167.5亿元</a><div class="clear"></div></li>
+
+                                                                 <li><a href="/show_article.php?aid=89291">总投资20亿元！惠强新能源高端锂电隔膜项目签约落户襄阳高新区</a><div class="clear"></div></li>
+
+                                                                 <li><a href="/show_article.php?aid=89288">建设股份：锚定 “132” 跃升行动攻坚奋进 一季度经营实现强势开门红</a><div class="clear"></div></li>
+
+                                                                 <li><a href="/show_article.php?aid=89275">三方联手布局重卡超充！中电源动、华为香港、智充动力签约助力香港商用车电动化</a><div class="clear"></div></li>
+
+                                                                 <li><a href="/show_article.php?aid=89268">光洋股份：拟6.22亿元全资收购东南相互100%股权，加速汽车电子PCB赛道布局</a><div class="clear"></div></li>
+
+                                                                 <li><a href="/show_article.php?aid=89265">每日一企｜采埃孚汽车安全系统（日照）有限公司——全球顶级汽车安全系统在华核心智造基地</a><div class="clear"></div></li>
+
+                                                                 <li><a href="/show_article.php?aid=89262">发布全球首款 6D 全彩激光雷达芯片 禾赛科技全面迈向空间智能新时代</a><div class="clear"></div></li>
+
+                                                                 <li><a href="/show_article.php?aid=89261">攻坚海外市场 拓宽全球布局 华川电装国际化业务一季度再创新高</a><div class="clear"></div></li>
+
+                                                                 <li><a href="/show_article.php?aid=89260">百台订单签约落地！轻舟智航 L4 无人物流驶入规模化商用快车道</a><div class="clear"></div></li>
+
+                                                                 <li><a href="/show_article.php?aid=89257">德赛西威： 2026 合作伙伴大会圆满召开 四十周年启幕全球化生态新征程</a><div class="clear"></div></li>
+
+                                                                 <li><a href="/show_article.php?aid=89256">经纬恒润：携手宽凳科技达成战略合作 共建智驾数据 + 电子全栈生态</a><div class="clear"></div></li>
+
+                                    
+     </ul>
+    <div class="clear"></div>
+    </div>
+    <div class="clear"></div>
+
+    <div class="guoneinew guoneinew_parts">
+
+        
+
+          <div class="zhanhuis_r_title zhanhuis_r_title_parts">
+     <span>零部件采购</span>
+     <a href="/article.php?cid=165">更多</a>
+     <div class="clear"></div>
+    </div>
+    <div class="clear"></div>
+     <ul class="ulzhanhuicommon" style="padding:9px 0px;">
+
+                              <li><a href="/show_article.php?aid=89217">湖北润力专用汽车有限公司中标永济市民政局公开招标殡葬事业发展服务中心专用车辆采购项目</a><div class="clear"></div></li>
+
+                                                                 <li><a href="/show_article.php?aid=88917">吉林省森黎经贸有限公司中标朝阳区环卫特种车辆轮胎、润滑油等相关零部件采购项目</a><div class="clear"></div></li>
+
+                                                                 <li><a href="/show_article.php?aid=88840">北京恒福中瑞环保动力设备有限公司中标朝阳区环卫特种车辆上装、发动机、变速箱等相关零部件采购项目</a><div class="clear"></div></li>
+
+                                                                 <li><a href="/show_article.php?aid=88709">北京福天佑商贸有限公司中标上半年汽车配件采购项目</a><div class="clear"></div></li>
+
+                                                                 <li><a href="/show_article.php?aid=88678">宿迁市公路运输有限公司杨庄加油站中标宿迁市宿城区环境卫生综合服务中心车辆油料采购项目</a><div class="clear"></div></li>
+
+                                                                 <li><a href="/show_article.php?aid=88675">衡水市环境卫生管理中心环卫车辆燃油采购项目</a><div class="clear"></div></li>
+
+                                                                 <li><a href="/show_article.php?aid=88627">广州市全辉汽车配件有限公司中标中山市公共交通运输集团有限公司营运车辆配件材料供货采购（其他附件类）项目</a><div class="clear"></div></li>
+
+                                                                 <li><a href="/show_article.php?aid=88576">深圳时代绿能科技有限公司中标新能源车辆动力电池更换项目</a><div class="clear"></div></li>
+
+                                                                 <li><a href="/show_article.php?aid=88481">北京燕房锐昇石油化工有限公司中标垃圾清运服务——一场柴油采购项目</a><div class="clear"></div></li>
+
+                                                                 <li><a href="/show_article.php?aid=88455">广西亦科轨道交通设备有限公司中标南宁轨道交通1号线电客车大修车辆专业备件采购项目</a><div class="clear"></div></li>
+
+                                                                 <li><a href="/show_article.php?aid=88211">广西安澜计算机科技有限公司中标无人驾驶车载多模态大模型人工智能一体化平台采购项目</a><div class="clear"></div></li>
+
+                                                                 <li><a href="/show_article.php?aid=87949">湖南松将能源有限公司中标江西省高安市便民公共客运有限责任公司公交车动力电池更换项目</a><div class="clear"></div></li>
+
+                                    
+
+     </ul>
+    <div class="clear"></div>
+    </div>
+    <div class="clear"></div>
+        <div class="clear"></div>
+    <div class="guoneinew guoneinew_parts">
+     
+
+
+
+     <div class="zhanhuis_r_title zhanhuis_r_title_parts">
+     <span>近期零部件展会</span>
+     <a href="/article.php?cid=63&leibie=2">更多</a>
+     <div class="clear"></div>
+    </div>
+    <div class="clear"></div>
+     <ul class="ulzhanhuicommon" style="padding:9px 0px;">
+                                     <li><a href="/show_exhibition.php?aid=4202">汽车模型数字工程学术沙龙线上交流会第6期（线上，2026年12月28日）</a><div class="clear"></div></li>
+
+                                                                 <li><a href="/show_exhibition.php?aid=4201">2026第十一届汽车防腐蚀老化和紧固连接年会（长沙，2026年12月9-10日）</a><div class="clear"></div></li>
+
+                                                                 <li><a href="/show_exhibition.php?aid=4210">国际汽车动力总成与出行大会（柏林，2026年12月8–9日）</a><div class="clear"></div></li>
+
+                                                                 <li><a href="/show_exhibition.php?aid=4050">中国国际汽车零配件维修检测诊断设备及服务用品展览会 Automechanika Shanghai（法兰克福汽配展）（上海，2026年12月2-5日）</a><div class="clear"></div></li>
+
+                                                                 <li><a href="/show_exhibition.php?aid=4032">AUTO TECH China 2026 第十三届广州国际汽车零部件及加工技术、汽车模具展览会（广州，2026年11月27-30日）</a><div class="clear"></div></li>
+
+                                                                 <li><a href="/show_exhibition.php?aid=4085">坦桑尼亚汽摩配展（AUTOEXPO Tanzania）（达累斯萨拉姆，2026年11月18-20日​​）</a><div class="clear"></div></li>
+
+                                                                 <li><a href="/show_exhibition.php?aid=4084">摩洛哥国际汽配展（MOROCCO AUTOMOTIVE TECHNOLOGIES, MAT）（卡萨布兰卡，2026年11月12-15日​​）</a><div class="clear"></div></li>
+
+                                                                 <li><a href="/show_exhibition.php?aid=4211">欧洲卡车决策者大会（柏林，2026年11月11–12日）</a><div class="clear"></div></li>
+
+                                                                 <li><a href="/show_exhibition.php?aid=4043">迪拜国际汽车零部件、汽车技术及服务展览会（Automechanika Dubai）​（迪拜，2026年11月10-12日）</a><div class="clear"></div></li>
+
+                                                                 <li><a href="/show_exhibition.php?aid=3983">美国拉斯维加斯改装车展（SEMA Show）（拉斯维加斯，2026 年11月3-5日）</a><div class="clear"></div></li>
+
+                                         </ul>
+    <div class="clear"></div>
+    </div>
+    <div class="clear"></div>
+   </div>
+   <div class="clear"></div>
+  </div>
+</div>
+<div class="clear"></div>
+<br />
+<div class="foot">
+ <div class="middle">
+  <p class="fp">
+    <a href="/help.php?cid=54">企业推广</a>   |
+    <a href="/help.php?cid=55">广告合作</a>   |
+	<a href="/links.php">友情链接</a>   |
+    <!--<a href="/article.php?cid=55">广告合作</a>   |-->
+    <a href="/help.php?cid=57">关于我们</a>   |
+    <a href="/help.php?cid=58">联系我们</a>   |
+	<a href="/help.php?cid=59">意见反馈</a>   |
+    <!--<a href="/article.php?cid=58">联系我们</a>   |-->
+    <a href="https://www.qcgys.com/map.php">网站地图</a>   |
+    <a href="/help.php?cid=61">加入我们</a>   |
+    <a href="https://exmail.qq.com/login" target="_blank">邮箱登录</a><br />
+    版权所有：中国汽车供应商网    Copyright © 2015-2025 
+    <a target="blank" href="http://beian.miit.gov.cn/">京ICP备09065995号-4</a>
+    
+    <a  target="_blank" href="http://www.beian.gov.cn/portal/registerSystemInfo?recordcode=11010802047045"><img src="/images/gongan.png" style=" display: inline-block; position: relative; top: 3px;"/> 京公网安备11010802047045号</a>  </p>
+  <div class="copfoot">
+    <dl class="l" style="width: calc(50% - 42px); padding-left:42px;">
+     <p>
+       E-mail：service@qcgys.com , info@qcgys.com<br />
+       电话：010-88560270、68420981<br />
+       QQ：3553216770 <!--<a target="_blank" rel="nofollow" href="http://wpa.qq.com/msgrd?v=3&amp;uin=3553216770&amp;site=qq&amp;menu=yes"><img class="q1" border="0" src="http://wpa.qq.com/pa?p=2:3553216770:41" alt="点击这里给我发消息" title="点击这里给我发消息"></a>-->
+     </p>
+    </dl>
+    <dl class="r" style="border-left:1px solid #CCC; width: calc(50% - 42px); padding-left:40px;">
+      <li style="width:125px; height:96px; margin-top:10px; float:left">
+	  <!--<img src="/images/qrcode.gif" class="l"  height="74">
+	  手机端-->
+      <p>
+      更多配套相关信息<br />
+      请扫码关注公众号
+      </p>
+	  </li>
+	  <li>
+	  <img src="/images/qrcode1.jpg" class="l"  height="74" style="border:1px solid #7495B4; border-radius:5px;">
+      
+	  </li>
+      <div class="clear"></div>
+    </dl>
+    <div class="clear"></div>
+  </div>
+ </div>
+</div>
+<!--<script>
+$(function(){
+$("a").attr("target","_blank");
+$(".zhanhui_shaixuan a").attr("target","_self");
+});
+</script>-->
+<span class="rili"></span>
+<script type="text/javascript" src="/rili/test/demo.js"></script>
+<script>
+function is_js_delete(str,url){
+layer.confirm(str, function(){
+					window.location.href = url;
+				});
+}
+</script>
+
+
+<script type="text/javascript">
+	$(function(){
+		$(".Tpiaochuan").fadeIn(1000);
+		$(".gb").click(function(){
+			$(".Tpiaochuan").fadeOut(400);
+		});
+		$(".noneyin").click(function(){
+			$(".Tpiaochuan").fadeOut(400);
+		});
+	});
+</script>
+
+<style type="text/css">
+.Tpiaochuan{ width:300px; height:200px;  position:fixed; right:20px;  z-index:9999; top:50%; margin-top:-100px;
+}
+.Tpiaochuan .zixun{  cursor:pointer;}
+.Tpiaochuan .noneyin{ position:fixed; right:20px; top:50%; cursor:pointer; margin-top: -98px;
+    margin-left: 132px;}
+.Tpiaochuan .noneyin{ width:14px; height:14px; }
+.Tpiaochuan .noneyin img{ width:100%}
+</style><div class="Tpiaochuan">
+ <div class="zixun" >
+
+<a onclick="tongji(181,68537)" target="_blank" href="http://oem2026.forum.qcgys.com/luntan.php?zid=79881&amp;cid=187"><img src="/data/upload/20260409181243_881.jpg"   /></a>
+
+
+ </div>
+   <div class="noneyin"><img src="https://www.qcgys.com/images/close.png" alt="关闭"  /></div>
+</div>
+
+
+</body>
+</html>

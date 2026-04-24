@@ -1,0 +1,1099 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Security-Policy" content="upgrade-insecure-requests">
+<title>配套 - 中国汽车供应商网</title>
+<meta name="keywords" content="" />
+<meta name="description" content=" " />
+<link rel="stylesheet" type="text/css" href="/css/style.css" />
+<link rel="stylesheet" type="text/css" href="/css/hdp.css" />
+<link rel="stylesheet" type="text/css" href="/css/common.css" />
+<link rel="stylesheet" type="text/css" href="/css/caigou.css" />
+<link rel="stylesheet" type="text/css" href="/css/self.css" />
+<link href="/zhanhuihdp/css/lrtk.css" rel="stylesheet" type="text/css" />
+<script src="/js/jquery-1.7.1.js"></script>
+<script src="/js/o.js"></script>
+<script type="text/javascript" src="/zhanhuihdp/js/koala.min.1.5.js"></script>
+<script src="/layer/build/layer.js"></script>
+<script src="/js/main.js"></script>
+<link rel="icon" href="https://www.qcgys.com/images/ico.png" sizes="32x32">
+</head>
+<body>
+<div id="msg"></div>
+<div class="top">
+  <div class="middle">
+    <p class="l login_status">欢迎来到中国汽车供应商网！
+
+          <a href="/member/login.php" class="lan" style="color:#F00">请登录</a>　<a href="/member/regist_free.php">免费注册</a><!--<span>丨</span><a href="">供应商入口</a>-->　
+      <!--<a href="" class="en">English</a>-->
+      
+
+
+    </p>
+    <p class="r"> <a href="/">首页</a>　
+            <a href="/article.html">资讯</a>　
+            <a href="/exhibition.html">会展</a>　
+            <a href="/caigou.html">采购</a>　
+            <a href="/ptlist.html">配套</a>　
+            <a href="/cklist.html">出口</a>　
+            <a href="/szlist.html">三资</a>　
+             <a href="/member/regist.php">供应商入口</a>
+       　<a href="/map.php">网站地图</a>
+    </p>
+    <div class="clear"></div>
+  </div>
+</div>
+
+
+
+<div class="head" style="height:auto">
+ <div class="middle">
+ <div class="head_top">
+ 
+
+    <a class="logo_bg" href="/">
+    
+	<i>汽车OEM供应商专栏</i>	        
+    
+    </a>
+  <!--<style>
+  .head .search .tab_search label input {
+    left: 0px;
+    position: absolute;
+}
+  </style>-->
+
+
+  
+
+
+
+<div class="r search">
+
+  
+  
+
+  
+
+  
+
+  
+
+   <form method="get" action="/parts.php" id="formsousuo">
+
+      <select name="cid"  onchange="sou_changs(this.value)">
+        <option value="107" >供应商</option>
+        <option value="144" >资讯</option>
+        <!--<option value="107" >产品</option>
+        <option value="4" selected="selected">配套</option>
+        <option value="5" >出口</option>
+        <option value="6" >三资</option>-->
+      </select>
+
+    <!--<div class="tab_search" style="display:none">
+
+    
+
+    
+
+      <label data="/sou.php" >企业<input  type="radio" name="cid"  value="107"></label>
+
+      
+
+      <label data="/sous.php" >产品<input  type="radio" name="cid"  value="107"></label>
+
+      
+
+      
+
+      
+
+      <label data="/parts.php" onclick="window.location.href='/parts.php?cid=4'" class="ses">配套<input type="radio" name="cid" value="4"  checked></label>
+
+      <label data="/chukou.php" onclick="window.location.href='/chukou.php?cid=5'" >出口<input type="radio" name="cid" value="5"  ></label>
+
+      <label data="/sanzi.php" onclick="window.location.href='/sanzi.php?cid=6'" >三资<input type="radio" name="cid" value="6"  ></label>
+
+      <div class="clear"></div>
+
+    </div>-->
+
+    
+
+    
+    
+    
+    
+    
+    
+
+    
+
+    <input type="text" name="key" class="txt" value="" placeholder="请输入配套关键词" required>
+
+    <input type="submit" value="搜索" class="sub">
+
+   </form>
+
+   <!--<p>热门搜索：　
+   <a href="/">齿轮</a>　
+<a href="/">配套产品</a>　
+<a href="/">供应商大会</a>　
+  
+   
+   </p>-->
+
+  </div> </div>
+  <div class="clear"></div>
+    </div>
+</div>
+<div class="clear"></div>
+<div class="zhanhuis">
+  <div class="middle">
+   <div class="cengjis">
+     <a href="/">首页</a> > 汽车OEM供应商专栏
+   </div>
+   <div class="clear"></div>
+   <div class="zhanhuis_l zhanhuis_l_parts">
+   <!--筛选start-->
+     <!--<div class="parts_title">
+       <span>OEM供应商</span><i>按OEM供应商查询<img src="/images/i.png"></i>
+     </div>-->
+	       <div class="zhanhui_shaixuan zhanhui_shaixuan_parts">
+      <li class="shaixuan_parts_cx"  style="display:none">
+        <div class="shaixuan_parts_cx_title"  style="border:none" >
+          <i>按配套查询：</i>
+            <a href="https://www.chinaautosupplier.com/parts.php?cid=4" class="ses">所有</a>
+                             <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=70" >其他企业</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=22" >一汽集团</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=23" >一汽红旗</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=25" >一汽-大众</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=75" >海马汽车</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=63" >一汽奥迪</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=47" >一汽丰田</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=16" >东风汽车</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=18" >东风日产</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=19" >神龙汽车</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=20" >江苏悦达起亚</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=17" >东风本田</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=64" >东风乘用车</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=65" >东风柳汽</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=40" >上汽集团</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=46" >上汽大众</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=42" >上汽通用五菱</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=44" >上汽通用</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=41" >上汽乘用车</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=14" >奇瑞汽车</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=36" >上汽大通</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=37" >南京依维柯</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=2" >北汽集团</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=6" >北汽福田</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=4" >北京奔驰</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=5" >北京现代</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=52" >北汽新能源</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=11" >长安汽车</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=12" >长安铃木</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=10" >长安福特</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=66" >长安马自达</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=28" >广汽丰田</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=27" >广汽本田</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=50" >广汽三菱</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=26" >广汽集团</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=67" >广汽菲克</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=29" >吉利汽车</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=9" >比亚迪</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=7" >华晨宝马</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=8" >华晨汽车</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=45" >东南汽车</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=34" >力帆汽车</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=24" >海南汽车</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=32" >江铃汽车</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=38" >庆铃汽车</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=15" >重汽集团</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=43" >上汽红岩</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=39" >陕汽集团</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=3" >北奔重汽</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=31" >江淮汽车</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=49" >郑州日产</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=30" >长城汽车</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=61" >沃尔沃</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=57" >宇通客车</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=58" >金龙客车</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=59" >中通客车</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=60" >安凯客车</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=51" >小鹏汽车</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=53" >威马汽车</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=54" >蔚来汽车</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=68" >理想汽车</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=55" >广汽埃安</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=56" >特斯拉</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=62" >零跑汽车</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=76" >赛力斯、问界</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=77" >合众新能源、哪吒</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=78" >极氪</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=79" >岚图</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=80" >智己</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=83" >小米汽车</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=84" >深蓝汽车</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=85" >阿维塔</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=86" >领克汽车</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=87" >尊界</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=33" >其他汽车生产企业</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=21" >发动机主机厂</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=71" >博世</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=73" >大陆</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=72" >宁德时代</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=81" >华为</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=35" >摩托车生产企业</a>
+                 
+          <div class="clear"></div>
+        </div>
+
+        <div class="clear"></div>
+
+
+        <li class="comm listcatid">
+       <div>
+       <i>按配套查询：</i>
+
+
+
+
+       <p  style=" " >
+       <a href="https://www.chinaautosupplier.com/parts.php?cid=4" class="ses">全部</a>
+                             <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=22" >一汽集团</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=23" >一汽红旗</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=25" >一汽-大众</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=75" >海马汽车</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=63" >一汽奥迪</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=47" >一汽丰田</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=16" >东风汽车</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=18" >东风日产</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=19" >神龙汽车</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=20" >江苏悦达起亚</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=17" >东风本田</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=64" >东风乘用车</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=65" >东风柳汽</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=40" >上汽集团</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=46" >上汽大众</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=42" >上汽通用五菱</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=44" >上汽通用</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=41" >上汽乘用车</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=14" >奇瑞汽车</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=36" >上汽大通</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=37" >南京依维柯</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=2" >北汽集团</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=6" >北汽福田</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=4" >北京奔驰</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=5" >北京现代</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=52" >北汽新能源</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=11" >长安汽车</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=10" >长安福特</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=66" >长安马自达</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=28" >广汽丰田</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=27" >广汽本田</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=26" >广汽集团</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=29" >吉利汽车</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=9" >比亚迪</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=7" >华晨宝马</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=32" >江铃汽车</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=38" >庆铃汽车</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=15" >重汽集团</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=43" >上汽红岩</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=39" >陕汽集团</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=3" >北奔重汽</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=31" >江淮汽车</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=49" >郑州日产</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=30" >长城汽车</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=61" >沃尔沃</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=57" >宇通客车</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=58" >金龙客车</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=59" >中通客车</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=60" >安凯客车</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=51" >小鹏汽车</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=54" >蔚来汽车</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=68" >理想汽车</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=55" >广汽埃安</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=56" >特斯拉</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=62" >零跑汽车</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=76" >赛力斯、问界</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=77" >合众新能源、哪吒</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=78" >极氪</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=79" >岚图</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=80" >智己</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=33" >其他汽车生产企业</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=21" >发动机主机厂</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=71" >博世</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=73" >大陆</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=72" >宁德时代</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=81" >华为</a>
+                                  <a href="https://www.chinaautosupplier.com/parts.php?cid=4&tid=35" >摩托车生产企业</a>
+                 
+       </p>
+       <em>&gt;&gt;</em>
+       <div class="clear"></div>
+       </div>
+
+      </li>
+
+
+
+         <div class="clear"></div>
+     
+
+
+      </li>
+
+
+
+             	     <li class="comm listcatid">
+       <div>
+       <i>按产品分类查询：</i>
+
+        
+
+
+       <p >
+       <a href="https://www.chinaautosupplier.com/parts.php?cid=4&catid=2"  class="ses">全部</a>
+                      <a href="javascript:layer_login('认证采购商会员专区，登录后浏览更多信息。');" class="huise ">发动机零部件</a>
+				           <a href="javascript:layer_login('认证采购商会员专区，登录后浏览更多信息。');" class="huise ">底盘零部件</a>
+				           <a href="javascript:layer_login('认证采购商会员专区，登录后浏览更多信息。');" class="huise ">车身零部件</a>
+				           <a href="javascript:layer_login('认证采购商会员专区，登录后浏览更多信息。');" class="huise ">电子电器零部件</a>
+				           <a href="javascript:layer_login('认证采购商会员专区，登录后浏览更多信息。');" class="huise ">通用件和相关工业产品</a>
+				           <a href="javascript:layer_login('认证采购商会员专区，登录后浏览更多信息。');" class="huise ">汽车用品及工具</a>
+				           <a href="javascript:layer_login('认证采购商会员专区，登录后浏览更多信息。');" class="huise ">电动汽车零部件</a>
+				           <a href="javascript:layer_login('认证采购商会员专区，登录后浏览更多信息。');" class="huise ">智能网联零部件</a>
+				       </p>
+       <em>>></em>
+       <div class="clear"></div>
+       </div>
+
+        
+
+       
+
+
+
+      </li>
+		   
+            			   <li class="comm">
+       <i style="margin-right:14px;">按质量体系查询：</i>
+       <a href="https://www.chinaautosupplier.com/parts.php?cid=4" class="ses">全部</a>
+       <p style=" width:690px;">
+                      <a href="javascript:layer_login('认证采购商会员专区，登录后浏览更多信息。');" class="huise ">16949系列</a>
+				           <a href="javascript:layer_login('认证采购商会员专区，登录后浏览更多信息。');" class="huise ">ISO9000系列</a>
+				           <a href="javascript:layer_login('认证采购商会员专区，登录后浏览更多信息。');" class="huise ">VDA认证</a>
+				           <a href="javascript:layer_login('认证采购商会员专区，登录后浏览更多信息。');" class="huise ">QS认证</a>
+				           <a href="javascript:layer_login('认证采购商会员专区，登录后浏览更多信息。');" class="huise ">ISO14000</a>
+				           <a href="javascript:layer_login('认证采购商会员专区，登录后浏览更多信息。');" class="huise ">OHSAS18001</a>
+				           <a href="javascript:layer_login('认证采购商会员专区，登录后浏览更多信息。');" class="huise ">ISO45001</a>
+				       </p>
+       <div class="clear"></div>
+      </li>
+			   
+
+     </div>
+     <div class="clear"></div>
+    <!--筛选end-->
+
+     <script>
+function allss() {
+        var sum = document.getElementsByName("mid[]");
+        for (var i = 0; i < sum.length; i++) {
+            if (sum[i].type == "checkbox") {
+                sum[i].checked = true;
+            }
+        }
+    }
+function unalls() {
+        var sum = document.getElementsByName("mid[]");
+        for (var i = 0; i < sum.length; i++) {
+            if (sum[i].type == "checkbox") {
+                sum[i].checked = false;
+            }
+        }
+    }
+function alls(){
+	  if($("input[name='isall']").is(':checked')){
+				allss();
+				}else{
+					unalls();
+					}
+	  }
+</script>
+                         <div class="sousuo_title">
+	              <span>搜索到：汽车OEM供应商专栏<i></i>的<i>所有</i>企业<i>9470</i>家</span>
+                   <div class="clear"></div>
+     </div>
+     <div class="clear"></div>
+     <form method="post" action="" id="myForm" name="forms">
+      <div class="aitaochildren">
+       <ul>
+        <li class="at">
+		     <span class="s1">
+			 <input type="checkbox" name="isall" value="1" onclick="alls()" disabled="disabled" style="cursor:pointer">
+             <a href="javascript:;" style="cursor:pointer" onclick="alert('请您登录');">                  收藏</a>
+			 </span>
+             <span class="s2">公司名称/主营产品</span>
+             <span class="s3">质量体系</span>
+             <span class="s4">地区</span>
+             <span class="s5">联系方式</span>
+             <div class="clear"></div>
+        </li>
+                   <li class="alists f ">
+         <span class="s1"><input style="cursor:pointer; " type="checkbox"  disabled="disabled" onclick="alert('请您登录');" name="mid[]" value="80308"></span>
+         <!--<span style="cursor:pointer" class="s2 reds" onclick="location.href='/company.php?mid=80308'">日马精密锻压有限公司</span>-->
+		 <span style="cursor:pointer" class="s2 reds" onclick="location.href='/company.php?mid=80308'">日马精密锻压有限公司</span>
+         <span class="s3">16949系列,ISO9000系列,VDA认证,ISO14000</span>
+         <span class="s4">天津</span>
+         <span class="s5"><a href="/free.php?mid=80308" class="sea">查看</a>/<a href="javascript:sc(80308);" >收藏</a></span>
+         <div class="clear"></div>
+         <p class="f">主要产品：汽车减震器配件、安全部品、车载摄像头部品（ADAS）</p>
+                  <p class="f">配套：我司主要为一汽丰田,广汽丰田,广汽本田,东风本田,东风日产等配套汽车减震部品，为奥特立夫、均胜等企业配套安全带安全部品，为奇瑞、比亚迪、长安等提供ADAS车载摄像头相关部品</p>
+                                             <div class="clear"></div>
+        </li>
+                   <li class="alists f ">
+         <span class="s1"><input style="cursor:pointer; " type="checkbox"  disabled="disabled" onclick="alert('请您登录');" name="mid[]" value="73180"></span>
+         <!--<span style="cursor:pointer" class="s2 " onclick="location.href='/company.php?mid=73180'">北京净油洁宝科技有限公司</span>-->
+		 <span style="cursor:pointer" class="s2 reds" onclick="location.href='/company.php?mid=73180'">北京净油洁宝科技有限公司</span>
+         <span class="s3">三体系认证</span>
+         <span class="s4">北京</span>
+         <span class="s5"><a href="/free.php?mid=73180" class="sea">查看</a>/<a href="javascript:sc(73180);" >收藏</a></span>
+         <div class="clear"></div>
+         <p class="f">主要产品：环保水基弱碱型脱脂剂</p>
+                  <p class="f">配套：中车南京浦镇车辆有限公司、中车唐山机车车辆有限公司在机车维修中的油污清洗；为北京地铁设备的清洁与维护提供全新的解决方案</p>
+                                             <div class="clear"></div>
+        </li>
+                   <li class="alists f ">
+         <span class="s1"><input style="cursor:pointer; " type="checkbox"  disabled="disabled" onclick="alert('请您登录');" name="mid[]" value="47626"></span>
+         <!--<span style="cursor:pointer" class="s2 reds" onclick="location.href='/company.php?mid=47626'">武汉元丰汽车电控系统股份有限公司</span>-->
+		 <span style="cursor:pointer" class="s2 reds" onclick="location.href='/company.php?mid=47626'">武汉元丰汽车电控系统股份有限公司</span>
+         <span class="s3">IATF 16949、高新技术企业</span>
+         <span class="s4">湖北</span>
+         <span class="s5"><a href="/free.php?mid=47626" class="sea">查看</a>/<a href="javascript:sc(47626);" >收藏</a></span>
+         <div class="clear"></div>
+         <p class="f">主要产品：液压ABS系统、液压ESC系统、EHB系统、气压制动系统、EPB系统、iTPMS系统、ADAS系统</p>
+                  <p class="f">配套：为东风汽车、上汽通用五菱、福田汽车、长安汽车、江淮汽车、奇瑞汽车、长城汽车、吉利汽车、金龙汽车、郑州宇通、上汽大通、陕汽集团等配套</p>
+                                             <div class="clear"></div>
+        </li>
+                   <li class="alists f ">
+         <span class="s1"><input style="cursor:pointer; " type="checkbox"  disabled="disabled" onclick="alert('请您登录');" name="mid[]" value="50722"></span>
+         <!--<span style="cursor:pointer" class="s2 reds" onclick="location.href='/company.php?mid=50722'">宁德时代新能源科技股份有限公司</span>-->
+		 <span style="cursor:pointer" class="s2 reds" onclick="location.href='/company.php?mid=50722'">宁德时代新能源科技股份有限公司</span>
+         <span class="s3">ISO 45001、ISO 27001、ISO 50001、IATF 16949、ISO 9001、高新技术企业</span>
+         <span class="s4">福建</span>
+         <span class="s5"><a href="/free.php?mid=50722" class="sea">查看</a>/<a href="javascript:sc(50722);" >收藏</a></span>
+         <div class="clear"></div>
+         <p class="f">主要产品：动力电池、智能电池管理系统（BMS）、储能电池，电池回收</p>
+                  <p class="f">配套：配套威马、蔚来、北汽新能源、北汽集团、广汽、福田欧辉、上汽通用五菱、上汽宝骏、上汽名爵、上汽乘用车、上汽荣威、吉利汽车、长安、长城、东风、东风商用车、中通客车、宇通客车、厦门金旅、厦门金龙、苏州金龙、申沃客车、一汽、一汽-大众、一汽轿车、海马、中车时代、广通汽车、宝马、上汽大众、奥迪、起亚、戴姆勒、特斯拉、北京现代、小鹏、广汽埃安、零跑汽车、问界、智界、小米、智己、深蓝、飞凡、极氪、岚图、吉利银河等</p>
+                                             <div class="clear"></div>
+        </li>
+                   <li class="alists f ">
+         <span class="s1"><input style="cursor:pointer; " type="checkbox"  disabled="disabled" onclick="alert('请您登录');" name="mid[]" value="50350"></span>
+         <!--<span style="cursor:pointer" class="s2 reds" onclick="location.href='/company.php?mid=50350'">特来电新能源股份有限公司</span>-->
+		 <span style="cursor:pointer" class="s2 reds" onclick="location.href='/company.php?mid=50350'">特来电新能源股份有限公司</span>
+         <span class="s3">ISO 45001</span>
+         <span class="s4">山东</span>
+         <span class="s5"><a href="/free.php?mid=50350" class="sea">查看</a>/<a href="javascript:sc(50350);" >收藏</a></span>
+         <div class="clear"></div>
+         <p class="f">主要产品：新能源汽车充电网的建设、运营及互联网的增值服务</p>
+                  <p class="f">配套：与北汽新能源、长安汽车、东风电动汽车、宇通客车、金龙客车、海格客车、南京金龙、东南汽车、众泰汽车、江淮汽车等合作</p>
+                                             <div class="clear"></div>
+        </li>
+                   <li class="alists f ">
+         <span class="s1"><input style="cursor:pointer; " type="checkbox"  disabled="disabled" onclick="alert('请您登录');" name="mid[]" value="47556"></span>
+         <!--<span style="cursor:pointer" class="s2 reds" onclick="location.href='/company.php?mid=47556'">铁将军汽车电子股份有限公司</span>-->
+		 <span style="cursor:pointer" class="s2 reds" onclick="location.href='/company.php?mid=47556'">铁将军汽车电子股份有限公司</span>
+         <span class="s3">IATF 16949、高新技术企业</span>
+         <span class="s4">广东</span>
+         <span class="s5"><a href="/free.php?mid=47556" class="sea">查看</a>/<a href="javascript:sc(47556);" >收藏</a></span>
+         <div class="clear"></div>
+         <p class="f">主要产品：提供智能车身域控制器(BDC)及周边件，智能/蓝牙/超宽带(UWB)数字钥匙系统、驾驶辅助系统（TPMS/RPA/AVAS）等产品与服务</p>
+                  <p class="f">配套：小鹏、长安、广汽传祺、威马、北汽、长城、东南、本田、吉利、哪吒、丰田、奇瑞、马自达、江淮、宝马、理想、上汽、长安福特、广汽埃安</p>
+                                             <div class="clear"></div>
+        </li>
+                   <li class="alists f ">
+         <span class="s1"><input style="cursor:pointer; " type="checkbox"  disabled="disabled" onclick="alert('请您登录');" name="mid[]" value="50124"></span>
+         <!--<span style="cursor:pointer" class="s2 reds" onclick="location.href='/company.php?mid=50124'">东睦新材料集团股份有限公司</span>-->
+		 <span style="cursor:pointer" class="s2 reds" onclick="location.href='/company.php?mid=50124'">东睦新材料集团股份有限公司</span>
+         <span class="s3">IATF 16949、高新技术企业</span>
+         <span class="s4">浙江</span>
+         <span class="s5"><a href="/free.php?mid=50124" class="sea">查看</a>/<a href="javascript:sc(50124);" >收藏</a></span>
+         <div class="clear"></div>
+         <p class="f">主要产品：以粉末压制成形（P&amp;S）、软磁复合材料（SMC）、金属注射成形（MIM）三大新材料技术平台为基石，为新能源和高端制造提供粉末冶金新材料核心零部件，覆盖新能源、汽车等领域（变速...</p>
+                  <p class="f">配套：吉利</p>
+                                             <div class="clear"></div>
+        </li>
+                   <li class="alists f ">
+         <span class="s1"><input style="cursor:pointer; " type="checkbox"  disabled="disabled" onclick="alert('请您登录');" name="mid[]" value="50837"></span>
+         <!--<span style="cursor:pointer" class="s2 reds" onclick="location.href='/company.php?mid=50837'">广州小鹏汽车科技有限公司</span>-->
+		 <span style="cursor:pointer" class="s2 reds" onclick="location.href='/company.php?mid=50837'">广州小鹏汽车科技有限公司</span>
+         <span class="s3">ISO 9001、ISO 45001,高新技术企业</span>
+         <span class="s4">广东</span>
+         <span class="s5"><a href="/free.php?mid=50837" class="sea">查看</a>/<a href="javascript:sc(50837);" >收藏</a></span>
+         <div class="clear"></div>
+         <p class="f">主要产品：超长续航智能SUV——小鹏G3及超长续航智能轿跑——小鹏P7；纯电动轿车：P7i、P7、P5;纯电动SUV:G9、G6、G3i；2023年销量为141601辆</p>
+                  <p class="f">配套：小鹏P7（电池管理系统及整车控制器软件）</p>
+                                             <div class="clear"></div>
+        </li>
+                   <li class="alists f ">
+         <span class="s1"><input style="cursor:pointer; " type="checkbox"  disabled="disabled" onclick="alert('请您登录');" name="mid[]" value="68176"></span>
+         <!--<span style="cursor:pointer" class="s2 " onclick="location.href='/company.php?mid=68176'">上海映赛电子科技有限公司</span>-->
+		 <span style="cursor:pointer" class="s2 reds" onclick="location.href='/company.php?mid=68176'">上海映赛电子科技有限公司</span>
+         <span class="s3"></span>
+         <span class="s4">上海</span>
+         <span class="s5"><a href="/free.php?mid=68176" class="sea">查看</a>/<a href="javascript:sc(68176);" >收藏</a></span>
+         <div class="clear"></div>
+         <p class="f">主要产品：汽车电子后视镜</p>
+                  <p class="f">配套：</p>
+                                             <div class="clear"></div>
+        </li>
+                   <li class="alists f z">
+         <span class="s1"><input style="cursor:pointer; " type="checkbox"  disabled="disabled" onclick="alert('请您登录');" name="mid[]" value="67448"></span>
+         <!--<span style="cursor:pointer" class="s2 reds" onclick="location.href='/company.php?mid=67448'">北油电控燃油喷射系统（天津）有限公司</span>-->
+		 <span style="cursor:pointer" class="s2 reds" onclick="location.href='/company.php?mid=67448'">北油电控燃油喷射系统（天津）有限公司</span>
+         <span class="s3">国家专精特新小巨人企业认证、天津市企业技术中心认证、天津市科技领军企业认证等</span>
+         <span class="s4">天津</span>
+         <span class="s5"><a href="/free.php?mid=67448" class="sea">查看</a>/<a href="javascript:sc(67448);" >收藏</a></span>
+         <div class="clear"></div>
+         <p class="f">主要产品：燃油喷射系统（高压共轨系统）、非燃油产品（精密机加及热处理）、新燃料喷射产品</p>
+                  <p class="f">配套：客户遍布国内核心的发动机厂商，已与潍柴、玉柴、东风康明斯、全柴、新柴、云内、扬柴等近30家主机厂客户成功配试。</p>
+                                             <div class="clear"></div>
+        </li>
+               </ul>
+      </div>
+     </form>
+     <div class="clear"></div>
+     <div class="manu">当前总数：&nbsp;<b>9470</b>&nbsp;每页&nbsp;<b>10</b>&nbsp;条<span class="disabled">首页</span><span class="disabled">上一页</span><span class="current">1</span><a href='/parts.php?cid=4&page=2'>2</a><a href='/parts.php?cid=4&page=3'>3</a><a href='/parts.php?cid=4&page=4'>4</a><a href='/parts.php?cid=4&page=5'>5</a>...<a href='/parts.php?cid=4&page=947'>947</a><a href='/parts.php?cid=4&page=2'>下一页</a><a href='/parts.php?cid=4&page=947'>尾页</a></div>
+	 	     <script>
+	       $('.manu a').each(function(i){
+             $(this).attr('href',"javascript:layer_login('认证采购商会员专区，登录后浏览更多信息。');");
+					});
+	     </script>
+	 
+
+   </div>
+   <div class="zhanhuis_r zhanhuis_r_parts">
+
+                 
+<a onclick="tongji(104,168)" href="https://www.svw-volkswagen.com/?mz_ca=2339374&amp;mz_sp=8KTpB&amp;mz_sb=1" target="_blank" class="hasdiv caigou_r_ad peitao_r_ad" style="margin-top:0px;">
+     <span class="bkg" style="background-image:url(/data/upload/20210913135051_488.png)"></span>
+    </a>
+
+
+
+    <div class="clear"></div>
+
+        <div class="clear"></div>
+    <div class="guoneinew guoneinew_parts">
+          <div class="zhanhuis_r_title zhanhuis_r_title_parts">
+     <span>配套资讯</span>
+     <a href="/article.php?cid=23">更多</a>
+     <div class="clear"></div>
+    </div>
+    <div class="clear"></div>
+     <ul class="ulzhanhuicommon" style="padding:9px 0px;">
+                                        <li><a href="/show_article.php?aid=89306">斩获开发赋能奖！采埃孚 LIFETEC 助力奇瑞威麟 P3X 高端皮卡全球化布局</a><div class="clear"></div></li>
+
+                                                                 <li><a href="/show_article.php?aid=89295">星途EX7全球上市 镁佳科技全链路赋能智慧座舱，解锁交互新体验</a><div class="clear"></div></li>
+
+                                                                 <li><a href="/show_article.php?aid=89294">魔视智能：基于爱芯元智M57芯片方案获头部车企量产定点 五年预期配套超50万台</a><div class="clear"></div></li>
+
+                                                                 <li><a href="/show_article.php?aid=89264">荣获开发赋能奖！ZF LIFETEC 深度配套奇瑞威麟 P3X 高端智能皮卡</a><div class="clear"></div></li>
+
+                                                                 <li><a href="/show_article.php?aid=89259">康明斯 × 长城商用车联合交付 100 台 G970 混动重卡 赋能快递干线绿色升级</a><div class="clear"></div></li>
+
+                                                                 <li><a href="/show_article.php?aid=89236">文远知行：端到端智驾量产再突破 携手广汽埃安 N60 开启预售</a><div class="clear"></div></li>
+
+                                                                 <li><a href="/show_article.php?aid=89227">问界M6开启预售订单破10万 豪恩汽电AK2超声波筑牢智驾感知基石</a><div class="clear"></div></li>
+
+                                                                 <li><a href="/show_article.php?aid=89212">黑芝麻智能 × 东风：达成平台级合作 武当 C1296 芯片赋能天元智舱 Plus 量产落地</a><div class="clear"></div></li>
+
+                                                                 <li><a href="/show_article.php?aid=89206">卓驭 × 上汽通用五菱：打造整车无人转运方案 智驾技术赋能制造物流新生态</a><div class="clear"></div></li>
+
+                                                                 <li><a href="/show_article.php?aid=89181">小鹏GX联手华为乾崑 首发AI数字投影大灯 定义车外交互新范式</a><div class="clear"></div></li>
+
+                                    
+     </ul>
+    <div class="clear"></div>
+    </div>
+    <div class="clear"></div>
+
+        
+
+
+    <div class="clear"></div>
+
+    <div class="guoneinew guoneinew_parts">
+          <div class="zhanhuis_r_title zhanhuis_r_title_parts">
+     <span>零部件采购</span>
+     <a href="/article.php?cid=165">更多</a>
+     <div class="clear"></div>
+    </div>
+    <div class="clear"></div>
+     <ul class="ulzhanhuicommon" style="padding:9px 0px;">
+                       
+                             <li><a href="/show_article.php?aid=89217">湖北润力专用汽车有限公司中标永济市民政局公开招标殡葬事业发展服务中心专用车辆采购项目</a><div class="clear"></div></li>
+
+
+
+                                    
+                             <li><a href="/show_article.php?aid=88917">吉林省森黎经贸有限公司中标朝阳区环卫特种车辆轮胎、润滑油等相关零部件采购项目</a><div class="clear"></div></li>
+
+
+
+                                    
+                             <li><a href="/show_article.php?aid=88840">北京恒福中瑞环保动力设备有限公司中标朝阳区环卫特种车辆上装、发动机、变速箱等相关零部件采购项目</a><div class="clear"></div></li>
+
+
+
+                                    
+                             <li><a href="/show_article.php?aid=88709">北京福天佑商贸有限公司中标上半年汽车配件采购项目</a><div class="clear"></div></li>
+
+
+
+                                    
+                             <li><a href="/show_article.php?aid=88678">宿迁市公路运输有限公司杨庄加油站中标宿迁市宿城区环境卫生综合服务中心车辆油料采购项目</a><div class="clear"></div></li>
+
+
+
+                                    
+                             <li><a href="/show_article.php?aid=88675">衡水市环境卫生管理中心环卫车辆燃油采购项目</a><div class="clear"></div></li>
+
+
+
+                                    
+
+     </ul>
+    <div class="clear"></div>
+    </div>
+
+
+    <div class="clear"></div>
+
+        <div class="clear"></div>
+    <div class="guoneinew guoneinew_parts">
+          <div class="zhanhuis_r_title zhanhuis_r_title_parts">
+     <span>近期零部件展会</span>
+     <a href="/article.php?cid=63&leibie=2">更多</a>
+     <div class="clear"></div>
+    </div>
+    <div class="clear"></div>
+     <ul class="ulzhanhuicommon" style="padding:9px 0px;">
+         
+
+            
+        <li><a href="/show_exhibition.php?aid=4050">中国国际汽车零配件维修检测诊断设备及服务用品展览会 Automechanika Shanghai（法兰克福汽配展）（上海，2026年12月2-5日）</a><div class="clear"></div></li>
+
+        
+        <li><a href="/show_exhibition.php?aid=4032">AUTO TECH China 2026 第十三届广州国际汽车零部件及加工技术、汽车模具展览会（广州，2026年11月27-30日）</a><div class="clear"></div></li>
+
+        
+        <li><a href="/show_exhibition.php?aid=4085">坦桑尼亚汽摩配展（AUTOEXPO Tanzania）（达累斯萨拉姆，2026年11月18-20日​​）</a><div class="clear"></div></li>
+
+        
+        <li><a href="/show_exhibition.php?aid=4084">摩洛哥国际汽配展（MOROCCO AUTOMOTIVE TECHNOLOGIES, MAT）（卡萨布兰卡，2026年11月12-15日​​）</a><div class="clear"></div></li>
+
+        
+        <li><a href="/show_exhibition.php?aid=4043">迪拜国际汽车零部件、汽车技术及服务展览会（Automechanika Dubai）​（迪拜，2026年11月10-12日）</a><div class="clear"></div></li>
+
+        
+        <li><a href="/show_exhibition.php?aid=3983">美国拉斯维加斯改装车展（SEMA Show）（拉斯维加斯，2026 年11月3-5日）</a><div class="clear"></div></li>
+
+        
+        <li><a href="/show_exhibition.php?aid=4071">委内瑞拉国际汽车、摩托车及配件展（AUTOFEST VENEZUELA）（加拉加斯，2026年10月29-31日​​）</a><div class="clear"></div></li>
+
+        
+        <li><a href="/show_exhibition.php?aid=4113">深圳国际薄膜与胶带展（FILM &amp; TAPE EXPO）（深圳，2026年10月27-29日）</a><div class="clear"></div></li>
+
+        
+        <li><a href="/show_exhibition.php?aid=4212">国际汽车供应商博览会（沃尔夫斯堡，2026年10月27-29日）</a><div class="clear"></div></li>
+
+        
+        <li><a href="/show_exhibition.php?aid=4048">2026南非约翰内斯堡国际汽车零部件及售后服务展览会（Automechanika Johannesburg）（约翰内斯堡，2026年10月27-29日）</a><div class="clear"></div></li>
+
+        
+     </ul>
+    <div class="clear"></div>
+    </div>
+    <div class="clear"></div>
+
+
+
+   </div>
+   <div class="clear"></div>
+   <div class="parts_youzhiqiyetuijian">
+    <div class="guoneinew guoneinew_parts">
+          <div class="zhanhuis_r_title zhanhuis_r_title_parts">
+     <span>优质配套企业推荐</span>
+     <!--<a href="/article.php?cid=2&leibie=2">更多&nbsp;</a>-->
+     <div class="clear"></div>
+    </div>
+    <div class="clear"></div>
+			 <link rel="stylesheet" type="text/css" href="/slick/slick.css">
+<link rel="stylesheet" type="text/css" href="/slick/slick-theme.css">
+<link rel="stylesheet" type="text/css" href="/slick/slick-self.css">
+     <ul class="ul_youzhiqiye">
+<section class="regular slider sliders sliders_cg">
+      
+     <div>
+     <li style="margin:auto; float:none;">
+      <a href="/company.php?mid=73180" class="hasdiv" target='_blank'>
+       <span class="bkg" style=" background-image:url(/data/upload/1741851996703_s.jpg)"></span>
+      </a>
+      <p>       <em>配套：其他汽车生产企业</em>
+       <em>企业：北京净油洁宝科技有限公司</em>
+      </p>
+     </li>
+	 </div>
+
+    
+     <div>
+     <li style="margin:auto; float:none;">
+      <a href="/company.php?mid=68176" class="hasdiv" target='_blank'>
+       <span class="bkg" style=" background-image:url(/data/upload/1719291728248.png)"></span>
+      </a>
+      <p>       <em>配套：一汽集团</em>
+       <em>企业：上海映赛电子科技有限公司</em>
+      </p>
+     </li>
+	 </div>
+
+    
+     <div>
+     <li style="margin:auto; float:none;">
+      <a href="/company.php?mid=67362" class="hasdiv" target='_blank'>
+       <span class="bkg" style=" background-image:url(/data/upload/20231228165428_249.jpg)"></span>
+      </a>
+      <p>       <em>配套：上汽大众</em>
+       <em>企业：上海亦虎亦薇信息科技有限公司</em>
+      </p>
+     </li>
+	 </div>
+
+    
+     <div>
+     <li style="margin:auto; float:none;">
+      <a href="/company.php?mid=49966" class="hasdiv" target='_blank'>
+       <span class="bkg" style=" background-image:url(/data/upload/1715738601131_s.png)"></span>
+      </a>
+      <p>       <em>配套：整车配套,北汽集团,北汽福田,重汽集团,东风汽车,发动机主机厂,一汽集团,长城汽车,陕汽集团,上汽通用五菱,郑州日产,其他企业,其他汽车生产企业,华晨宝马,比亚迪</em>
+       <em>企业：福达控股集团有限公司</em>
+      </p>
+     </li>
+	 </div>
+
+    
+     <div>
+     <li style="margin:auto; float:none;">
+      <a href="/company.php?mid=20055" class="hasdiv" target='_blank'>
+       <span class="bkg" style=" background-image:url(/data/upload/20220707110329_810.jpg)"></span>
+      </a>
+      <p>       <em>配套：一汽红旗,东风日产,上汽大众,吉利汽车,广汽丰田,长城汽车,北京现代,北京奔驰,广汽本田,上汽通用,长安汽车,长安福特,长安马自达,东风汽车,上汽集团,一汽集团,其他汽车生产企业</em>
+       <em>企业：台州精超力模塑有限公司</em>
+      </p>
+     </li>
+	 </div>
+
+    
+     <div>
+     <li style="margin:auto; float:none;">
+      <a href="/company.php?mid=19167" class="hasdiv" target='_blank'>
+       <span class="bkg" style=" background-image:url(/data/upload/1657864550740.png)"></span>
+      </a>
+      <p>       <em>配套：一汽集团,东风汽车,北汽福田,陕汽集团,江淮汽车,长城汽车</em>
+       <em>企业：浙江万安科技股份有限公司</em>
+      </p>
+     </li>
+	 </div>
+
+    
+     <div>
+     <li style="margin:auto; float:none;">
+      <a href="/company.php?mid=19166" class="hasdiv" target='_blank'>
+       <span class="bkg" style=" background-image:url(/data/upload/20211118143445_121.gif)"></span>
+      </a>
+      <p>       <em>配套：华晨宝马,威马汽车</em>
+       <em>企业：库卡机器人（上海）有限公司</em>
+      </p>
+     </li>
+	 </div>
+
+    
+     <div>
+     <li style="margin:auto; float:none;">
+      <a href="/company.php?mid=18714" class="hasdiv" target='_blank'>
+       <span class="bkg" style=" background-image:url(/data/upload/20220928141755_640.jpg)"></span>
+      </a>
+      <p>       <em>配套：江淮汽车</em>
+       <em>企业：怀集登云汽配股份有限公司</em>
+      </p>
+     </li>
+	 </div>
+
+    
+     <div>
+     <li style="margin:auto; float:none;">
+      <a href="/company.php?mid=18713" class="hasdiv" target='_blank'>
+       <span class="bkg" style=" background-image:url(/data/upload/20220714112713_107.png)"></span>
+      </a>
+      <p>       <em>配套：一汽-大众,奇瑞汽车,宇通客车,比亚迪</em>
+       <em>企业：湘潭市精正设备制造有限公司</em>
+      </p>
+     </li>
+	 </div>
+
+    
+     <div>
+     <li style="margin:auto; float:none;">
+      <a href="/company.php?mid=18709" class="hasdiv" target='_blank'>
+       <span class="bkg" style=" background-image:url(/data/upload/1658375739144.png)"></span>
+      </a>
+      <p>       <em>配套：一汽集团,发动机主机厂</em>
+       <em>企业：常州远东连杆集团有限公司</em>
+      </p>
+     </li>
+	 </div>
+
+    
+     <div>
+     <li style="margin:auto; float:none;">
+      <a href="/company.php?mid=18707" class="hasdiv" target='_blank'>
+       <span class="bkg" style=" background-image:url(/data/upload/20211031155439_146.gif)"></span>
+      </a>
+      <p>       <em>配套：一汽-大众,神龙汽车,上汽通用,上汽大众,上汽通用五菱,重汽集团,长城汽车</em>
+       <em>企业：华域三电汽车空调有限公司汽车空调厂</em>
+      </p>
+     </li>
+	 </div>
+
+    
+     <div>
+     <li style="margin:auto; float:none;">
+      <a href="/company.php?mid=18700" class="hasdiv" target='_blank'>
+       <span class="bkg" style=" background-image:url(/data/upload/20220714153726_496.png)"></span>
+      </a>
+      <p>       <em>配套：一汽集团,一汽-大众,上汽大众,一汽红旗,北汽福田</em>
+       <em>企业：一汽锻造（吉林）有限公司</em>
+      </p>
+     </li>
+	 </div>
+
+    
+     <div>
+     <li style="margin:auto; float:none;">
+      <a href="/company.php?mid=18698" class="hasdiv" target='_blank'>
+       <span class="bkg" style=" background-image:url(/data/upload/1658371202367.png)"></span>
+      </a>
+      <p>       <em>配套：广汽本田,东风本田,发动机主机厂,其他汽车生产企业</em>
+       <em>企业：日立安斯泰莫汽车动力科技（东莞）有限公司</em>
+      </p>
+     </li>
+	 </div>
+
+    
+     <div>
+     <li style="margin:auto; float:none;">
+      <a href="/company.php?mid=18697" class="hasdiv" target='_blank'>
+       <span class="bkg" style=" background-image:url(/data/upload/1658212741803.png)"></span>
+      </a>
+      <p>       <em>配套：东风汽车,北汽福田,江淮汽车</em>
+       <em>企业：广西玉柴机器股份有限公司</em>
+      </p>
+     </li>
+	 </div>
+
+    
+     <div>
+     <li style="margin:auto; float:none;">
+      <a href="/company.php?mid=18684" class="hasdiv" target='_blank'>
+       <span class="bkg" style=" background-image:url(/data/upload/1658208740614.png)"></span>
+      </a>
+      <p>       <em>配套：东风汽车,东风日产,神龙汽车,北汽福田,陕汽集团,广汽本田,郑州日产</em>
+       <em>企业：东风电子科技股份有限公司</em>
+      </p>
+     </li>
+	 </div>
+
+    
+     <div>
+     <li style="margin:auto; float:none;">
+      <a href="/company.php?mid=18675" class="hasdiv" target='_blank'>
+       <span class="bkg" style=" background-image:url(/data/upload/1657785230627.png)"></span>
+      </a>
+      <p>       <em>配套：东风日产</em>
+       <em>企业：东风汽车有限公司东风日产乘用车公司</em>
+      </p>
+     </li>
+	 </div>
+
+    
+     <div>
+     <li style="margin:auto; float:none;">
+      <a href="/company.php?mid=18674" class="hasdiv" target='_blank'>
+       <span class="bkg" style=" background-image:url(/data/upload/20211031100000_714.jpg)"></span>
+      </a>
+      <p>       <em>配套：长城汽车</em>
+       <em>企业：广东众志检测仪器有限公司</em>
+      </p>
+     </li>
+	 </div>
+
+    
+     <div>
+     <li style="margin:auto; float:none;">
+      <a href="/company.php?mid=18670" class="hasdiv" target='_blank'>
+       <span class="bkg" style=" background-image:url(/data/upload/20211031094437_469.gif)"></span>
+      </a>
+      <p>       <em>配套：北汽福田,长城汽车</em>
+       <em>企业：重庆沃特尔粉末冶金股份有限公司</em>
+      </p>
+     </li>
+	 </div>
+
+    
+     <div>
+     <li style="margin:auto; float:none;">
+      <a href="/company.php?mid=18668" class="hasdiv" target='_blank'>
+       <span class="bkg" style=" background-image:url(/data/upload/20240202150947_141.jpg)"></span>
+      </a>
+      <p>       <em>配套：吉利汽车,一汽-大众,上汽大众,长城汽车,宇通客车,金龙客车,奇瑞汽车,东风本田,广汽集团,江铃汽车,东风柳汽</em>
+       <em>企业：厦门美时美克空气净化有限公司</em>
+      </p>
+     </li>
+	 </div>
+
+    
+     <div>
+     <li style="margin:auto; float:none;">
+      <a href="/company.php?mid=18667" class="hasdiv" target='_blank'>
+       <span class="bkg" style=" background-image:url(/data/upload/1658200224412.png)"></span>
+      </a>
+      <p>       <em>配套：北京现代,北京奔驰,北汽福田</em>
+       <em>企业：北京海纳川汽车部件股份有限公司</em>
+      </p>
+     </li>
+	 </div>
+
+    
+	</section>
+
+      <div class="clear"></div>
+     </ul>
+<script src="/slick/slick.min.js" type="text/javascript" charset="utf-8"></script>
+  <script type="text/javascript">
+      $(".sliders").slick({
+        dots: false,
+		rows:1,
+		autoplay:true,
+        infinite: true,
+		fade:false,
+        slidesToShow: 5,
+        slidesToScroll: 1
+      });
+</script>
+    <div class="clear"></div>
+    </div>
+    <div class="clear"></div>
+   </div>
+   <div class="clear"></div>
+  </div>
+</div>
+<div class="clear"></div>
+
+<div class="foot">
+ <div class="middle">
+  <p class="fp">
+    <a href="/help.php?cid=54">企业推广</a>   |
+    <a href="/help.php?cid=55">广告合作</a>   |
+	<a href="/links.php">友情链接</a>   |
+    <!--<a href="/article.php?cid=55">广告合作</a>   |-->
+    <a href="/help.php?cid=57">关于我们</a>   |
+    <a href="/help.php?cid=58">联系我们</a>   |
+	<a href="/help.php?cid=59">意见反馈</a>   |
+    <!--<a href="/article.php?cid=58">联系我们</a>   |-->
+    <a href="https://www.qcgys.com/map.php">网站地图</a>   |
+    <a href="/help.php?cid=61">加入我们</a>   |
+    <a href="https://exmail.qq.com/login" target="_blank">邮箱登录</a><br />
+    版权所有：中国汽车供应商网    Copyright © 2015-2025 
+    <a target="blank" href="http://beian.miit.gov.cn/">京ICP备09065995号-4</a>
+    <a  target="_blank" href="http://www.beian.gov.cn/portal/registerSystemInfo?recordcode=11010802033937"><img src="/images/gongan.png" style=" display: inline-block; position: relative; top: 3px;"/> 京公网安备11010802033937号</a>
+      </p>
+  <div class="copfoot">
+    <dl class="l" style="width: calc(50% - 42px); padding-left:42px;">
+     <p>
+       E-mail：service@qcgys.com , info@qcgys.com<br />
+       电话：010-88560270、68420981<br />
+       QQ：3553216770 <!--<a target="_blank" rel="nofollow" href="http://wpa.qq.com/msgrd?v=3&amp;uin=3553216770&amp;site=qq&amp;menu=yes"><img class="q1" border="0" src="http://wpa.qq.com/pa?p=2:3553216770:41" alt="点击这里给我发消息" title="点击这里给我发消息"></a>-->
+     </p>
+    </dl>
+    <dl class="r" style="border-left:1px solid #CCC; width: calc(50% - 42px); padding-left:40px;">
+      <li style="width:125px; height:96px; margin-top:10px; float:left">
+	  <!--<img src="/images/qrcode.gif" class="l"  height="74">
+	  手机端-->
+      <p>
+      更多配套相关信息<br />
+      请扫码关注公众号
+      </p>
+	  </li>
+	  <li>
+	  <img src="/images/qrcode1.jpg" class="l"  height="74" style="border:1px solid #7495B4; border-radius:5px;">
+      
+	  </li>
+      <div class="clear"></div>
+    </dl>
+    <div class="clear"></div>
+  </div>
+ </div>
+</div>
+<!--<script>
+$(function(){
+$("a").attr("target","_blank");
+$(".zhanhui_shaixuan a").attr("target","_self");
+});
+</script>-->
+<span class="rili"></span>
+<script type="text/javascript" src="/rili/test/demo.js"></script>
+<script>
+function is_js_delete(str,url){
+layer.confirm(str, function(){
+					window.location.href = url;
+				});
+}
+</script>
+
+
+<script type="text/javascript">
+	$(function(){
+		$(".Tpiaochuan").fadeIn(1000);
+		$(".gb").click(function(){
+			$(".Tpiaochuan").fadeOut(400);
+		});
+		$(".noneyin").click(function(){
+			$(".Tpiaochuan").fadeOut(400);
+		});
+	});
+</script>
+
+<style type="text/css">
+.Tpiaochuan{ width:300px; height:200px;  position:fixed; right:20px;  z-index:9999; top:50%; margin-top:-100px;
+}
+.Tpiaochuan .zixun{  cursor:pointer;}
+.Tpiaochuan .noneyin{ position:fixed; right:20px; top:50%; cursor:pointer; margin-top: -98px;
+    margin-left: 132px;}
+.Tpiaochuan .noneyin{ width:14px; height:14px; }
+.Tpiaochuan .noneyin img{ width:100%}
+</style><div class="Tpiaochuan">
+ <div class="zixun" >
+
+<a onclick="tongji(181,68537)" target="_blank" href="http://oem2026.forum.qcgys.com/luntan.php?zid=79881&amp;cid=187"><img src="/data/upload/20260409181243_881.jpg"   /></a>
+
+
+ </div>
+   <div class="noneyin"><img src="https://www.qcgys.com/images/close.png" alt="关闭"  /></div>
+</div>
+
+
+</body>
+</html>

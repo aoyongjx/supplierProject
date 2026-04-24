@@ -1,0 +1,32 @@
+{
+  "taskId": "177677793145421596",
+  "nodeId": 1649,
+  "nodeName": "动力总成系统",
+  "model": "gpt-5.4",
+  "skill": "Playwright（浏览器自动化）",
+  "status": "done",
+  "progress": 100,
+  "totalUrls": 1,
+  "processedUrls": 1,
+  "totalRows": 1,
+  "successRows": 0,
+  "failedRows": 1,
+  "createdAt": "2026-04-21T13:25:31.454Z",
+  "startedAt": "2026-04-21T13:25:31.455Z",
+  "endedAt": "2026-04-21T13:27:34.329Z",
+  "urls": [
+    "https://www.qcgys.com/category.php?cid=107&pid=208&catid=209"
+  ],
+  "fileName": "supplier_result_1776778054327.csv",
+  "downloadUrl": "/api/crawl-exports/supplier_result_1776778054327.csv",
+  "imported": false,
+  "importSummary": null,
+  "cancelRequested": false,
+  "errorMessage": "",
+  "runLogs": [
+    "2026/4/21 21:25:31 | 任务开始：节点 动力总成系统，URL 1 个",
+    "2026/4/21 21:25:31 | 开始抓取：https://www.qcgys.com/category.php?cid=107&pid=208&catid=209",
+    "2026/4/21 21:27:34 | 未识别到供应商行：https://www.qcgys.com/category.php?cid=107&pid=208&catid=209",
+    "2026/4/21 21:27:34 | CSV 已生成：supplier_result_1776778054327.csv，共 1 条"
+  ]
+}

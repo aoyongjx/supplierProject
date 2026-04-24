@@ -1,0 +1,2 @@
+node_id,node_name,model,skill,source_url,list_page_url,detail_url,company_name,main_products,fit_export,quality_system,region,contact_action,company_intro,company_type,org_code,established_date,registered_capital,employees_count,legal_representative,news_summary,status,error_message
+,,gpt-5.4,Playwright（浏览器自动化）,https://www.qcgys.com/company.php?mid=50722,https://www.qcgys.com/company.php?mid=50722,,,,,,,,,,,,,,,,failed,未识别到供应商详情信息（已尝试 2 个URL变体）

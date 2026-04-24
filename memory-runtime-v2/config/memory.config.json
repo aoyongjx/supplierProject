@@ -1,0 +1,34 @@
+{
+  "version": "2.0.0",
+  "storage": {
+    "base_dir": "E:/workspaceCodeing/memory-runtime-v2/data",
+    "index_file": "E:/workspaceCodeing/memory-runtime-v2/data/index/memory.index.jsonl"
+  },
+  "recall": {
+    "default_top_k": 8,
+    "default_budget_bytes": 12000,
+    "min_score": 1,
+    "layer_priority": {
+      "L4_policy": 400,
+      "L3_semantic": 300,
+      "L2_episode": 200,
+      "L1_session": 100
+    }
+  },
+  "merge": {
+    "title_key_dedupe": true,
+    "similarity_threshold": 0.72,
+    "target_layer": "L3_semantic",
+    "retain_history": true
+  },
+  "save": {
+    "allow_types": ["user", "feedback", "project", "reference"],
+    "deny_sensitive_patterns": ["api_key", "secret", "token", "password", "sk-"],
+    "default_layer_by_type": {
+      "user": "L3_semantic",
+      "feedback": "L3_semantic",
+      "project": "L2_episode",
+      "reference": "L2_episode"
+    }
+  }
+}

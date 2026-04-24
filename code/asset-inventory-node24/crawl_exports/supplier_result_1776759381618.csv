@@ -1,0 +1,2 @@
+node_id,node_name,model,skill,source_url,list_page_url,detail_url,company_name,main_products,fit_export,quality_system,region,contact_action,status,error_message
+1622,新能源汽车制造供应链,gpt-5.4,Playwright（浏览器自动化）,https://www.qcgys.com/category.php?cid=107&pid=130&catid=131,https://www.qcgys.com/category.php?cid=107&pid=130&catid=131,,,,,,,,failed,未识别到供应商列表行
