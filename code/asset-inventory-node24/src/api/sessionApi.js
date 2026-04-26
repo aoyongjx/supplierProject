@@ -5,11 +5,12 @@ function buildAuthHeaders() {
   return token ? { Authorization: `Bearer ${token}` } : {}
 }
 
-async function parseJson(response) {
+async function parseJson(response, options = {}) {
+  const { redirectOn401 = true } = options
   const payload = await response.json().catch(() => ({}))
   if (response.status === 401) {
     clearTokens()
-    if (window.location.pathname !== '/login') {
+    if (redirectOn401 && window.location.pathname !== '/login') {
       window.location.replace('/login')
     }
     throw new Error(payload.message || '登录已失效，请重新登录')
@@ -24,7 +25,7 @@ export async function fetchRecentSessions(limit = 10) {
   const response = await fetch(`/api/sessions/recent?limit=${encodeURIComponent(String(limit))}`, {
     headers: buildAuthHeaders(),
   })
-  const result = await parseJson(response)
+  const result = await parseJson(response, { redirectOn401: false })
   return result.data ?? []
 }
 

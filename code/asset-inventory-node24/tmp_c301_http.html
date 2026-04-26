@@ -1,0 +1,46 @@
+        <script>
+            var seqid = "ecfda5e03a31a0420da226c15ae7e3ad10b7f613965171fb199987bb89122c27d51709b02a1bb20d236480ce8da39bfa8bf43ca6e409467d4e533dab1b5719da326135703d6ec48ea6ba27f39cf4b1ee742e4c0f2c843972__captcha"
+        </script>
+        <script src="https://ssl.captcha.qq.com/TCaptcha.js"></script>
+        <script>
+            var captcha = new TencentCaptcha('2017163193', function(res){
+                var captchaResult = []
+                captchaResult.push(res.ret)
+
+                if(res.ret === 0){
+                    captchaResult.push(res.ticket)
+                    captchaResult.push(res.randstr)
+                    captchaResult.push(seqid)
+                }
+
+                var content = captchaResult.join('\n')
+                loadXMLDoc("/WafCaptcha", content)
+            })
+
+            function loadXMLDoc(servPath, content) {
+                var xmlhttp = null;
+                if (window.XMLHttpRequest) {
+                    xmlhttp = new XMLHttpRequest();
+                }
+                else if (window.ActiveXObject) {
+                    xmlhttp = new ActiveXObject("Microsoft.XMLHTTP");
+                }
+
+                if (xmlhttp != null) {
+                    xmlhttp.open("POST", servPath, true);
+                    xmlhttp.send(content);
+                    xmlhttp.onreadystatechange = function() {
+                        if (xmlhttp.readyState == 4) {
+                            if (xmlhttp.status == 200) {
+                                window.location.reload(true)
+                            }
+                        }
+                    }
+                }
+            }
+
+            captcha.show()
+
+        </script>
+    
+

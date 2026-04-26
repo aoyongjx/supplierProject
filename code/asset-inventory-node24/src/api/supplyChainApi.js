@@ -59,11 +59,12 @@ async function requestTaskWithDual(path, init = {}) {
   return fetch(`${directApiBase}${path}`, init)
 }
 
-async function parseJson(response) {
+async function parseJson(response, options = {}) {
+  const { redirectOn401 = true } = options
   const payload = await response.json().catch(() => ({}))
   if (response.status === 401) {
     clearTokens()
-    if (window.location.pathname !== '/login') {
+    if (redirectOn401 && window.location.pathname !== '/login') {
       window.location.replace('/login')
     }
     throw new Error(payload.message || '登录已失效，请重新登录')
@@ -112,7 +113,7 @@ export async function fetchSupplyChainRecordDetail(id) {
   const response = await requestWithFallback(`/api/supply-chain/records/${encodeURIComponent(String(id))}`, {
     headers: buildAuthHeaders(),
   })
-  const result = await parseJson(response)
+  const result = await parseJson(response, { redirectOn401: false })
   return result.data
 }
 
@@ -170,7 +171,7 @@ export async function fetchSupplyChainTree(params = {}) {
   const response = await requestWithFallback(`/api/supply-chain/tree?${query.toString()}`, {
     headers: buildAuthHeaders(),
   })
-  const result = await parseJson(response)
+  const result = await parseJson(response, { redirectOn401: false })
   return result.data
 }
 
@@ -184,6 +185,40 @@ export async function fetchCrawlSkills() {
   const response = await requestWithFallback('/api/crawl/skills', { headers: buildAuthHeaders() })
   const result = await parseJson(response)
   return Array.isArray(result.data) ? result.data : []
+}
+
+export async function precheckCrawlEnvironment(options = {}) {
+  const query = new URLSearchParams()
+  if (options?.skill) query.set('skill', String(options.skill))
+  const response = await requestWithFallback(`/api/crawl/precheck?${query.toString()}`, {
+    headers: buildAuthHeaders(),
+  })
+  const payload = await response.json().catch(() => ({}))
+  if (response.status === 404) {
+    return {
+      ready: false,
+      checks: [
+        { name: 'precheck-endpoint', ready: false, message: '后端未提供 /api/crawl/precheck（通常是后端未重启到最新代码）' },
+      ],
+      steps: [
+        '重启后端服务（Node）到最新版本。',
+        '确认 web-access 服务已启动，并保持可连接。',
+        '使用 Chrome 打开目标网页并完成加载后，点击“检测环境”。',
+      ],
+      hint: '检测接口不存在，当前无法自动判断环境。',
+    }
+  }
+  if (response.status === 401) {
+    clearTokens()
+    if (window.location.pathname !== '/login') {
+      window.location.replace('/login')
+    }
+    throw new Error(payload.message || '登录已失效，请重新登录')
+  }
+  if (!response.ok) {
+    throw new Error(payload.message || `请求失败（HTTP ${response.status}）`)
+  }
+  return payload.data || { ready: true, checks: [] }
 }
 
 export async function createSupplierCrawlTask(nodeId, payload) {
@@ -207,14 +242,19 @@ export async function fetchSupplierCrawlTask(taskId) {
   return result.data
 }
 
-export async function importSupplierCrawlTask(taskId) {
+export async function importSupplierCrawlTask(taskId, options = {}) {
+  const includeProfile = options?.includeProfile === true
+  const profileSource = typeof options?.profileSource === 'string' ? options.profileSource : ''
   const response = await requestTaskWithDual(`/api/supplier-crawl-tasks/${encodeURIComponent(String(taskId))}/import`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       ...buildAuthHeaders(),
     },
-    body: JSON.stringify({ includeProfile: false }),
+    body: JSON.stringify({
+      includeProfile,
+      profileSource,
+    }),
   })
   const result = await parseJson(response)
   return result.data

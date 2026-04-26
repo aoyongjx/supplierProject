@@ -11,6 +11,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { executeCrawlNow } from '../api/crawlExecuteApi'
 import { createSession, fetchSessionDetail, sendSessionMessage } from '../api/sessionApi'
+import { CRAWL_SKILL_OPTIONS } from '../constants/crawlSkills'
 
 const { Text } = Typography
 
@@ -21,13 +22,7 @@ const PROMPT_TEMPLATE = `Prompt：
 
 const modelOptions = ['gpt-5.4', 'gpt-5.2-codex', 'gpt-5.1-codex-max', 'gpt-5.4-mini', 'gpt-5.3-codex', 'gpt-5.2', 'gpt-5.1-codex-mini']
 const taskOptions = [{ key: 'internet', label: '互联网数据获取' }]
-const skillOptions = [
-  { key: 'crawl4ai', label: 'Crawl4AI' },
-  { key: 'openclaw-grok-search', label: 'openclaw-grok-search' },
-  { key: 'vercel:agent-browser', label: 'vercel:agent-browser' },
-  { key: 'Playwright', label: 'Playwright（浏览器自动化）' },
-  { key: 'playwright-script', label: 'playwright-script' },
-]
+const skillOptions = CRAWL_SKILL_OPTIONS
 const directCrawlSkillLabels = new Set(skillOptions.map((item) => item.label))
 
 function toEntriesFromMessages(messages = []) {

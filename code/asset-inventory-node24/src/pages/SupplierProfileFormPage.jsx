@@ -1,5 +1,5 @@
-import { ArrowLeftOutlined, DeleteOutlined, PlusOutlined, SaveOutlined } from '@ant-design/icons'
-import { Button, Card, Form, Input, Select, Space, Table, Tabs, TreeSelect, Typography, message } from 'antd'
+import { ArrowLeftOutlined, MinusCircleOutlined, PlusOutlined, SaveOutlined } from '@ant-design/icons'
+import { Button, Card, Col, Form, Input, Row, Select, Space, Tabs, Tag, Typography, message } from 'antd'
 import { useEffect, useMemo, useState } from 'react'
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import {
@@ -11,60 +11,105 @@ import {
 
 const { Title, Text } = Typography
 
-function buildSupplierTabUrl(urlText, route) {
-  try {
-    const parsed = new URL(String(urlText || '').trim())
-    const mid = String(parsed.searchParams.get('mid') || '').trim()
-    if (!mid || !/company\.php$/i.test(parsed.pathname || '')) return ''
-    parsed.pathname = `/${route}`
-    parsed.search = ''
-    parsed.searchParams.set('mid', mid)
-    if (route === 'company_news.php') parsed.searchParams.set('catid', '4')
-    return parsed.toString()
-  } catch {
-    return ''
-  }
+const BUSINESS_FIELDS = ['人员规模', '研发人数', '年销售额', '体系认证', '公司网址', '出口市场']
+const INDUSTRIAL_FIELDS = [
+  '法定代表人',
+  '注册资本',
+  '经营状态',
+  '实缴资本',
+  '统一社会信用代码',
+  '成立时间',
+  '注册号',
+  '纳税人识别号',
+  '公司性质',
+  '组织机构代码',
+  '核准日期',
+  '所属行业',
+  '所属地',
+  '登记机关',
+  '曾用名',
+  '英文名',
+  '人员规模',
+  '营业期限',
+  '参保人数',
+  '注册地址',
+]
+
+function normalizeKvFields(input = {}, fields = []) {
+  const data = input && typeof input === 'object' ? input : {}
+  return fields.reduce((acc, key) => {
+    acc[key] = data[key] || ''
+    return acc
+  }, {})
 }
 
-function makeId(prefix) {
-  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+function makeEmptyCustomerItem() {
+  return { productName: '', oemNames: [] }
 }
 
-function makeEmptyContact() {
+function makeEmptyProductCase() {
+  return { productName: '', vehicleModel: '', customerName: '', description: '' }
+}
+
+function makeEmptyFinancing() {
+  return { financingDate: '', round: '', amount: '', investors: '' }
+}
+
+function makeEmptyPatent() {
   return {
-    id: makeId('c'),
-    contactPerson: '',
-    contactTitle: '',
-    phone: '',
-    mobile: '',
-    email: '',
+    patentType: '',
+    publicationNo: '',
+    publicationDate: '',
+    title: '',
+    applicationNo: '',
+    applicationDate: '',
+    inventors: '',
+    assignee: '',
+    agency: '',
+    agent: '',
+    legalStatus: '',
+    summary: '',
   }
 }
 
-function makeEmptyProduct() {
+function makeEmptyAdminLicense() {
+  return { documentNo: '', authority: '', decisionDate: '', content: '', status: '', validUntil: '', category: '', region: '' }
+}
+
+function makeEmptyTradeCredit() {
   return {
-    id: makeId('p'),
-    name: '',
-    model: '',
-    application: '',
-    material: '',
-    advantages: '',
-    appearance: '',
-    precision: '',
-    scenarios: '',
-    imageUrl: '',
-    parameters: '',
+    customsOffice: '',
+    businessType: '',
+    registrationDate: '',
+    registrationCode: '',
+    administrativeRegion: '',
+    economicRegion: '',
+    creditLevel: '',
+    annualReportStatus: '',
+    validityPeriod: '',
   }
+}
+
+function makeEmptyCourtNotice() {
+  return { caseNo: '', hearingDate: '', cause: '', plaintiff: '', defendant: '', court: '', tribunal: '', region: '' }
+}
+
+function makeEmptyProductionBase() {
+  return { baseName: '', region: '', postalCode: '', address: '', phone: '', mainProducts: '' }
 }
 
 function makeEmptyNews() {
-  return {
-    id: makeId('n'),
-    title: '',
-    source: '',
-    publishDate: '',
-    content: '',
-  }
+  return { title: '', source: '', publishDate: '', content: '' }
+}
+
+function ListCard({ title, extra, children }) {
+  return (
+    <Card size="small" title={title} extra={extra}>
+      <Space direction="vertical" size={12} style={{ width: '100%' }}>
+        {children}
+      </Space>
+    </Card>
+  )
 }
 
 function SupplierProfileFormPage() {
@@ -73,12 +118,7 @@ function SupplierProfileFormPage() {
   const { id } = useParams()
   const [form] = Form.useForm()
   const [loading, setLoading] = useState(false)
-  const [products, setProducts] = useState([])
-  const [contacts, setContacts] = useState([])
-  const [newsItems, setNewsItems] = useState([])
   const [oemOptions, setOemOptions] = useState([])
-  const [countryOptions, setCountryOptions] = useState([])
-  const [certificationOptions, setCertificationOptions] = useState([])
   const [sourceOptions, setSourceOptions] = useState([])
   const [supplyChainTree, setSupplyChainTree] = useState([])
 
@@ -88,81 +128,50 @@ function SupplierProfileFormPage() {
   }, [id])
   const isViewMode = Boolean(editId) && !location.pathname.endsWith('/edit')
   const pageTitle = isViewMode ? '查看供应商档案' : (editId ? '修改供应商档案' : '新增供应商档案')
-  const websiteValue = Form.useWatch('website', form)
-  const introSourceUrl = useMemo(() => buildSupplierTabUrl(websiteValue, 'company_intro.php'), [websiteValue])
-  const productSourceUrl = useMemo(() => buildSupplierTabUrl(websiteValue, 'company_goods.php'), [websiteValue])
-  const fitSourceUrl = useMemo(() => buildSupplierTabUrl(websiteValue, 'company_goods_parts.php'), [websiteValue])
-  const exportSourceUrl = useMemo(() => buildSupplierTabUrl(websiteValue, 'company_goods_export.php'), [websiteValue])
-  const certSourceUrl = useMemo(() => buildSupplierTabUrl(websiteValue, 'company_list.php'), [websiteValue])
-  const newsSourceUrl = useMemo(() => buildSupplierTabUrl(websiteValue, 'company_news.php'), [websiteValue])
-  const contactSourceUrl = useMemo(() => buildSupplierTabUrl(websiteValue, 'company_contact.php'), [websiteValue])
-
-  const renderSourceLink = (url) => (url ? (
-    <Text type="secondary">
-      来源链接：
-      <a href={url} target="_blank" rel="noreferrer">{url}</a>
-    </Text>
-  ) : null)
+  const isGasView = location.pathname.startsWith('/gas-supplier-profiles') || location.pathname.startsWith('/gas-suppliers')
+  const basePath = isGasView ? '/gas-suppliers' : '/supplier-profiles'
+  const profileView = isGasView ? 'gas' : 'gys'
 
   useEffect(() => {
-    fetchSupplierProfileOptions()
+    fetchSupplierProfileOptions({ view: profileView })
       .then((data) => {
         setOemOptions(Array.isArray(data?.oemOptions) ? data.oemOptions : [])
-        setCountryOptions(Array.isArray(data?.countryOptions) ? data.countryOptions : [])
-        setCertificationOptions(Array.isArray(data?.certificationOptions) ? data.certificationOptions : [])
         setSourceOptions(Array.isArray(data?.sourceOptions) ? data.sourceOptions : [])
         setSupplyChainTree(Array.isArray(data?.supplyChainTree) ? data.supplyChainTree : [])
       })
       .catch(() => {
         setOemOptions([])
-        setCountryOptions([])
-        setCertificationOptions([])
         setSourceOptions([])
         setSupplyChainTree([])
       })
-  }, [])
-
-  const nodeNameById = useMemo(() => {
-    const map = new Map()
-    const walk = (nodes = []) => {
-      for (const node of nodes) {
-        const value = Number(node?.value || node?.id)
-        if (Number.isInteger(value) && value > 0) {
-          map.set(value, String(node?.title || '').trim())
-        }
-        if (Array.isArray(node?.children) && node.children.length > 0) {
-          walk(node.children)
-        }
-      }
-    }
-    walk(supplyChainTree)
-    return map
-  }, [supplyChainTree])
+  }, [profileView])
 
   useEffect(() => {
     if (!editId) {
-      setContacts([makeEmptyContact()])
-      setProducts([])
-      setNewsItems([])
       form.setFieldsValue({
-        sourceSupplierId: undefined,
         relatedNodeIds: [],
-        fitOems: [],
-        exportSituation: '',
-        certificates: '',
-        exportCountries: [],
-        certificateItems: [],
+        companyTags: [],
+        mainProductNames: [],
+        businessInfo: normalizeKvFields({}, BUSINESS_FIELDS),
+        industrialCommercialInfo: normalizeKvFields({}, INDUSTRIAL_FIELDS),
+        customerItems: [makeEmptyCustomerItem()],
+        productCaseItems: [],
+        financingItems: [],
+        patentItems: [],
+        adminLicenseItems: [],
+        tradeCreditItems: [],
+        courtNoticeItems: [],
+        productionBaseItems: [],
+        newsItems: [],
       })
       return
     }
     setLoading(true)
-    fetchSupplierProfileDetail(editId)
+    fetchSupplierProfileDetail(editId, { view: profileView })
       .then((detail) => {
         form.setFieldsValue({
-          sourceSupplierId: undefined,
-          relatedNodeIds: Array.isArray(detail.relatedNodeIds)
-            ? detail.relatedNodeIds.map((item) => Number(item)).filter((item) => Number.isInteger(item) && item > 0)
-            : [],
+          relatedNodeIds: Array.isArray(detail.relatedNodeIds) ? detail.relatedNodeIds : [],
+          profileSource: detail.profileSource || profileView,
           companyName: detail.companyName || '',
           companyNameEn: detail.companyNameEn || '',
           legalRepresentative: detail.legalRepresentative || '',
@@ -174,82 +183,79 @@ function SupplierProfileFormPage() {
           website: detail.website || '',
           postalCode: detail.postalCode || '',
           address: detail.address || '',
+          companyTags: Array.isArray(detail.companyTags) ? detail.companyTags : [],
           companyIntro: detail.companyIntro || '',
-          fitSituation: detail.fitSituation || '',
-          exportSituation: detail.exportSituation || '',
-          certificates: detail.certificates || '',
-          fitOems: Array.isArray(detail.fitOems) ? detail.fitOems : [],
-          exportCountries: Array.isArray(detail.exportCountries) ? detail.exportCountries : [],
-          certificateItems: Array.isArray(detail.certificateItems) ? detail.certificateItems : [],
+          businessInfo: normalizeKvFields(detail.businessInfo, BUSINESS_FIELDS),
+          industrialCommercialInfo: normalizeKvFields(detail.industrialCommercialInfo, INDUSTRIAL_FIELDS),
+          mainProductNames: Array.isArray(detail.mainProductNames) ? detail.mainProductNames : [],
+          customerItems: Array.isArray(detail.customerItems) && detail.customerItems.length > 0 ? detail.customerItems : [makeEmptyCustomerItem()],
+          productCaseItems: Array.isArray(detail.productCaseItems) ? detail.productCaseItems : [],
+          financingItems: Array.isArray(detail.financingItems) ? detail.financingItems : [],
+          patentItems: Array.isArray(detail.patentItems) ? detail.patentItems : [],
+          adminLicenseItems: Array.isArray(detail.adminLicenseItems) ? detail.adminLicenseItems : [],
+          tradeCreditItems: Array.isArray(detail.tradeCreditItems) ? detail.tradeCreditItems : [],
+          courtNoticeItems: Array.isArray(detail.courtNoticeItems) ? detail.courtNoticeItems : [],
+          productionBaseItems: Array.isArray(detail.productionBaseItems) ? detail.productionBaseItems : [],
+          newsItems: Array.isArray(detail.newsItems) ? detail.newsItems : [],
         })
-        const nextContacts = Array.isArray(detail.contacts) && detail.contacts.length > 0
-          ? detail.contacts
-          : (
-            detail.contactPerson || detail.contactTitle || detail.phone || detail.mobile || detail.email
-              ? [{
-                id: makeId('c'),
-                contactPerson: detail.contactPerson || '',
-                contactTitle: detail.contactTitle || '',
-                phone: detail.phone || '',
-                mobile: detail.mobile || '',
-                email: detail.email || '',
-              }]
-              : [makeEmptyContact()]
-          )
-        setContacts(nextContacts)
-        setProducts(Array.isArray(detail.products) ? detail.products : [])
-        setNewsItems(Array.isArray(detail.newsItems) ? detail.newsItems : [])
       })
       .catch((error) => message.error(error.message || '加载失败'))
       .finally(() => setLoading(false))
-  }, [editId, form])
+  }, [editId, form, profileView])
 
-  const updateListField = (setState, rowId, key, value) => {
-    setState((prev) => prev.map((item) => (item.id === rowId ? { ...item, [key]: value } : item)))
-  }
-
-  const buildInputColumn = (title, dataIndex, setState, width = 160) => ({
-    title,
-    dataIndex,
-    width,
-    render: (value, record) => (
-      <Input
-        value={value}
-        disabled={isViewMode}
-        onChange={(event) => updateListField(setState, record.id, dataIndex, event.target.value)}
-      />
-    ),
-  })
-
-  const removeRow = (setState, rowId, minOne = false, factory = null) => {
-    setState((prev) => {
-      const next = prev.filter((item) => item.id !== rowId)
-      if (minOne && next.length === 0 && typeof factory === 'function') {
-        return [factory()]
+  const nodeNameById = useMemo(() => {
+    const map = new Map()
+    const walk = (nodes = []) => {
+      for (const node of nodes) {
+        const value = Number(node?.value || node?.id)
+        if (Number.isInteger(value) && value > 0) map.set(value, String(node?.title || '').trim())
+        if (Array.isArray(node?.children) && node.children.length > 0) walk(node.children)
       }
-      return next
+    }
+    walk(supplyChainTree)
+    return map
+  }, [supplyChainTree])
+
+  const handleSourceChange = (sourceId) => {
+    const source = sourceOptions.find((item) => Number(item.id) === Number(sourceId))
+    if (!source) return
+    const currentIds = Array.isArray(form.getFieldValue('relatedNodeIds')) ? form.getFieldValue('relatedNodeIds') : []
+    const sourceNodeId = Number(source.nodeId)
+    const nextIds = [...new Set([
+      ...currentIds.map((item) => Number(item)).filter((item) => Number.isInteger(item) && item > 0),
+      ...(Number.isInteger(sourceNodeId) && sourceNodeId > 0 ? [sourceNodeId] : []),
+    ])]
+    const nextBusinessInfo = {
+      ...normalizeKvFields(form.getFieldValue('businessInfo'), BUSINESS_FIELDS),
+      公司网址: form.getFieldValue(['businessInfo', '公司网址']) || source.detailUrl || source.listPageUrl || '',
+    }
+    form.setFieldsValue({
+      relatedNodeIds: nextIds,
+      companyName: form.getFieldValue('companyName') || source.companyName || '',
+      website: form.getFieldValue('website') || source.detailUrl || source.listPageUrl || '',
+      mainProductNames: form.getFieldValue('mainProductNames')?.length ? form.getFieldValue('mainProductNames') : (
+        source.mainProducts ? source.mainProducts.split(/[，,；;]/g).map((item) => item.trim()).filter(Boolean) : []
+      ),
+      businessInfo: nextBusinessInfo,
     })
   }
 
   const handleSubmit = async () => {
     if (isViewMode) {
-      navigate('/supplier-profiles')
+      navigate(basePath)
       return
     }
     try {
       const values = await form.validateFields()
       setLoading(true)
+      const relatedNodeIds = Array.isArray(values.relatedNodeIds)
+        ? values.relatedNodeIds.map((item) => Number(item)).filter((item) => Number.isInteger(item) && item > 0)
+        : []
+      const relatedNodeNames = relatedNodeIds.map((item) => nodeNameById.get(item) || '').filter(Boolean)
       const payload = {
-        relatedNodeIds: Array.isArray(values.relatedNodeIds)
-          ? values.relatedNodeIds.map((item) => Number(item)).filter((item) => Number.isInteger(item) && item > 0)
-          : [],
-        relatedNodeNames: Array.isArray(values.relatedNodeIds)
-          ? values.relatedNodeIds
-            .map((item) => Number(item))
-            .filter((item) => Number.isInteger(item) && item > 0)
-            .map((item) => nodeNameById.get(item) || '')
-            .filter(Boolean)
-          : [],
+        profileSource: profileView,
+        relatedNodeIds,
+        relatedNodeNames,
         companyName: values.companyName || '',
         companyNameEn: values.companyNameEn || '',
         legalRepresentative: values.legalRepresentative || '',
@@ -261,376 +267,421 @@ function SupplierProfileFormPage() {
         website: values.website || '',
         postalCode: values.postalCode || '',
         address: values.address || '',
+        companyTags: Array.isArray(values.companyTags) ? values.companyTags : [],
         companyIntro: values.companyIntro || '',
-        fitSituation: values.fitSituation || '',
-        exportSituation: values.exportSituation || '',
-        certificates: values.certificates || '',
-        contacts: contacts,
-        products: products,
-        fitOems: Array.isArray(values.fitOems) ? values.fitOems : [],
-        productFitDetails: [],
-        exportCountries: Array.isArray(values.exportCountries) ? values.exportCountries : [],
-        certificateItems: Array.isArray(values.certificateItems) ? values.certificateItems : [],
-        newsItems: newsItems,
+        businessInfo: values.businessInfo || {},
+        industrialCommercialInfo: values.industrialCommercialInfo || {},
+        mainProductNames: Array.isArray(values.mainProductNames) ? values.mainProductNames : [],
+        customerItems: Array.isArray(values.customerItems) ? values.customerItems : [],
+        productCaseItems: Array.isArray(values.productCaseItems) ? values.productCaseItems : [],
+        financingItems: Array.isArray(values.financingItems) ? values.financingItems : [],
+        patentItems: Array.isArray(values.patentItems) ? values.patentItems : [],
+        adminLicenseItems: Array.isArray(values.adminLicenseItems) ? values.adminLicenseItems : [],
+        tradeCreditItems: Array.isArray(values.tradeCreditItems) ? values.tradeCreditItems : [],
+        courtNoticeItems: Array.isArray(values.courtNoticeItems) ? values.courtNoticeItems : [],
+        productionBaseItems: Array.isArray(values.productionBaseItems) ? values.productionBaseItems : [],
+        newsItems: Array.isArray(values.newsItems) ? values.newsItems : [],
       }
       if (editId) {
-        await updateSupplierProfile(editId, payload)
+        await updateSupplierProfile(editId, payload, { view: profileView })
         message.success('修改成功')
       } else {
-        await createSupplierProfile(payload)
+        await createSupplierProfile(payload, { view: profileView })
         message.success('新增成功')
       }
-      navigate('/supplier-profiles')
+      navigate(basePath)
     } catch (error) {
-      if (!error?.errorFields) {
-        message.error(error.message || '提交失败')
-      }
+      if (!error?.errorFields) message.error(error.message || '提交失败')
     } finally {
       setLoading(false)
     }
   }
 
-  const handleSourceChange = (sourceId) => {
-    const source = sourceOptions.find((item) => Number(item.id) === Number(sourceId))
-    if (!source) {
-      form.setFieldsValue({ relatedNodeIds: [] })
-      return
-    }
-    const currentIds = Array.isArray(form.getFieldValue('relatedNodeIds')) ? form.getFieldValue('relatedNodeIds') : []
-    const sourceNodeId = Number(source.nodeId)
-    const nextIds = [...new Set([
-      ...currentIds.map((item) => Number(item)).filter((item) => Number.isInteger(item) && item > 0),
-      ...(Number.isInteger(sourceNodeId) && sourceNodeId > 0 ? [sourceNodeId] : []),
-    ])]
-    const nextValues = {
-      sourceSupplierId: source.id,
-      relatedNodeIds: nextIds,
-    }
-    if (!form.getFieldValue('companyName')) nextValues.companyName = source.companyName || ''
-    if (!form.getFieldValue('fitSituation')) nextValues.fitSituation = source.fitExport || ''
-    if (!form.getFieldValue('website')) nextValues.website = source.detailUrl || source.listPageUrl || ''
-    form.setFieldsValue(nextValues)
-  }
-
-  const contactColumns = [
-    buildInputColumn('联系人', 'contactPerson', setContacts, 150),
-    buildInputColumn('职务', 'contactTitle', setContacts, 130),
-    buildInputColumn('电话', 'phone', setContacts, 150),
-    buildInputColumn('手机', 'mobile', setContacts, 150),
-    buildInputColumn('邮箱', 'email', setContacts, 220),
-    {
-      title: '操作',
-      key: 'actions',
-      width: 90,
-      render: (_, record) => (
-        <Button
-          danger
-          type="link"
-          icon={<DeleteOutlined />}
-          disabled={isViewMode}
-          onClick={() => removeRow(setContacts, record.id, true, makeEmptyContact)}
-        >
-          删除
-        </Button>
-      ),
-    },
-  ]
-
-  const productColumns = [
-    buildInputColumn('产品名称', 'name', setProducts, 160),
-    buildInputColumn('型号', 'model', setProducts, 120),
-    buildInputColumn('应用场景', 'application', setProducts, 160),
-    buildInputColumn('外观', 'appearance', setProducts, 180),
-    buildInputColumn('精度指标', 'precision', setProducts, 180),
-    buildInputColumn('适用场景', 'scenarios', setProducts, 180),
-    buildInputColumn('材质', 'material', setProducts, 140),
-    buildInputColumn('核心优势', 'advantages', setProducts, 180),
-    buildInputColumn('产品参数', 'parameters', setProducts, 220),
-    buildInputColumn('图片URL', 'imageUrl', setProducts, 220),
-    {
-      title: '操作',
-      key: 'actions',
-      width: 90,
-      fixed: 'right',
-      render: (_, record) => (
-        <Button danger type="link" icon={<DeleteOutlined />} disabled={isViewMode} onClick={() => removeRow(setProducts, record.id)}>
-          删除
-        </Button>
-      ),
-    },
-  ]
-
-  const newsColumns = [
-    buildInputColumn('标题', 'title', setNewsItems, 260),
-    buildInputColumn('来源', 'source', setNewsItems, 180),
-    buildInputColumn('发布时间', 'publishDate', setNewsItems, 140),
-    {
-      title: '内容',
-      dataIndex: 'content',
-      width: 420,
-      render: (value, record) => (
-        <Input.TextArea
-          value={value}
-          disabled={isViewMode}
-          autoSize={{ minRows: 2, maxRows: 5 }}
-          onChange={(event) => updateListField(setNewsItems, record.id, 'content', event.target.value)}
-        />
-      ),
-    },
-    {
-      title: '操作',
-      key: 'actions',
-      width: 90,
-      render: (_, record) => (
-        <Button danger type="link" icon={<DeleteOutlined />} disabled={isViewMode} onClick={() => removeRow(setNewsItems, record.id)}>
-          删除
-        </Button>
-      ),
-    },
-  ]
+  const disabled = isViewMode || loading
 
   const tabItems = [
     {
-      key: 'basic',
-      label: '基本信息',
+      key: 'intro',
+      label: 'Tab1 公司简介',
       children: (
         <Space direction="vertical" size={16} style={{ width: '100%' }}>
-          <Card size="small" title="基本信息">
-            <Space size={12} wrap style={{ width: '100%' }}>
-              <Form.Item style={{ width: 420, marginBottom: 10 }} name="sourceSupplierId" label="关联供应商来源记录">
-                <Select
-                  disabled={isViewMode}
-                  showSearch
-                  allowClear
-                  optionFilterProp="label"
-                  placeholder="请选择供应商信息来源中的记录"
-                  options={sourceOptions.map((item) => ({
-                    value: item.id,
-                    label: `${item.companyName || '未命名供应商'} ｜ ${item.nodeName || '未绑定节点'}`,
-                  }))}
-                  onChange={handleSourceChange}
-                />
-              </Form.Item>
-              <Form.Item style={{ width: 480, marginBottom: 10 }} name="relatedNodeIds" label="供应链节点名称">
-                <TreeSelect
-                  disabled={isViewMode}
-                  treeData={supplyChainTree}
-                  treeCheckable
-                  multiple
-                  showSearch
-                  placeholder="请选择供应链节点（可多选）"
-                  allowClear
-                  style={{ width: '100%' }}
-                  onChange={(next) => {
-                    const ids = Array.isArray(next)
-                      ? next.map((item) => Number(item)).filter((item) => Number.isInteger(item) && item > 0)
-                      : []
-                    form.setFieldsValue({ relatedNodeIds: ids })
-                  }}
-                />
-              </Form.Item>
-              <Form.Item style={{ width: 320, marginBottom: 10 }} name="companyName" label="公司名称" rules={[{ required: true, message: '请输入公司名称' }]}>
-                <Input disabled={isViewMode} />
-              </Form.Item>
-              <Form.Item style={{ width: 320, marginBottom: 10 }} name="companyNameEn" label="英文名称">
-                <Input disabled={isViewMode} />
-              </Form.Item>
-              <Form.Item style={{ width: 220, marginBottom: 10 }} name="legalRepresentative" label="法人代表">
-                <Input disabled={isViewMode} />
-              </Form.Item>
-              <Form.Item style={{ width: 220, marginBottom: 10 }} name="registeredCapital" label="注册资本">
-                <Input disabled={isViewMode} />
-              </Form.Item>
-              <Form.Item style={{ width: 220, marginBottom: 10 }} name="orgCode" label="机构代码">
-                <Input disabled={isViewMode} />
-              </Form.Item>
-              <Form.Item style={{ width: 220, marginBottom: 10 }} name="establishedDate" label="成立日期">
-                <Input disabled={isViewMode} />
-              </Form.Item>
-              <Form.Item style={{ width: 220, marginBottom: 10 }} name="employeesCount" label="人数">
-                <Input disabled={isViewMode} />
-              </Form.Item>
-              <Form.Item style={{ width: 220, marginBottom: 10 }} name="companyType" label="企业类型">
-                <Input disabled={isViewMode} />
-              </Form.Item>
-              <Form.Item style={{ width: 160, marginBottom: 10 }} name="postalCode" label="邮编">
-                <Input disabled={isViewMode} />
-              </Form.Item>
+          <ListCard title="顶部标签">
+            <Form.Item name="companyTags" style={{ marginBottom: 0 }}>
+              <Select
+                mode="tags"
+                disabled={disabled}
+                placeholder="输入如 A股 / 高新技术企业 / 民营企业"
+                tokenSeparators={[',', '，', ';', '；']}
+              />
+            </Form.Item>
+          </ListCard>
+          <ListCard title="公司简介">
+            <Form.Item name="companyIntro" style={{ marginBottom: 0 }}>
+              <Input.TextArea disabled={disabled} rows={12} placeholder="公司简介" />
+            </Form.Item>
+          </ListCard>
+        </Space>
+      ),
+    },
+    {
+      key: 'business',
+      label: 'Tab2 业务信息',
+      children: (
+        <Space direction="vertical" size={16} style={{ width: '100%' }}>
+          <ListCard title="业务字段">
+            <Row gutter={12}>
+              {BUSINESS_FIELDS.map((field) => (
+                <Col span={12} key={field}>
+                  <Form.Item name={['businessInfo', field]} label={field}>
+                    <Input disabled={disabled} />
+                  </Form.Item>
+                </Col>
+              ))}
+            </Row>
+          </ListCard>
+          <ListCard title="主营产品">
+            <Form.Item name="mainProductNames" style={{ marginBottom: 0 }}>
+              <Select
+                mode="tags"
+                disabled={disabled}
+                placeholder="请选择或输入主营产品名称"
+                tokenSeparators={[',', '，', ';', '；']}
+              />
+            </Form.Item>
+          </ListCard>
+          <ListCard title="配套客户">
+            <Form.List name="customerItems">
+              {(fields, { add, remove }) => (
+                <Space direction="vertical" size={12} style={{ width: '100%' }}>
+                  {fields.map((field, index) => (
+                    <Card
+                      key={field.key}
+                      size="small"
+                      title={`记录 ${index + 1}`}
+                      extra={!disabled ? <Button type="link" danger icon={<MinusCircleOutlined />} onClick={() => remove(field.name)}>删除</Button> : null}
+                    >
+                      <Row gutter={12}>
+                        <Col span={10}>
+                          <Form.Item name={[field.name, 'productName']} label="产品">
+                            <Input disabled={disabled} />
+                          </Form.Item>
+                        </Col>
+                        <Col span={14}>
+                          <Form.Item name={[field.name, 'oemNames']} label="车企">
+                            <Select
+                              mode="multiple"
+                              disabled={disabled}
+                              options={oemOptions.map((item) => ({ label: item.name, value: item.name }))}
+                              placeholder="可多选企业名称"
+                            />
+                          </Form.Item>
+                        </Col>
+                      </Row>
+                    </Card>
+                  ))}
+                  {!disabled ? <Button type="dashed" icon={<PlusOutlined />} onClick={() => add(makeEmptyCustomerItem())}>新增配套客户</Button> : null}
+                </Space>
+              )}
+            </Form.List>
+          </ListCard>
+        </Space>
+      ),
+    },
+    {
+      key: 'cases',
+      label: 'Tab3 产品案例',
+      children: (
+        <Form.List name="productCaseItems">
+          {(fields, { add, remove }) => (
+            <Space direction="vertical" size={12} style={{ width: '100%' }}>
+              {fields.map((field, index) => (
+                <Card
+                  key={field.key}
+                  size="small"
+                  title={`案例 ${index + 1}`}
+                  extra={!disabled ? <Button type="link" danger icon={<MinusCircleOutlined />} onClick={() => remove(field.name)}>删除</Button> : null}
+                >
+                  <Row gutter={12}>
+                    <Col span={8}><Form.Item name={[field.name, 'productName']} label="产品"><Input disabled={disabled} /></Form.Item></Col>
+                    <Col span={8}><Form.Item name={[field.name, 'vehicleModel']} label="车型"><Input disabled={disabled} /></Form.Item></Col>
+                    <Col span={8}><Form.Item name={[field.name, 'customerName']} label="车企"><Input disabled={disabled} /></Form.Item></Col>
+                    <Col span={24}><Form.Item name={[field.name, 'description']} label="说明"><Input.TextArea disabled={disabled} rows={3} /></Form.Item></Col>
+                  </Row>
+                </Card>
+              ))}
+              {!disabled ? <Button type="dashed" icon={<PlusOutlined />} onClick={() => add(makeEmptyProductCase())}>新增产品案例</Button> : null}
             </Space>
-          </Card>
-
-          <Card
-            size="small"
-            title="联系我们"
-            extra={(
-              <Button
-                type="dashed"
-                icon={<PlusOutlined />}
-                disabled={isViewMode}
-                onClick={() => setContacts((prev) => [...prev, makeEmptyContact()])}
-              >
-                新增联系人
-              </Button>
-            )}
-          >
-            {renderSourceLink(contactSourceUrl)}
-            <Space size={12} wrap style={{ width: '100%', marginBottom: 12 }}>
-              <Form.Item style={{ width: 360, marginBottom: 0 }} name="website" label="联系网址">
-                <Input disabled={isViewMode} />
+          )}
+        </Form.List>
+      ),
+    },
+    {
+      key: 'industrial',
+      label: 'Tab4 工商信息',
+      children: (
+        <Row gutter={12}>
+          {INDUSTRIAL_FIELDS.map((field) => (
+            <Col span={12} key={field}>
+              <Form.Item name={['industrialCommercialInfo', field]} label={field}>
+                <Input disabled={disabled} />
               </Form.Item>
-              <Form.Item style={{ width: 720, marginBottom: 0 }} name="address" label="联系地址">
-                <Input disabled={isViewMode} />
-              </Form.Item>
+            </Col>
+          ))}
+        </Row>
+      ),
+    },
+    {
+      key: 'financing',
+      label: 'Tab5 融资信息',
+      children: (
+        <Form.List name="financingItems">
+          {(fields, { add, remove }) => (
+            <Space direction="vertical" size={12} style={{ width: '100%' }}>
+              {fields.map((field, index) => (
+                <Card key={field.key} size="small" title={`融资 ${index + 1}`} extra={!disabled ? <Button type="link" danger icon={<MinusCircleOutlined />} onClick={() => remove(field.name)}>删除</Button> : null}>
+                  <Row gutter={12}>
+                    <Col span={6}><Form.Item name={[field.name, 'financingDate']} label="融资时间"><Input disabled={disabled} /></Form.Item></Col>
+                    <Col span={6}><Form.Item name={[field.name, 'round']} label="融资轮次"><Input disabled={disabled} /></Form.Item></Col>
+                    <Col span={6}><Form.Item name={[field.name, 'amount']} label="融资金额"><Input disabled={disabled} /></Form.Item></Col>
+                    <Col span={24}><Form.Item name={[field.name, 'investors']} label="投资方"><Input.TextArea disabled={disabled} rows={2} /></Form.Item></Col>
+                  </Row>
+                </Card>
+              ))}
+              {!disabled ? <Button type="dashed" icon={<PlusOutlined />} onClick={() => add(makeEmptyFinancing())}>新增融资信息</Button> : null}
             </Space>
-            <Table
-              rowKey="id"
-              size="small"
-              pagination={false}
-              dataSource={contacts}
-              columns={contactColumns}
-              scroll={{ x: 980 }}
-            />
-          </Card>
-        </Space>
+          )}
+        </Form.List>
       ),
     },
     {
-      key: 'intro',
-      label: '公司简介',
+      key: 'patent',
+      label: 'Tab6 专利信息',
       children: (
-        <Space direction="vertical" style={{ width: '100%' }} size={12}>
-          {renderSourceLink(introSourceUrl)}
-          <Form.Item name="companyIntro" label="公司简介" style={{ marginBottom: 0 }}>
-            <Input.TextArea disabled={isViewMode} rows={12} />
-          </Form.Item>
-        </Space>
+        <Form.List name="patentItems">
+          {(fields, { add, remove }) => (
+            <Space direction="vertical" size={12} style={{ width: '100%' }}>
+              {fields.map((field, index) => (
+                <Card key={field.key} size="small" title={`专利 ${index + 1}`} extra={!disabled ? <Button type="link" danger icon={<MinusCircleOutlined />} onClick={() => remove(field.name)}>删除</Button> : null}>
+                  <Row gutter={12}>
+                    <Col span={6}><Form.Item name={[field.name, 'patentType']} label="专利类型"><Input disabled={disabled} /></Form.Item></Col>
+                    <Col span={6}><Form.Item name={[field.name, 'publicationNo']} label="公告号"><Input disabled={disabled} /></Form.Item></Col>
+                    <Col span={6}><Form.Item name={[field.name, 'publicationDate']} label="公告日期"><Input disabled={disabled} /></Form.Item></Col>
+                    <Col span={24}><Form.Item name={[field.name, 'title']} label="名称"><Input disabled={disabled} /></Form.Item></Col>
+                    <Col span={6}><Form.Item name={[field.name, 'applicationNo']} label="申请号"><Input disabled={disabled} /></Form.Item></Col>
+                    <Col span={6}><Form.Item name={[field.name, 'applicationDate']} label="申请日期"><Input disabled={disabled} /></Form.Item></Col>
+                    <Col span={6}><Form.Item name={[field.name, 'inventors']} label="发明人"><Input disabled={disabled} /></Form.Item></Col>
+                    <Col span={6}><Form.Item name={[field.name, 'assignee']} label="专利权人"><Input disabled={disabled} /></Form.Item></Col>
+                    <Col span={6}><Form.Item name={[field.name, 'agency']} label="代理机构"><Input disabled={disabled} /></Form.Item></Col>
+                    <Col span={6}><Form.Item name={[field.name, 'agent']} label="代理人"><Input disabled={disabled} /></Form.Item></Col>
+                    <Col span={6}><Form.Item name={[field.name, 'legalStatus']} label="法律状态"><Input disabled={disabled} /></Form.Item></Col>
+                    <Col span={24}><Form.Item name={[field.name, 'summary']} label="摘要"><Input.TextArea disabled={disabled} rows={3} /></Form.Item></Col>
+                  </Row>
+                </Card>
+              ))}
+              {!disabled ? <Button type="dashed" icon={<PlusOutlined />} onClick={() => add(makeEmptyPatent())}>新增专利</Button> : null}
+            </Space>
+          )}
+        </Form.List>
       ),
     },
     {
-      key: 'products',
-      label: '重点产品',
+      key: 'license',
+      label: 'Tab7 行政许可',
       children: (
-        <Space direction="vertical" style={{ width: '100%' }}>
-          {renderSourceLink(productSourceUrl)}
-          <Space style={{ width: '100%', justifyContent: 'space-between' }}>
-            <Text className="muted">产品列表支持行内直接维护</Text>
-            <Button type="dashed" icon={<PlusOutlined />} disabled={isViewMode} onClick={() => setProducts((prev) => [...prev, makeEmptyProduct()])}>
-              新增产品
-            </Button>
-          </Space>
-          <Table
-            rowKey="id"
-            size="small"
-            pagination={false}
-            dataSource={products}
-            columns={productColumns}
-            scroll={{ x: 2100 }}
-          />
-        </Space>
+        <Form.List name="adminLicenseItems">
+          {(fields, { add, remove }) => (
+            <Space direction="vertical" size={12} style={{ width: '100%' }}>
+              {fields.map((field, index) => (
+                <Card key={field.key} size="small" title={`许可 ${index + 1}`} extra={!disabled ? <Button type="link" danger icon={<MinusCircleOutlined />} onClick={() => remove(field.name)}>删除</Button> : null}>
+                  <Row gutter={12}>
+                    <Col span={8}><Form.Item name={[field.name, 'documentNo']} label="决定文书号"><Input disabled={disabled} /></Form.Item></Col>
+                    <Col span={8}><Form.Item name={[field.name, 'authority']} label="许可机关"><Input disabled={disabled} /></Form.Item></Col>
+                    <Col span={8}><Form.Item name={[field.name, 'decisionDate']} label="决定日期"><Input disabled={disabled} /></Form.Item></Col>
+                    <Col span={8}><Form.Item name={[field.name, 'status']} label="许可状态"><Input disabled={disabled} /></Form.Item></Col>
+                    <Col span={8}><Form.Item name={[field.name, 'validUntil']} label="截止日期"><Input disabled={disabled} /></Form.Item></Col>
+                    <Col span={8}><Form.Item name={[field.name, 'category']} label="审批类别"><Input disabled={disabled} /></Form.Item></Col>
+                    <Col span={8}><Form.Item name={[field.name, 'region']} label="地域"><Input disabled={disabled} /></Form.Item></Col>
+                    <Col span={24}><Form.Item name={[field.name, 'content']} label="许可内容"><Input.TextArea disabled={disabled} rows={3} /></Form.Item></Col>
+                  </Row>
+                </Card>
+              ))}
+              {!disabled ? <Button type="dashed" icon={<PlusOutlined />} onClick={() => add(makeEmptyAdminLicense())}>新增行政许可</Button> : null}
+            </Space>
+          )}
+        </Form.List>
       ),
     },
     {
-      key: 'fit',
-      label: '配套情况',
+      key: 'trade',
+      label: 'Tab8 进出口信用',
       children: (
-        <Space direction="vertical" style={{ width: '100%' }} size={16}>
-          {renderSourceLink(fitSourceUrl)}
-          <Form.Item name="fitOems" label="配套车企（多选）" style={{ marginBottom: 0 }}>
-            <Select
-              mode="tags"
-              disabled={isViewMode}
-              options={oemOptions.map((item) => ({ label: item.name, value: item.name }))}
-              placeholder="请选择配套车企"
-            />
-          </Form.Item>
-          <Form.Item name="fitSituation" label="配套情况" style={{ marginBottom: 0 }}>
-            <Input.TextArea disabled={isViewMode} rows={6} />
-          </Form.Item>
-        </Space>
+        <Form.List name="tradeCreditItems">
+          {(fields, { add, remove }) => (
+            <Space direction="vertical" size={12} style={{ width: '100%' }}>
+              {fields.map((field, index) => (
+                <Card key={field.key} size="small" title={`进出口信用 ${index + 1}`} extra={!disabled ? <Button type="link" danger icon={<MinusCircleOutlined />} onClick={() => remove(field.name)}>删除</Button> : null}>
+                  <Row gutter={12}>
+                    <Col span={8}><Form.Item name={[field.name, 'customsOffice']} label="注册海关"><Input disabled={disabled} /></Form.Item></Col>
+                    <Col span={8}><Form.Item name={[field.name, 'businessType']} label="经营类别"><Input disabled={disabled} /></Form.Item></Col>
+                    <Col span={8}><Form.Item name={[field.name, 'registrationDate']} label="注册日期"><Input disabled={disabled} /></Form.Item></Col>
+                    <Col span={8}><Form.Item name={[field.name, 'registrationCode']} label="海关注册编码"><Input disabled={disabled} /></Form.Item></Col>
+                    <Col span={8}><Form.Item name={[field.name, 'administrativeRegion']} label="行政地区"><Input disabled={disabled} /></Form.Item></Col>
+                    <Col span={8}><Form.Item name={[field.name, 'economicRegion']} label="经济地区"><Input disabled={disabled} /></Form.Item></Col>
+                    <Col span={8}><Form.Item name={[field.name, 'creditLevel']} label="信用等级"><Input disabled={disabled} /></Form.Item></Col>
+                    <Col span={8}><Form.Item name={[field.name, 'annualReportStatus']} label="年报情况"><Input disabled={disabled} /></Form.Item></Col>
+                    <Col span={8}><Form.Item name={[field.name, 'validityPeriod']} label="报关有效期"><Input disabled={disabled} /></Form.Item></Col>
+                  </Row>
+                </Card>
+              ))}
+              {!disabled ? <Button type="dashed" icon={<PlusOutlined />} onClick={() => add(makeEmptyTradeCredit())}>新增进出口信用</Button> : null}
+            </Space>
+          )}
+        </Form.List>
       ),
     },
     {
-      key: 'export',
-      label: '出口情况',
+      key: 'court',
+      label: 'Tab9 开庭公告',
       children: (
-        <Space direction="vertical" style={{ width: '100%' }} size={16}>
-          {renderSourceLink(exportSourceUrl)}
-          <Form.Item name="exportSituation" label="出口情况" style={{ marginBottom: 0 }}>
-            <Input.TextArea disabled={isViewMode} rows={6} />
-          </Form.Item>
-          <Form.Item name="exportCountries" label="出口国家（多选）" style={{ marginBottom: 0 }}>
-            <Select
-              mode="multiple"
-              disabled={isViewMode}
-              options={countryOptions.map((item) => ({ label: item.name, value: item.name }))}
-              placeholder="请选择出口国家/地区"
-            />
-          </Form.Item>
-        </Space>
+        <Form.List name="courtNoticeItems">
+          {(fields, { add, remove }) => (
+            <Space direction="vertical" size={12} style={{ width: '100%' }}>
+              {fields.map((field, index) => (
+                <Card key={field.key} size="small" title={`公告 ${index + 1}`} extra={!disabled ? <Button type="link" danger icon={<MinusCircleOutlined />} onClick={() => remove(field.name)}>删除</Button> : null}>
+                  <Row gutter={12}>
+                    <Col span={8}><Form.Item name={[field.name, 'caseNo']} label="案号"><Input disabled={disabled} /></Form.Item></Col>
+                    <Col span={8}><Form.Item name={[field.name, 'hearingDate']} label="开庭时间"><Input disabled={disabled} /></Form.Item></Col>
+                    <Col span={8}><Form.Item name={[field.name, 'cause']} label="案由"><Input disabled={disabled} /></Form.Item></Col>
+                    <Col span={12}><Form.Item name={[field.name, 'plaintiff']} label="原告/申请人"><Input disabled={disabled} /></Form.Item></Col>
+                    <Col span={12}><Form.Item name={[field.name, 'defendant']} label="被告/被申请人"><Input disabled={disabled} /></Form.Item></Col>
+                    <Col span={8}><Form.Item name={[field.name, 'court']} label="法院"><Input disabled={disabled} /></Form.Item></Col>
+                    <Col span={8}><Form.Item name={[field.name, 'tribunal']} label="法庭"><Input disabled={disabled} /></Form.Item></Col>
+                    <Col span={8}><Form.Item name={[field.name, 'region']} label="地区"><Input disabled={disabled} /></Form.Item></Col>
+                  </Row>
+                </Card>
+              ))}
+              {!disabled ? <Button type="dashed" icon={<PlusOutlined />} onClick={() => add(makeEmptyCourtNotice())}>新增开庭公告</Button> : null}
+            </Space>
+          )}
+        </Form.List>
       ),
     },
     {
-      key: 'cert',
-      label: '企业证书',
+      key: 'production',
+      label: 'Tab10 生产基地',
       children: (
-        <Space direction="vertical" style={{ width: '100%' }} size={16}>
-          {renderSourceLink(certSourceUrl)}
-          <Form.Item name="certificateItems" label="认证体系（多选）" style={{ marginBottom: 0 }}>
-            <Select
-              mode="tags"
-              disabled={isViewMode}
-              options={certificationOptions.map((item) => ({ label: item.name, value: item.name }))}
-              placeholder="请选择认证体系"
-            />
-          </Form.Item>
-          <Form.Item name="certificates" label="认证体系详情" style={{ marginBottom: 0 }}>
-            <Input.TextArea disabled={isViewMode} rows={6} placeholder="抓取到的认证体系详情会展示在这里" />
-          </Form.Item>
-        </Space>
+        <Form.List name="productionBaseItems">
+          {(fields, { add, remove }) => (
+            <Space direction="vertical" size={12} style={{ width: '100%' }}>
+              {fields.map((field, index) => (
+                <Card key={field.key} size="small" title={`基地 ${index + 1}`} extra={!disabled ? <Button type="link" danger icon={<MinusCircleOutlined />} onClick={() => remove(field.name)}>删除</Button> : null}>
+                  <Row gutter={12}>
+                    <Col span={8}><Form.Item name={[field.name, 'baseName']} label="基地名称"><Input disabled={disabled} /></Form.Item></Col>
+                    <Col span={8}><Form.Item name={[field.name, 'region']} label="地区"><Input disabled={disabled} /></Form.Item></Col>
+                    <Col span={8}><Form.Item name={[field.name, 'postalCode']} label="邮编"><Input disabled={disabled} /></Form.Item></Col>
+                    <Col span={12}><Form.Item name={[field.name, 'phone']} label="电话"><Input disabled={disabled} /></Form.Item></Col>
+                    <Col span={24}><Form.Item name={[field.name, 'address']} label="地址"><Input disabled={disabled} /></Form.Item></Col>
+                    <Col span={24}><Form.Item name={[field.name, 'mainProducts']} label="主营产品"><Input.TextArea disabled={disabled} rows={2} /></Form.Item></Col>
+                  </Row>
+                </Card>
+              ))}
+              {!disabled ? <Button type="dashed" icon={<PlusOutlined />} onClick={() => add(makeEmptyProductionBase())}>新增生产基地</Button> : null}
+            </Space>
+          )}
+        </Form.List>
       ),
     },
     {
       key: 'news',
-      label: '公司新闻',
+      label: 'Tab11 新闻相关',
       children: (
-        <Space direction="vertical" style={{ width: '100%' }}>
-          {renderSourceLink(newsSourceUrl)}
-          <Space style={{ width: '100%', justifyContent: 'space-between' }}>
-            <Text className="muted">新闻列表支持新增、删除和行内编辑</Text>
-            <Button type="dashed" icon={<PlusOutlined />} disabled={isViewMode} onClick={() => setNewsItems((prev) => [...prev, makeEmptyNews()])}>
-              新增新闻
-            </Button>
-          </Space>
-          <Table
-            rowKey="id"
-            size="small"
-            pagination={false}
-            dataSource={newsItems}
-            columns={newsColumns}
-            scroll={{ x: 1200 }}
-          />
-        </Space>
+        <Form.List name="newsItems">
+          {(fields, { add, remove }) => (
+            <Space direction="vertical" size={12} style={{ width: '100%' }}>
+              {fields.map((field, index) => (
+                <Card key={field.key} size="small" title={`新闻 ${index + 1}`} extra={!disabled ? <Button type="link" danger icon={<MinusCircleOutlined />} onClick={() => remove(field.name)}>删除</Button> : null}>
+                  <Row gutter={12}>
+                    <Col span={12}><Form.Item name={[field.name, 'title']} label="标题"><Input disabled={disabled} /></Form.Item></Col>
+                    <Col span={12}><Form.Item name={[field.name, 'source']} label="来源/链接"><Input disabled={disabled} /></Form.Item></Col>
+                    <Col span={8}><Form.Item name={[field.name, 'publishDate']} label="发布时间"><Input disabled={disabled} /></Form.Item></Col>
+                    <Col span={24}><Form.Item name={[field.name, 'content']} label="内容摘要"><Input.TextArea disabled={disabled} rows={3} /></Form.Item></Col>
+                  </Row>
+                </Card>
+              ))}
+              {!disabled ? <Button type="dashed" icon={<PlusOutlined />} onClick={() => add(makeEmptyNews())}>新增新闻</Button> : null}
+            </Space>
+          )}
+        </Form.List>
       ),
     },
   ]
 
   return (
     <Card className="app-elevated-card">
-      <Space direction="vertical" size={14} style={{ width: '100%' }}>
+      <Space direction="vertical" size={16} style={{ width: '100%' }}>
         <Space style={{ width: '100%', justifyContent: 'space-between' }}>
           <Space direction="vertical" size={2}>
             <Title level={4} style={{ margin: 0 }}>{pageTitle}</Title>
             <Text className="muted">{editId ? `记录ID：${editId}` : '创建供应商档案'}</Text>
           </Space>
           <Space>
-            <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/supplier-profiles')}>返回列表</Button>
-            <Button type="primary" icon={<SaveOutlined />} loading={loading} disabled={isViewMode} onClick={handleSubmit}>
-              保存
+            <Button icon={<ArrowLeftOutlined />} onClick={() => navigate(basePath)}>返回列表</Button>
+            <Button type="primary" loading={loading} icon={<SaveOutlined />} onClick={handleSubmit}>
+              {isViewMode ? '返回' : '保存'}
             </Button>
           </Space>
         </Space>
-        <Form form={form} layout="vertical">
+
+        <Form form={form} layout="vertical" disabled={loading}>
+          <Card size="small" title="基础信息">
+            <Row gutter={12}>
+              <Col span={8}>
+                <Form.Item name="sourceSupplierId" label="关联供应商来源记录">
+                  <Select
+                    disabled={disabled}
+                    showSearch
+                    allowClear
+                    optionFilterProp="label"
+                    placeholder="请选择来源记录"
+                    options={sourceOptions.map((item) => ({
+                      value: item.id,
+                      label: `${item.companyName || '-'} / ${item.nodeName || '-'}`,
+                    }))}
+                    onChange={handleSourceChange}
+                  />
+                </Form.Item>
+              </Col>
+              <Col span={8}>
+                <Form.Item name="relatedNodeIds" label="关联供应链节点">
+                  <Select
+                    mode="multiple"
+                    disabled={disabled}
+                    options={[...nodeNameById.entries()].map(([value, label]) => ({ value, label }))}
+                    placeholder="请选择供应链节点"
+                  />
+                </Form.Item>
+              </Col>
+              <Col span={8}><Form.Item name="companyName" label="公司名称" rules={[{ required: true, message: '请输入公司名称' }]}><Input disabled={disabled} /></Form.Item></Col>
+              <Col span={8}><Form.Item name="companyNameEn" label="英文名称"><Input disabled={disabled} /></Form.Item></Col>
+              <Col span={8}><Form.Item name="legalRepresentative" label="法定代表人"><Input disabled={disabled} /></Form.Item></Col>
+              <Col span={8}><Form.Item name="companyType" label="企业类型"><Input disabled={disabled} /></Form.Item></Col>
+              <Col span={8}><Form.Item name="orgCode" label="统一代码"><Input disabled={disabled} /></Form.Item></Col>
+              <Col span={8}><Form.Item name="registeredCapital" label="注册资本"><Input disabled={disabled} /></Form.Item></Col>
+              <Col span={8}><Form.Item name="establishedDate" label="成立时间"><Input disabled={disabled} /></Form.Item></Col>
+              <Col span={8}><Form.Item name="employeesCount" label="员工人数"><Input disabled={disabled} /></Form.Item></Col>
+              <Col span={8}><Form.Item name="website" label="详情 URL"><Input disabled={disabled} /></Form.Item></Col>
+              <Col span={8}><Form.Item name="postalCode" label="邮编"><Input disabled={disabled} /></Form.Item></Col>
+              <Col span={24}><Form.Item name="address" label="地址"><Input disabled={disabled} /></Form.Item></Col>
+            </Row>
+          </Card>
+
           <Tabs items={tabItems} />
+
+          {isViewMode && (
+            <Space wrap>
+              {form.getFieldValue('companyTags')?.map((tag) => <Tag key={tag}>{tag}</Tag>)}
+            </Space>
+          )}
         </Form>
       </Space>
     </Card>

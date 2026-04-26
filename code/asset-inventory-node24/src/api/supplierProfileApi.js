@@ -36,19 +36,25 @@ async function parseJson(response) {
   return payload
 }
 
-export async function fetchSupplierProfiles(params = {}) {
+function buildSupplierProfileQuery(params = {}) {
   const query = new URLSearchParams()
   if (params.limit) query.set('limit', String(params.limit))
   if (params.keyword) query.set('keyword', String(params.keyword))
-  const response = await requestWithFallback(`/api/supplier-profiles?${query.toString()}`, {
+  if (params.view) query.set('view', String(params.view))
+  const queryText = query.toString()
+  return queryText ? `?${queryText}` : ''
+}
+
+export async function fetchSupplierProfiles(params = {}) {
+  const response = await requestWithFallback(`/api/supplier-profiles${buildSupplierProfileQuery(params)}`, {
     headers: buildAuthHeaders(),
   })
   const result = await parseJson(response)
   return result.data ?? []
 }
 
-export async function fetchSupplierProfileOptions() {
-  const response = await requestWithFallback('/api/supplier-profiles/options', {
+export async function fetchSupplierProfileOptions(params = {}) {
+  const response = await requestWithFallback(`/api/supplier-profiles/options${buildSupplierProfileQuery(params)}`, {
     headers: buildAuthHeaders(),
   })
   const result = await parseJson(response)
@@ -61,16 +67,16 @@ export async function fetchSupplierProfileOptions() {
   }
 }
 
-export async function fetchSupplierProfileDetail(id) {
-  const response = await requestWithFallback(`/api/supplier-profiles/${encodeURIComponent(String(id))}`, {
+export async function fetchSupplierProfileDetail(id, params = {}) {
+  const response = await requestWithFallback(`/api/supplier-profiles/${encodeURIComponent(String(id))}${buildSupplierProfileQuery(params)}`, {
     headers: buildAuthHeaders(),
   })
   const result = await parseJson(response)
   return result.data
 }
 
-export async function createSupplierProfile(payload) {
-  const response = await requestWithFallback('/api/supplier-profiles', {
+export async function createSupplierProfile(payload, params = {}) {
+  const response = await requestWithFallback(`/api/supplier-profiles${buildSupplierProfileQuery(params)}`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -82,8 +88,8 @@ export async function createSupplierProfile(payload) {
   return result.data
 }
 
-export async function updateSupplierProfile(id, payload) {
-  const response = await requestWithFallback(`/api/supplier-profiles/${encodeURIComponent(String(id))}`, {
+export async function updateSupplierProfile(id, payload, params = {}) {
+  const response = await requestWithFallback(`/api/supplier-profiles/${encodeURIComponent(String(id))}${buildSupplierProfileQuery(params)}`, {
     method: 'PUT',
     headers: {
       'Content-Type': 'application/json',
@@ -95,8 +101,8 @@ export async function updateSupplierProfile(id, payload) {
   return result.data
 }
 
-export async function deleteSupplierProfile(id) {
-  const response = await requestWithFallback(`/api/supplier-profiles/${encodeURIComponent(String(id))}`, {
+export async function deleteSupplierProfile(id, params = {}) {
+  const response = await requestWithFallback(`/api/supplier-profiles/${encodeURIComponent(String(id))}${buildSupplierProfileQuery(params)}`, {
     method: 'DELETE',
     headers: buildAuthHeaders(),
   })
@@ -104,8 +110,8 @@ export async function deleteSupplierProfile(id) {
   return result.data
 }
 
-export async function batchDeleteSupplierProfiles(ids) {
-  const response = await requestWithFallback('/api/supplier-profiles/batch-delete', {
+export async function batchDeleteSupplierProfiles(ids, params = {}) {
+  const response = await requestWithFallback(`/api/supplier-profiles/batch-delete${buildSupplierProfileQuery(params)}`, {
     method: 'DELETE',
     headers: {
       'Content-Type': 'application/json',
@@ -117,8 +123,8 @@ export async function batchDeleteSupplierProfiles(ids) {
   return result.data
 }
 
-export async function clearAllSupplierProfiles() {
-  const response = await requestWithFallback('/api/supplier-profiles/clear-all', {
+export async function clearAllSupplierProfiles(params = {}) {
+  const response = await requestWithFallback(`/api/supplier-profiles/clear-all${buildSupplierProfileQuery(params)}`, {
     method: 'DELETE',
     headers: buildAuthHeaders(),
   })

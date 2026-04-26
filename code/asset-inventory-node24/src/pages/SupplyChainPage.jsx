@@ -33,7 +33,6 @@ import {
   cancelSupplierCrawlTask,
   deleteSupplyChainRecord,
   fetchCodexModels,
-  fetchCrawlSkills,
   fetchSupplierCrawlTask,
   fetchSupplyChainRecordDetail,
   fetchSupplyChainRecords,
@@ -41,6 +40,7 @@ import {
   importSupplierCrawlTask,
   importSupplyChainCsv,
 } from '../api/supplyChainApi'
+import { CRAWL_SKILL_OPTIONS, DEFAULT_CRAWL_SKILL } from '../constants/crawlSkills'
 
 const { Text } = Typography
 
@@ -117,9 +117,8 @@ function SupplyChainPage() {
   const [supplierModalOpen, setSupplierModalOpen] = useState(false)
   const [supplierNode, setSupplierNode] = useState(null)
   const [modelOptions, setModelOptions] = useState([])
-  const [skillOptions, setSkillOptions] = useState([])
   const [selectedModel, setSelectedModel] = useState('gpt-5.4')
-  const [selectedSkill, setSelectedSkill] = useState('Crawl4AI')
+  const [selectedSkill, setSelectedSkill] = useState(DEFAULT_CRAWL_SKILL)
   const [supplierUrlsText, setSupplierUrlsText] = useState('')
   const [supplierTask, setSupplierTask] = useState(null)
   const [supplierTaskLoading, setSupplierTaskLoading] = useState(false)
@@ -154,18 +153,13 @@ function SupplyChainPage() {
   useEffect(() => {
     const loadSelections = async () => {
       try {
-        const [models, skills] = await Promise.all([fetchCodexModels(), fetchCrawlSkills()])
+        const models = await fetchCodexModels()
         if (models.length > 0) {
           setModelOptions(models)
           setSelectedModel(models[0])
         }
-        if (skills.length > 0) {
-          setSkillOptions(skills)
-          setSelectedSkill(skills[0])
-        }
       } catch {
         setModelOptions(['gpt-5.4'])
-        setSkillOptions(['Crawl4AI'])
       }
     }
     loadSelections()
@@ -222,6 +216,64 @@ function SupplyChainPage() {
       setDetailRecord(detail)
     } catch (error) {
       message.error(error.message || '加载详情失败')
+    }
+  }
+
+  const openEditPage = (record) => {
+    const id = Number(record?.id)
+    if (!Number.isInteger(id) || id <= 0) {
+      message.error('无效记录，无法进入修改页')
+      return
+    }
+    navigate(`/supply-chain/${id}/edit`, {
+      state: {
+        record: {
+          id,
+          nodeName: record?.nodeName || '',
+          parentId: record?.parentId ?? '',
+          parentName: record?.parentName || '',
+          nodeLevel: record?.nodeLevel || 1,
+          sourceUrl: record?.sourceUrl || '',
+        },
+      },
+    })
+  }
+
+  const handleDelete = async (id) => {
+    try {
+      await deleteSupplyChainRecord(id)
+      message.success('删除成功')
+      setSelectedRowKeys((prev) => prev.filter((item) => Number(item) !== Number(id)))
+      await loadData()
+    } catch (error) {
+      message.error(error.message || '删除失败')
+    }
+  }
+
+  const handleBatchDelete = async () => {
+    if (selectedRowKeys.length === 0) {
+      message.warning('请先选择记录')
+      return
+    }
+    try {
+      const result = await batchDeleteSupplyChainRecords(selectedRowKeys)
+      message.success(`已删除 ${result?.deletedCount || 0} 条记录`)
+      setSelectedRowKeys([])
+      await loadData()
+    } catch (error) {
+      message.error(error.message || '批量删除失败')
+    }
+  }
+
+  const handleClearAll = async () => {
+    try {
+      const result = await clearAllSupplyChain()
+      message.success(`已清空 ${result?.deletedCount || 0} 条记录`)
+      setSelectedRowKeys([])
+      setSelectedTreeId('')
+      await loadData()
+    } catch (error) {
+      message.error(error.message || '清空失败')
     }
   }
 
@@ -413,8 +465,8 @@ function SupplyChainPage() {
       render: (_, record) => (
         <Space size={4}>
           <Button size="small" icon={<EyeOutlined />} onClick={() => openDetail(record.id)}>详情</Button>
-          <Button size="small" onClick={() => navigate(`/supply-chain/${record.id}/edit`)}>修改</Button>
-          <Popconfirm title="确认删除该节点吗？" okText="删除" cancelText="取消" onConfirm={() => deleteSupplyChainRecord(record.id).then(loadData)}>
+          <Button size="small" onClick={() => openEditPage(record)}>修改</Button>
+          <Popconfirm title="确认删除该节点吗？" okText="删除" cancelText="取消" onConfirm={() => handleDelete(record.id)}>
             <Button size="small" danger icon={<DeleteOutlined />}>删除</Button>
           </Popconfirm>
         </Space>
@@ -429,14 +481,14 @@ function SupplyChainPage() {
           <Space wrap>
             <Button type="primary" icon={<CloudUploadOutlined />} onClick={() => setImportModalOpen(true)}>导入CSV入库</Button>
             <Button icon={<PlusOutlined />} onClick={() => navigate('/supply-chain/new')}>新增</Button>
-            <Popconfirm title="确认清空所有供应链节点吗？" okText="清空" cancelText="取消" onConfirm={() => clearAllSupplyChain().then(loadData)}>
+            <Popconfirm title="确认清空所有供应链节点吗？" okText="清空" cancelText="取消" onConfirm={handleClearAll}>
               <Button danger icon={<ClearOutlined />}>清空所有</Button>
             </Popconfirm>
             <Popconfirm
               title={`确认批量删除已选 ${selectedRowKeys.length} 条记录吗？`}
               okText="删除"
               cancelText="取消"
-              onConfirm={() => batchDeleteSupplyChainRecords(selectedRowKeys).then(() => { setSelectedRowKeys([]); loadData() })}
+              onConfirm={handleBatchDelete}
               disabled={selectedRowKeys.length === 0}
             >
               <Button danger disabled={selectedRowKeys.length === 0} icon={<DeleteOutlined />}>批量删除</Button>
@@ -625,7 +677,7 @@ function SupplyChainPage() {
               <Select
                 style={{ width: '100%' }}
                 value={selectedSkill}
-                options={(skillOptions.length > 0 ? skillOptions : ['Crawl4AI']).map((item) => ({ label: item, value: item }))}
+                options={CRAWL_SKILL_OPTIONS.map((item) => ({ label: item.label, value: item.value }))}
                 onChange={setSelectedSkill}
               />
             </div>

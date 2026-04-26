@@ -9,11 +9,11 @@ import {
   createSupplierSourceCrawlTask,
   deleteSupplier,
   fetchCodexModels,
-  fetchCrawlSkills,
   fetchSupplierCrawlTask,
   fetchSuppliers,
   importSupplierCrawlTask,
 } from '../api/supplierApi'
+import { CRAWL_SKILL_OPTIONS, DEFAULT_CRAWL_SKILL } from '../constants/crawlSkills'
 
 const { Title, Text } = Typography
 
@@ -29,9 +29,8 @@ function SupplierListPage() {
   const [supplierImporting, setSupplierImporting] = useState(false)
   const [supplierUrlsText, setSupplierUrlsText] = useState('')
   const [modelOptions, setModelOptions] = useState([])
-  const [skillOptions, setSkillOptions] = useState([])
   const [selectedModel, setSelectedModel] = useState('gpt-5.4')
-  const [selectedSkill, setSelectedSkill] = useState('Crawl4AI')
+  const [selectedSkill, setSelectedSkill] = useState(DEFAULT_CRAWL_SKILL)
   const [collectMode, setCollectMode] = useState('selected')
   const [supplierUrlNodeMeta, setSupplierUrlNodeMeta] = useState([])
   const [tablePage, setTablePage] = useState(1)
@@ -60,18 +59,13 @@ function SupplierListPage() {
   useEffect(() => {
     const loadSelections = async () => {
       try {
-        const [models, skills] = await Promise.all([fetchCodexModels(), fetchCrawlSkills()])
+        const models = await fetchCodexModels()
         if (models.length > 0) {
           setModelOptions(models)
           setSelectedModel(models[0])
         }
-        if (skills.length > 0) {
-          setSkillOptions(skills)
-          setSelectedSkill(skills[0])
-        }
       } catch {
         setModelOptions(['gpt-5.4'])
-        setSkillOptions(['Crawl4AI'])
       }
     }
     loadSelections()
@@ -568,7 +562,7 @@ function SupplierListPage() {
               <Select
                 style={{ width: '100%' }}
                 value={selectedSkill}
-                options={(skillOptions.length > 0 ? skillOptions : ['Crawl4AI']).map((item) => ({ label: item, value: item }))}
+                options={CRAWL_SKILL_OPTIONS.map((item) => ({ label: item.label, value: item.value }))}
                 onChange={setSelectedSkill}
               />
             </div>

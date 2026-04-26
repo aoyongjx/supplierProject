@@ -1,7 +1,7 @@
 import { ArrowLeftOutlined, SaveOutlined } from '@ant-design/icons'
-import { Button, Card, Form, Input, Modal, Select, Space, Tree, Typography, message } from 'antd'
+import { Alert, Button, Card, Form, Input, Modal, Select, Space, Spin, Tree, Typography, message } from 'antd'
 import { useEffect, useMemo, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import {
   createSupplyChainRecord,
   fetchSupplyChainRecordDetail,
@@ -33,6 +33,7 @@ function findNodePath(nodes = [], targetId, path = []) {
 
 function SupplyChainFormPage() {
   const { id } = useParams()
+  const location = useLocation()
   const navigate = useNavigate()
   const [form] = Form.useForm()
   const [loading, setLoading] = useState(false)
@@ -41,16 +42,32 @@ function SupplyChainFormPage() {
   const [selectedParentId, setSelectedParentId] = useState('')
   const [pickerExpandedKeys, setPickerExpandedKeys] = useState([])
   const [pickerSelectedKeys, setPickerSelectedKeys] = useState([])
+  const [recordLoading, setRecordLoading] = useState(false)
+  const [recordLoadError, setRecordLoadError] = useState('')
+  const [treeLoadError, setTreeLoadError] = useState('')
 
   const editId = useMemo(() => {
     const val = Number(id)
     return Number.isInteger(val) && val > 0 ? val : null
   }, [id])
 
+  const routeRecord = useMemo(() => {
+    const record = location.state?.record
+    if (!record || Number(record.id) !== Number(editId)) return null
+    return record
+  }, [location.state, editId])
+
   useEffect(() => {
     fetchSupplyChainTree({})
-      .then((res) => setTreeData(res.roots || []))
-      .catch((error) => message.error(error.message || '加载供应链树失败'))
+      .then((res) => {
+        setTreeData(res.roots || [])
+        setTreeLoadError('')
+      })
+      .catch((error) => {
+        const text = error.message || '加载供应链树失败'
+        setTreeLoadError(text)
+        message.error(text)
+      })
   }, [])
 
   useEffect(() => {
@@ -60,8 +77,21 @@ function SupplyChainFormPage() {
   }, [editId])
 
   useEffect(() => {
+    if (!routeRecord) return
+    const pid = routeRecord.parentId ? String(routeRecord.parentId) : ''
+    setSelectedParentId(pid)
+    form.setFieldsValue({
+      nodeName: routeRecord.nodeName || '',
+      parentId: pid,
+      nodeLevel: String(routeRecord.nodeLevel || 1),
+      sourceUrl: routeRecord.sourceUrl || '',
+    })
+  }, [routeRecord, form])
+
+  useEffect(() => {
     if (!editId) return
-    setLoading(true)
+    setRecordLoading(true)
+    setRecordLoadError('')
     fetchSupplyChainRecordDetail(editId)
       .then((detail) => {
         const pid = detail.parentId ? String(detail.parentId) : ''
@@ -73,9 +103,13 @@ function SupplyChainFormPage() {
           sourceUrl: detail.sourceUrl || '',
         })
       })
-      .catch((error) => message.error(error.message || '加载失败'))
-      .finally(() => setLoading(false))
-  }, [editId])
+      .catch((error) => {
+        const text = error.message || '加载失败'
+        setRecordLoadError(text)
+        message.error(text)
+      })
+      .finally(() => setRecordLoading(false))
+  }, [editId, form])
 
   const parentLabel = useMemo(() => findNodeLabel(treeData, selectedParentId), [treeData, selectedParentId])
   const parentDisplay = useMemo(() => (selectedParentId ? `${selectedParentId} - ${parentLabel || '(无名称)'}` : ''), [selectedParentId, parentLabel])
@@ -133,27 +167,30 @@ function SupplyChainFormPage() {
           </Space>
         </Space>
 
-        <Form form={form} layout="vertical" style={{ maxWidth: 760 }}>
+        {editId && recordLoading ? (
+          <Spin description="正在加载节点详情..." />
+        ) : null}
+        {recordLoadError ? (
+          <Alert type="error" showIcon title="节点详情加载失败" description={recordLoadError} />
+        ) : null}
+        {treeLoadError ? (
+          <Alert type="warning" showIcon title="供应链树加载失败" description={treeLoadError} />
+        ) : null}
+
+        <Form form={form} layout="vertical" style={{ maxWidth: 760 }} disabled={recordLoading}>
           <Form.Item name="nodeName" label="节点名称" rules={[{ required: true, message: '请输入节点名称' }]}>
             <Input />
           </Form.Item>
 
           <Form.Item label="上级节点">
-            <Input
-              readOnly
-              value={parentDisplay}
-              placeholder="请选择上级节点"
-              addonAfter={(
-                <Button
-                  type="link"
-                  size="small"
-                  onClick={openParentPicker}
-                  style={{ padding: 0, height: 'auto' }}
-                >
-                  选择
-                </Button>
-              )}
-            />
+            <Space.Compact style={{ width: '100%' }}>
+              <Input
+                readOnly
+                value={parentDisplay}
+                placeholder="请选择上级节点"
+              />
+              <Button onClick={openParentPicker}>选择</Button>
+            </Space.Compact>
           </Form.Item>
           <Form.Item name="parentId" hidden>
             <Input />

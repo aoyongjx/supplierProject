@@ -63,6 +63,9 @@ const supplierDirectHosts = [
   'www.chinaautosupplier.com',
   'qcgys.com',
   'www.qcgys.com',
+  'gasgoo.com',
+  'www.gasgoo.com',
+  'i.gasgoo.com',
   ...String(process.env.SUPPLIER_DIRECT_HOSTS || '').split(','),
 ]
   .map(normalizeHostToken)
@@ -132,6 +135,256 @@ function buildPlaywrightLaunchArgs(targetUrl = '') {
     args.push(`--proxy-bypass-list=${supplierDirectHosts.join(';')}`)
   }
   return args
+}
+
+const cdpProxyBaseUrl = (process.env.WEB_ACCESS_CDP_BASE_URL || 'http://localhost:3456').replace(/\/+$/, '')
+const chromeCdpBaseUrl = (process.env.WEB_ACCESS_CHROME_CDP_BASE_URL || 'http://127.0.0.1:9222').replace(/\/+$/, '')
+
+function mapChromeTarget(item = {}) {
+  return {
+    targetId: toText(item?.id),
+    url: toText(item?.url),
+    title: toText(item?.title),
+    type: toText(item?.type),
+    webSocketDebuggerUrl: toText(item?.webSocketDebuggerUrl),
+  }
+}
+
+async function fetchChromeCdpJson(pathname = '', init = {}, timeoutMs = 15000) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), Math.max(1000, Number(timeoutMs || 15000)))
+  try {
+    const response = await fetchByNetworkPolicy(`${chromeCdpBaseUrl}${pathname}`, {
+      ...init,
+      signal: controller.signal,
+    })
+    if (!response.ok) {
+      const text = await response.text().catch(() => '')
+      throw new Error(`Chrome CDP HTTP ${response.status}${text ? `: ${text.slice(0, 200)}` : ''}`)
+    }
+    const text = await response.text()
+    return text ? JSON.parse(text) : {}
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+async function evalByChromeCdpTarget(targetId = '', expression = '', timeoutMs = 15000) {
+  const normalizedTargetId = toText(targetId)
+  if (!normalizedTargetId) throw new Error('Chrome CDP targetId is required')
+  const list = await fetchChromeCdpJson('/json/list', {}, timeoutMs)
+  const targets = Array.isArray(list) ? list.map((item) => mapChromeTarget(item)) : []
+  const target = targets.find((item) => item.targetId === normalizedTargetId)
+  if (!target?.webSocketDebuggerUrl) {
+    throw new Error(`Chrome CDP target not found: ${normalizedTargetId}`)
+  }
+  const wsUrl = target.webSocketDebuggerUrl
+  return await new Promise((resolve, reject) => {
+    let settled = false
+    const settle = (err, value) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      try { socket.close() } catch { /* ignore */ }
+      if (err) reject(err)
+      else resolve(value)
+    }
+    const timer = setTimeout(() => settle(new Error('Chrome CDP Runtime.evaluate timeout')), Math.max(2000, Number(timeoutMs || 15000)))
+    const socket = new WebSocket(wsUrl)
+    socket.addEventListener('open', () => {
+      const payload = {
+        id: 1,
+        method: 'Runtime.evaluate',
+        params: {
+          expression: String(expression || ''),
+          returnByValue: true,
+          awaitPromise: true,
+        },
+      }
+      socket.send(JSON.stringify(payload))
+    })
+    socket.addEventListener('message', (event) => {
+      try {
+        const msg = JSON.parse(String(event?.data || '{}'))
+        if (Number(msg?.id) !== 1) return
+        if (msg?.error) {
+          settle(new Error(toText(msg.error?.message) || 'Chrome CDP evaluate error'))
+          return
+        }
+        const exceptionText = toText(msg?.result?.exceptionDetails?.text)
+        if (exceptionText) {
+          settle(new Error(`Chrome CDP eval exception: ${exceptionText}`))
+          return
+        }
+        settle(null, { value: msg?.result?.result?.value })
+      } catch (error) {
+        settle(error)
+      }
+    })
+    socket.addEventListener('error', () => settle(new Error('Chrome CDP websocket error')))
+    socket.addEventListener('close', () => {
+      if (!settled) settle(new Error('Chrome CDP websocket closed unexpectedly'))
+    })
+  })
+}
+
+async function fetchCdpByChromeDirect(endpoint = '', init = {}, timeoutMs = 15000) {
+  const raw = String(endpoint || '')
+  const [pathOnly, queryText = ''] = raw.split('?')
+  const query = new URLSearchParams(queryText)
+  if (pathOnly === '/targets') {
+    const list = await fetchChromeCdpJson('/json/list', {}, timeoutMs)
+    const value = Array.isArray(list) ? list.map((item) => mapChromeTarget(item)) : []
+    return { value }
+  }
+  if (pathOnly === '/new') {
+    const url = toText(query.get('url'))
+    let created = null
+    try {
+      created = await fetchChromeCdpJson(`/json/new?${encodeURIComponent(url)}`, { method: 'PUT' }, timeoutMs)
+    } catch {
+      created = await fetchChromeCdpJson(`/json/new?${encodeURIComponent(url)}`, {}, timeoutMs)
+    }
+    const mapped = mapChromeTarget(created || {})
+    return { targetId: mapped.targetId, ...mapped }
+  }
+  if (pathOnly === '/info') {
+    const targetId = toText(query.get('target'))
+    const list = await fetchChromeCdpJson('/json/list', {}, timeoutMs)
+    const targets = Array.isArray(list) ? list.map((item) => mapChromeTarget(item)) : []
+    const matched = targets.find((item) => item.targetId === targetId) || {}
+    return matched
+  }
+  if (pathOnly === '/close') {
+    const targetId = toText(query.get('target'))
+    await fetchChromeCdpJson(`/json/close/${encodeURIComponent(targetId)}`, {}, timeoutMs).catch(() => ({}))
+    return { ok: true }
+  }
+  if (pathOnly === '/eval') {
+    const targetId = toText(query.get('target'))
+    const expression = String(init?.body || '')
+    return await evalByChromeCdpTarget(targetId, expression, timeoutMs)
+  }
+  throw new Error(`Chrome direct CDP unsupported endpoint: ${raw}`)
+}
+
+async function fetchCdpProxyJson(endpoint = '', init = {}, timeoutMs = 15000) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), Math.max(1000, Number(timeoutMs || 15000)))
+  try {
+    const response = await fetchByNetworkPolicy(`${cdpProxyBaseUrl}${endpoint}`, {
+      ...init,
+      signal: controller.signal,
+    })
+    if (!response.ok) {
+      const text = await response.text().catch(() => '')
+      throw new Error(`CDP proxy HTTP ${response.status}${text ? `: ${text.slice(0, 200)}` : ''}`)
+    }
+    return await response.json()
+  } catch (error) {
+    const message = toText(error?.message || '')
+    if (/CDP proxy HTTP|ECONNREFUSED|fetch failed|aborted|timed out/i.test(message)) {
+      return await fetchCdpByChromeDirect(endpoint, init, timeoutMs)
+    }
+    throw error
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+async function pathExists(targetPath = '') {
+  const normalized = toText(targetPath)
+  if (!normalized) return false
+  try {
+    await fs.access(normalized)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function buildSupplierBrowserProfileCandidates() {
+  const localAppData = toText(process.env.LOCALAPPDATA)
+  const explicitUserDataDir = toText(process.env.SUPPLIER_PW_USER_DATA_DIR)
+  const explicitProfileDir = toText(process.env.SUPPLIER_PW_PROFILE_DIR) || 'Default'
+  const candidates = []
+  if (explicitUserDataDir) {
+    candidates.push({
+      channel: 'chrome',
+      userDataDir: explicitUserDataDir,
+      profileDir: explicitProfileDir,
+      label: `chrome:${explicitProfileDir}`,
+    })
+  }
+  if (localAppData) {
+    candidates.push({
+      channel: 'chrome',
+      userDataDir: path.join(localAppData, 'Google', 'Chrome', 'User Data'),
+      profileDir: explicitProfileDir,
+      label: `chrome:${explicitProfileDir}`,
+    })
+  }
+  return candidates
+}
+
+async function resolveSupplierBrowserProfile(targetUrl = '', context = {}) {
+  const skillText = toText(context?.skill).toLowerCase()
+  const host = safeHostFromUrl(targetUrl)
+  const shouldPreferProfile = /playwright/.test(skillText) || host.includes('gasgoo.com')
+  if (!shouldPreferProfile) return null
+  for (const candidate of buildSupplierBrowserProfileCandidates()) {
+    if (await pathExists(candidate.userDataDir)) {
+      return candidate
+    }
+  }
+  return null
+}
+
+async function createSupplierPlaywrightSession(targetUrl = '', context = {}) {
+  const { chromium } = await import('playwright')
+  const launchArgs = buildPlaywrightLaunchArgs(targetUrl)
+  const pageOptions = {
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/136.0.0.0 Safari/537.36',
+    viewport: { width: 1366, height: 900 },
+  }
+  const profile = await resolveSupplierBrowserProfile(targetUrl, context)
+  if (profile) {
+    try {
+      const persistentContext = await chromium.launchPersistentContext(profile.userDataDir, {
+        channel: profile.channel,
+        headless: false,
+        args: [...launchArgs, `--profile-directory=${profile.profileDir}`],
+        ...pageOptions,
+        locale: 'zh-CN',
+        timezoneId: 'Asia/Shanghai',
+      })
+      const page = await persistentContext.newPage()
+      return {
+        page,
+        mode: 'persistent-profile',
+        profileLabel: profile.label,
+        close: async () => persistentContext.close().catch(() => {}),
+      }
+    } catch (error) {
+      const browser = await chromium.launch({ headless: true, args: launchArgs })
+      const page = await browser.newPage(pageOptions)
+      return {
+        page,
+        mode: 'ephemeral-fallback',
+        profileLabel: profile.label,
+        launchError: error?.message || 'persistent profile launch failed',
+        close: async () => browser.close().catch(() => {}),
+      }
+    }
+  }
+  const browser = await chromium.launch({ headless: true, args: launchArgs })
+  const page = await browser.newPage(pageOptions)
+  return {
+    page,
+    mode: 'ephemeral',
+    profileLabel: '',
+    close: async () => browser.close().catch(() => {}),
+  }
 }
 
 mergeNoProxyEnv([...proxyBypassHostSet])
@@ -226,8 +479,19 @@ const crawlLogTable = `"${schemaName}"."crawl_task_log"`
 const crawlQualityTable = `"${schemaName}"."crawl_task_quality"`
 const crawlInfoTable = `"${schemaName}"."crawl_info"`
 const supplyChainNodeTable = `"${schemaName}"."supply_chain_node"`
+const gasSupplyChainNodeTable = `"${schemaName}"."gas_supply_chain_node"`
 const supplierBaseTable = `"${schemaName}"."supplier_base_info"`
+const gasOemTable = `"${schemaName}"."gas_oem"`
 const supplierProfileTable = `"${schemaName}"."supplier_profile"`
+const supplierProfileCustomerTable = `"${schemaName}"."supplier_profile_customer_item"`
+const supplierProfileProductCaseTable = `"${schemaName}"."supplier_profile_product_case_item"`
+const supplierProfileFinancingTable = `"${schemaName}"."supplier_profile_financing_item"`
+const supplierProfilePatentTable = `"${schemaName}"."supplier_profile_patent_item"`
+const supplierProfileAdminLicenseTable = `"${schemaName}"."supplier_profile_admin_license_item"`
+const supplierProfileTradeCreditTable = `"${schemaName}"."supplier_profile_trade_credit_item"`
+const supplierProfileCourtNoticeTable = `"${schemaName}"."supplier_profile_court_notice_item"`
+const supplierProfileProductionBaseTable = `"${schemaName}"."supplier_profile_production_base_item"`
+const supplierProfileNewsTable = `"${schemaName}"."supplier_profile_news_item"`
 const supplierOemDictTable = `"${schemaName}"."supplier_oem_dict"`
 const supplierCountryDictTable = `"${schemaName}"."supplier_country_dict"`
 const supplierCertDictTable = `"${schemaName}"."supplier_certification_dict"`
@@ -236,6 +500,14 @@ const chatMessageTable = `"${schemaName}"."chat_message"`
 const crawlExportDir = path.join(process.cwd(), 'crawl_exports')
 const supplyChainRootTitle = '新能源汽车制造供应链'
 const supplierCrawlTaskStore = new Map()
+const supplierTaskStoreFile = path.join(process.cwd(), 'logs', 'supplier-crawl-tasks.json')
+let supplierTaskStorePersistPromise = Promise.resolve()
+let supplierTaskStorePersistPending = false
+const gasSupplyChainTaskStore = new Map()
+const gasSupplyChainTaskStoreFile = path.join(process.cwd(), 'logs', 'gas-supply-chain-tasks.json')
+const gasgooCdpTargetFile = path.join(process.cwd(), 'logs', 'gasgoo-cdp-target.json')
+let gasSupplyChainTaskStorePersistPromise = Promise.resolve()
+let gasSupplyChainTaskStorePersistPending = false
 const supplierDetailLlmCache = new Map()
 const codexModelOptions = [
   'gpt-5.4',
@@ -247,14 +519,12 @@ const codexModelOptions = [
   'gpt-5.1-codex-mini',
 ]
 const supplierSkillOptions = [
-  'Crawl4AI',
-  'openclaw-grok-search',
-  'vercel:agent-browser',
+  'web-access',
   'Playwright（浏览器自动化）',
   'playwright-script',
-  'frontend-design',
-  'ui-ux-pro-max',
-  'web-design-guidelines',
+  'Crawl4AI',
+  'vercel:agent-browser',
+  'openclaw-grok-search',
 ]
 const supplierLlmEnabled = (process.env.SUPPLIER_LLM_ENABLED || 'true') === 'true'
 const supplierLlmApiKey = process.env.OPENAI_API_KEY || process.env.LLM_API_KEY || process.env.CODEX_API_KEY || ''
@@ -265,6 +535,10 @@ const supplierHttpRetryCount = Math.max(1, Number(process.env.SUPPLIER_HTTP_RETR
 const supplierPlaywrightGotoTimeoutMs = Math.max(8000, Number(process.env.SUPPLIER_PW_GOTO_TIMEOUT_MS || 25000))
 const supplierPlaywrightWaitMs = Math.max(400, Number(process.env.SUPPLIER_PW_WAIT_MS || 1800))
 const supplierTryAllVariants = (process.env.SUPPLIER_TRY_ALL_VARIANTS || 'false') === 'true'
+const gasSyncLocalExtractCommandDefault = toText(process.env.GAS_SYNC_LOCAL_EXTRACT_COMMAND)
+const gasSyncLocalExtractArgsJsonDefault = toText(process.env.GAS_SYNC_LOCAL_EXTRACT_ARGS_JSON || '[]')
+const gasSyncLocalExtractCwdDefault = toText(process.env.GAS_SYNC_LOCAL_EXTRACT_CWD)
+const gasSyncLocalExtractTimeoutMsDefault = Math.max(5000, Number(process.env.GAS_SYNC_LOCAL_EXTRACT_TIMEOUT_MS || 180000))
 const pool = new Pool(dbConfig)
 let dbReady = false
 let dbInitErrorMessage = ''
@@ -442,6 +716,19 @@ async function initDatabase() {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
+    CREATE TABLE IF NOT EXISTS ${gasSupplyChainNodeTable} (
+      id BIGSERIAL PRIMARY KEY,
+      parent_id BIGINT REFERENCES ${gasSupplyChainNodeTable}(id) ON DELETE CASCADE,
+      node_level SMALLINT NOT NULL,
+      node_title VARCHAR(255) NOT NULL,
+      node_url TEXT NOT NULL DEFAULT '',
+      source_url TEXT NOT NULL DEFAULT '',
+      synced_supplier_count INT NOT NULL DEFAULT 0,
+      synced_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
     CREATE TABLE IF NOT EXISTS ${supplierBaseTable} (
       id BIGSERIAL PRIMARY KEY,
       node_id BIGINT REFERENCES ${supplyChainNodeTable}(id) ON DELETE SET NULL,
@@ -462,8 +749,24 @@ async function initDatabase() {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
+    CREATE TABLE IF NOT EXISTS ${gasOemTable} (
+      id BIGSERIAL PRIMARY KEY,
+      oem_name VARCHAR(255) NOT NULL DEFAULT '',
+      brand VARCHAR(255) NOT NULL DEFAULT '',
+      vehicle_model TEXT NOT NULL DEFAULT '',
+      region VARCHAR(120) NOT NULL DEFAULT '',
+      registered_capital VARCHAR(120) NOT NULL DEFAULT '',
+      website TEXT NOT NULL DEFAULT '',
+      model VARCHAR(64) NOT NULL DEFAULT '',
+      skill VARCHAR(128) NOT NULL DEFAULT '',
+      source_file VARCHAR(255) NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
     CREATE TABLE IF NOT EXISTS ${supplierProfileTable} (
       id BIGSERIAL PRIMARY KEY,
+      profile_source VARCHAR(16) NOT NULL DEFAULT 'gys',
       related_node_id BIGINT,
       related_node_name VARCHAR(255) NOT NULL DEFAULT '',
       related_node_ids JSONB NOT NULL DEFAULT '[]',
@@ -496,6 +799,139 @@ async function initDatabase() {
       export_countries JSONB NOT NULL DEFAULT '[]',
       certificate_items JSONB NOT NULL DEFAULT '[]',
       news_items JSONB NOT NULL DEFAULT '[]',
+      company_tags JSONB NOT NULL DEFAULT '[]',
+      main_product_names JSONB NOT NULL DEFAULT '[]',
+      business_info JSONB NOT NULL DEFAULT '{}',
+      industrial_commercial_info JSONB NOT NULL DEFAULT '{}',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS ${supplierProfileCustomerTable} (
+      id BIGSERIAL PRIMARY KEY,
+      profile_id BIGINT NOT NULL REFERENCES ${supplierProfileTable}(id) ON DELETE CASCADE,
+      sort_order INT NOT NULL DEFAULT 0,
+      product_name VARCHAR(255) NOT NULL DEFAULT '',
+      oem_names JSONB NOT NULL DEFAULT '[]',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS ${supplierProfileProductCaseTable} (
+      id BIGSERIAL PRIMARY KEY,
+      profile_id BIGINT NOT NULL REFERENCES ${supplierProfileTable}(id) ON DELETE CASCADE,
+      sort_order INT NOT NULL DEFAULT 0,
+      product_name VARCHAR(255) NOT NULL DEFAULT '',
+      vehicle_model VARCHAR(255) NOT NULL DEFAULT '',
+      customer_name VARCHAR(255) NOT NULL DEFAULT '',
+      description TEXT NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS ${supplierProfileFinancingTable} (
+      id BIGSERIAL PRIMARY KEY,
+      profile_id BIGINT NOT NULL REFERENCES ${supplierProfileTable}(id) ON DELETE CASCADE,
+      sort_order INT NOT NULL DEFAULT 0,
+      financing_date VARCHAR(64) NOT NULL DEFAULT '',
+      financing_round VARCHAR(120) NOT NULL DEFAULT '',
+      financing_amount VARCHAR(120) NOT NULL DEFAULT '',
+      investors TEXT NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS ${supplierProfilePatentTable} (
+      id BIGSERIAL PRIMARY KEY,
+      profile_id BIGINT NOT NULL REFERENCES ${supplierProfileTable}(id) ON DELETE CASCADE,
+      sort_order INT NOT NULL DEFAULT 0,
+      patent_type VARCHAR(120) NOT NULL DEFAULT '',
+      publication_no VARCHAR(120) NOT NULL DEFAULT '',
+      publication_date VARCHAR(64) NOT NULL DEFAULT '',
+      title TEXT NOT NULL DEFAULT '',
+      application_no VARCHAR(120) NOT NULL DEFAULT '',
+      application_date VARCHAR(64) NOT NULL DEFAULT '',
+      inventors TEXT NOT NULL DEFAULT '',
+      assignee TEXT NOT NULL DEFAULT '',
+      agency VARCHAR(255) NOT NULL DEFAULT '',
+      agent VARCHAR(255) NOT NULL DEFAULT '',
+      legal_status VARCHAR(255) NOT NULL DEFAULT '',
+      summary TEXT NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS ${supplierProfileAdminLicenseTable} (
+      id BIGSERIAL PRIMARY KEY,
+      profile_id BIGINT NOT NULL REFERENCES ${supplierProfileTable}(id) ON DELETE CASCADE,
+      sort_order INT NOT NULL DEFAULT 0,
+      document_no VARCHAR(255) NOT NULL DEFAULT '',
+      authority VARCHAR(255) NOT NULL DEFAULT '',
+      decision_date VARCHAR(64) NOT NULL DEFAULT '',
+      content TEXT NOT NULL DEFAULT '',
+      status VARCHAR(120) NOT NULL DEFAULT '',
+      valid_until VARCHAR(64) NOT NULL DEFAULT '',
+      category VARCHAR(120) NOT NULL DEFAULT '',
+      region VARCHAR(120) NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS ${supplierProfileTradeCreditTable} (
+      id BIGSERIAL PRIMARY KEY,
+      profile_id BIGINT NOT NULL REFERENCES ${supplierProfileTable}(id) ON DELETE CASCADE,
+      sort_order INT NOT NULL DEFAULT 0,
+      customs_office VARCHAR(255) NOT NULL DEFAULT '',
+      business_type VARCHAR(120) NOT NULL DEFAULT '',
+      registration_date VARCHAR(64) NOT NULL DEFAULT '',
+      registration_code VARCHAR(120) NOT NULL DEFAULT '',
+      administrative_region VARCHAR(120) NOT NULL DEFAULT '',
+      economic_region VARCHAR(120) NOT NULL DEFAULT '',
+      credit_level VARCHAR(120) NOT NULL DEFAULT '',
+      annual_report_status VARCHAR(120) NOT NULL DEFAULT '',
+      validity_period VARCHAR(120) NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS ${supplierProfileCourtNoticeTable} (
+      id BIGSERIAL PRIMARY KEY,
+      profile_id BIGINT NOT NULL REFERENCES ${supplierProfileTable}(id) ON DELETE CASCADE,
+      sort_order INT NOT NULL DEFAULT 0,
+      case_no VARCHAR(255) NOT NULL DEFAULT '',
+      hearing_date VARCHAR(64) NOT NULL DEFAULT '',
+      cause TEXT NOT NULL DEFAULT '',
+      plaintiff TEXT NOT NULL DEFAULT '',
+      defendant TEXT NOT NULL DEFAULT '',
+      court VARCHAR(255) NOT NULL DEFAULT '',
+      tribunal VARCHAR(255) NOT NULL DEFAULT '',
+      region VARCHAR(120) NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS ${supplierProfileProductionBaseTable} (
+      id BIGSERIAL PRIMARY KEY,
+      profile_id BIGINT NOT NULL REFERENCES ${supplierProfileTable}(id) ON DELETE CASCADE,
+      sort_order INT NOT NULL DEFAULT 0,
+      base_name VARCHAR(255) NOT NULL DEFAULT '',
+      region VARCHAR(255) NOT NULL DEFAULT '',
+      postal_code VARCHAR(64) NOT NULL DEFAULT '',
+      address TEXT NOT NULL DEFAULT '',
+      phone VARCHAR(255) NOT NULL DEFAULT '',
+      main_products TEXT NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS ${supplierProfileNewsTable} (
+      id BIGSERIAL PRIMARY KEY,
+      profile_id BIGINT NOT NULL REFERENCES ${supplierProfileTable}(id) ON DELETE CASCADE,
+      sort_order INT NOT NULL DEFAULT 0,
+      title TEXT NOT NULL DEFAULT '',
+      source VARCHAR(255) NOT NULL DEFAULT '',
+      publish_date VARCHAR(64) NOT NULL DEFAULT '',
+      content TEXT NOT NULL DEFAULT '',
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
@@ -528,22 +964,56 @@ async function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_crawl_info_business_entity ON ${crawlInfoTable}(business_entity);
     CREATE INDEX IF NOT EXISTS idx_supply_chain_node_parent ON ${supplyChainNodeTable}(parent_id, node_level);
     CREATE INDEX IF NOT EXISTS idx_supply_chain_node_source ON ${supplyChainNodeTable}(source_url, business_entity);
+    CREATE INDEX IF NOT EXISTS idx_gas_supply_chain_node_parent ON ${gasSupplyChainNodeTable}(parent_id, node_level);
+    CREATE INDEX IF NOT EXISTS idx_gas_supply_chain_node_source ON ${gasSupplyChainNodeTable}(source_url);
     CREATE INDEX IF NOT EXISTS idx_supplier_base_node ON ${supplierBaseTable}(node_id, updated_at DESC);
     CREATE INDEX IF NOT EXISTS idx_supplier_base_company ON ${supplierBaseTable}(company_name);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_supplier_base_unique
       ON ${supplierBaseTable}(COALESCE(node_id, 0), company_name, detail_url);
+    CREATE INDEX IF NOT EXISTS idx_gas_oem_name ON ${gasOemTable}(oem_name, updated_at DESC);
     CREATE INDEX IF NOT EXISTS idx_supplier_profile_company ON ${supplierProfileTable}(company_name, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_supplier_profile_source_company ON ${supplierProfileTable}(profile_source, company_name, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_supplier_profile_customer_profile ON ${supplierProfileCustomerTable}(profile_id, sort_order, id);
+    CREATE INDEX IF NOT EXISTS idx_supplier_profile_product_case_profile ON ${supplierProfileProductCaseTable}(profile_id, sort_order, id);
+    CREATE INDEX IF NOT EXISTS idx_supplier_profile_financing_profile ON ${supplierProfileFinancingTable}(profile_id, sort_order, id);
+    CREATE INDEX IF NOT EXISTS idx_supplier_profile_patent_profile ON ${supplierProfilePatentTable}(profile_id, sort_order, id);
+    CREATE INDEX IF NOT EXISTS idx_supplier_profile_admin_license_profile ON ${supplierProfileAdminLicenseTable}(profile_id, sort_order, id);
+    CREATE INDEX IF NOT EXISTS idx_supplier_profile_trade_credit_profile ON ${supplierProfileTradeCreditTable}(profile_id, sort_order, id);
+    CREATE INDEX IF NOT EXISTS idx_supplier_profile_court_notice_profile ON ${supplierProfileCourtNoticeTable}(profile_id, sort_order, id);
+    CREATE INDEX IF NOT EXISTS idx_supplier_profile_production_base_profile ON ${supplierProfileProductionBaseTable}(profile_id, sort_order, id);
+    CREATE INDEX IF NOT EXISTS idx_supplier_profile_news_profile ON ${supplierProfileNewsTable}(profile_id, sort_order, id);
     CREATE INDEX IF NOT EXISTS idx_supplier_oem_dict_sort ON ${supplierOemDictTable}(sort_order ASC, id ASC);
     CREATE INDEX IF NOT EXISTS idx_supplier_country_dict_sort ON ${supplierCountryDictTable}(sort_order ASC, id ASC);
     CREATE INDEX IF NOT EXISTS idx_supplier_cert_dict_sort ON ${supplierCertDictTable}(sort_order ASC, id ASC);
     DROP INDEX IF EXISTS idx_supply_chain_node_unique;
     CREATE UNIQUE INDEX IF NOT EXISTS idx_supply_chain_node_unique
       ON ${supplyChainNodeTable}(COALESCE(parent_id, 0), node_level, node_title, source_url);
+    DROP INDEX IF EXISTS idx_gas_supply_chain_node_unique;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_gas_supply_chain_node_unique
+      ON ${gasSupplyChainNodeTable}(COALESCE(parent_id, 0), node_level, node_title, source_url);
 
     ALTER TABLE ${supplyChainNodeTable}
       DROP CONSTRAINT IF EXISTS supply_chain_node_node_level_check;
     ALTER TABLE ${supplyChainNodeTable}
       ADD CONSTRAINT supply_chain_node_node_level_check CHECK (node_level BETWEEN 1 AND 5);
+    ALTER TABLE ${gasSupplyChainNodeTable}
+      DROP CONSTRAINT IF EXISTS gas_supply_chain_node_node_level_check;
+    ALTER TABLE ${gasSupplyChainNodeTable}
+      ADD CONSTRAINT gas_supply_chain_node_node_level_check CHECK (node_level BETWEEN 1 AND 5);
+
+    ALTER TABLE ${gasOemTable} ADD COLUMN IF NOT EXISTS brand VARCHAR(255) NOT NULL DEFAULT '';
+    ALTER TABLE ${gasOemTable} ADD COLUMN IF NOT EXISTS vehicle_model TEXT NOT NULL DEFAULT '';
+    DROP INDEX IF EXISTS idx_gas_oem_unique;
+    ALTER TABLE ${gasOemTable} DROP COLUMN IF EXISTS source_url;
+    WITH ranked_gas_oem AS (
+      SELECT id, ROW_NUMBER() OVER (PARTITION BY oem_name ORDER BY updated_at DESC, id DESC) AS rn
+      FROM ${gasOemTable}
+    )
+    DELETE FROM ${gasOemTable} t
+    USING ranked_gas_oem r
+    WHERE t.id = r.id AND r.rn > 1;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_gas_oem_unique
+      ON ${gasOemTable}(oem_name);
 
     ALTER TABLE ${supplierProfileTable} ADD COLUMN IF NOT EXISTS contacts JSONB NOT NULL DEFAULT '[]';
     ALTER TABLE ${supplierProfileTable} ADD COLUMN IF NOT EXISTS fit_oems JSONB NOT NULL DEFAULT '[]';
@@ -551,6 +1021,11 @@ async function initDatabase() {
     ALTER TABLE ${supplierProfileTable} ADD COLUMN IF NOT EXISTS export_countries JSONB NOT NULL DEFAULT '[]';
     ALTER TABLE ${supplierProfileTable} ADD COLUMN IF NOT EXISTS certificate_items JSONB NOT NULL DEFAULT '[]';
     ALTER TABLE ${supplierProfileTable} ADD COLUMN IF NOT EXISTS news_items JSONB NOT NULL DEFAULT '[]';
+    ALTER TABLE ${supplierProfileTable} ADD COLUMN IF NOT EXISTS company_tags JSONB NOT NULL DEFAULT '[]';
+    ALTER TABLE ${supplierProfileTable} ADD COLUMN IF NOT EXISTS main_product_names JSONB NOT NULL DEFAULT '[]';
+    ALTER TABLE ${supplierProfileTable} ADD COLUMN IF NOT EXISTS business_info JSONB NOT NULL DEFAULT '{}';
+    ALTER TABLE ${supplierProfileTable} ADD COLUMN IF NOT EXISTS industrial_commercial_info JSONB NOT NULL DEFAULT '{}';
+    ALTER TABLE ${supplierProfileTable} ADD COLUMN IF NOT EXISTS profile_source VARCHAR(16) NOT NULL DEFAULT 'gys';
     ALTER TABLE ${supplierProfileTable} ADD COLUMN IF NOT EXISTS related_node_id BIGINT;
     ALTER TABLE ${supplierProfileTable} ADD COLUMN IF NOT EXISTS related_node_name VARCHAR(255) NOT NULL DEFAULT '';
     ALTER TABLE ${supplierProfileTable} ADD COLUMN IF NOT EXISTS related_node_ids JSONB NOT NULL DEFAULT '[]';
@@ -580,6 +1055,20 @@ async function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_chat_message_session ON ${chatMessageTable}(session_id, id ASC);
   `
   await pool.query(sql)
+  await pool.query(
+    `
+    UPDATE ${supplierProfileTable}
+    SET profile_source = 'gas'
+    WHERE website ILIKE '%gasgoo%' AND profile_source <> 'gas'
+    `,
+  )
+  await pool.query(
+    `
+    UPDATE ${supplierProfileTable}
+    SET profile_source = 'gys'
+    WHERE COALESCE(profile_source, '') = '' OR profile_source NOT IN ('gys', 'gas')
+    `,
+  )
   await pool.query(
     `
     INSERT INTO ${supplyChainNodeTable}
@@ -630,6 +1119,8 @@ async function initDatabase() {
     `,
   )
   await fs.mkdir(crawlExportDir, { recursive: true })
+  await restoreSupplierTaskStore()
+  await restoreGasSupplyChainTaskStore()
 }
 
 function parseNaturalCommand(command) {
@@ -890,6 +1381,100 @@ function toText(value) {
   return String(value || '').trim()
 }
 
+function parseJsonValueFromText(text = '') {
+  const trimmed = String(text || '').trim()
+  if (!trimmed) return null
+  try {
+    return JSON.parse(trimmed)
+  } catch {
+    return null
+  }
+}
+
+function parseJsonValueFromMixedText(text = '') {
+  const trimmed = String(text || '').trim()
+  if (!trimmed) return null
+  const direct = parseJsonValueFromText(trimmed)
+  if (direct !== null) return direct
+  const lines = trimmed.split(/\r?\n/g)
+  const start = Math.max(0, lines.length - 120)
+  for (let i = lines.length - 1; i >= start; i -= 1) {
+    const candidate = lines.slice(i).join('\n').trim()
+    if (!candidate || (!candidate.startsWith('{') && !candidate.startsWith('['))) continue
+    const parsed = parseJsonValueFromText(candidate)
+    if (parsed !== null) return parsed
+  }
+  return null
+}
+
+function normalizeLocalExtractorArgs(input, fallbackJson = '[]') {
+  if (Array.isArray(input)) {
+    return input.map((item) => toText(item)).filter(Boolean)
+  }
+  const text = toText(input)
+  if (text) {
+    const parsed = parseJsonValueFromMixedText(text)
+    if (Array.isArray(parsed)) {
+      return parsed.map((item) => toText(item)).filter(Boolean)
+    }
+    return text.split(/\r?\n/g).map((item) => toText(item)).filter(Boolean)
+  }
+  const parsedFallback = parseJsonValueFromText(fallbackJson)
+  if (Array.isArray(parsedFallback)) {
+    return parsedFallback.map((item) => toText(item)).filter(Boolean)
+  }
+  return []
+}
+
+function normalizeGasSupplyChainTaskRow(input, taskMeta = {}, fallbackSourceUrl = '') {
+  if (!input || typeof input !== 'object') return null
+  const nodeLevel = Number(input.nodeLevel ?? input.node_level ?? 0)
+  const nodeTitle = toText(input.nodeTitle ?? input.node_title)
+  if (!Number.isInteger(nodeLevel) || nodeLevel < 1 || nodeLevel > 5 || !nodeTitle) return null
+  const sourceUrl = toText(input.sourceUrl ?? input.source_url) || toText(fallbackSourceUrl)
+  const pageUrl = toText(input.pageUrl ?? input.page_url) || sourceUrl
+  const level1Title = toText(input.level1Title ?? input.level1_title) || (nodeLevel === 1 ? nodeTitle : '')
+  const level2Title = toText(input.level2Title ?? input.level2_title) || (nodeLevel === 2 ? nodeTitle : '')
+  const level3Title = toText(input.level3Title ?? input.level3_title) || (nodeLevel === 3 ? nodeTitle : '')
+  const lineage = toText(input.lineage) || [level1Title, level2Title, level3Title].filter(Boolean).join(' > ') || nodeTitle
+  return {
+    sourceUrl,
+    pageUrl,
+    model: toText(input.model) || toText(taskMeta.model),
+    skill: toText(input.skill) || toText(taskMeta.skill),
+    mode: toText(input.mode) || toText(taskMeta.mode || 'full'),
+    nodeLevel,
+    nodeCode: toText(input.nodeCode ?? input.node_code),
+    nodeTitle,
+    nodeUrl: toText(input.nodeUrl ?? input.node_url),
+    parentCode: toText(input.parentCode ?? input.parent_code),
+    parentTitle: toText(input.parentTitle ?? input.parent_title),
+    parentUrl: toText(input.parentUrl ?? input.parent_url),
+    level1Code: toText(input.level1Code ?? input.level1_code),
+    level1Title,
+    level1Url: toText(input.level1Url ?? input.level1_url),
+    level2Code: toText(input.level2Code ?? input.level2_code),
+    level2Title,
+    level2Url: toText(input.level2Url ?? input.level2_url),
+    level3Code: toText(input.level3Code ?? input.level3_code),
+    level3Title,
+    level3Url: toText(input.level3Url ?? input.level3_url),
+    lineage,
+    status: toText(input.status) || 'success',
+    errorMessage: toText(input.errorMessage ?? input.error_message),
+  }
+}
+
+function normalizeGasSupplyChainTaskRows(inputRows = [], taskMeta = {}, fallbackSourceUrl = '') {
+  if (!Array.isArray(inputRows)) return []
+  const rows = []
+  for (const item of inputRows) {
+    const normalized = normalizeGasSupplyChainTaskRow(item, taskMeta, fallbackSourceUrl)
+    if (normalized) rows.push(normalized)
+  }
+  return rows
+}
+
 function parsePositiveBigintId(value) {
   const text = String(value ?? '').trim()
   if (!/^\d+$/.test(text)) return null
@@ -1111,6 +1696,199 @@ function parseSupplierNewsItems(input) {
       }
     })
     .filter((item) => item.title || item.source || item.publishDate || item.content)
+}
+
+function parseSupplierCompanyTags(input) {
+  return parseStringArray(input).slice(0, 24)
+}
+
+function normalizeSupplierProfileSource(input = '') {
+  return String(input || '').trim().toLowerCase() === 'gas' ? 'gas' : 'gys'
+}
+
+function detectSupplierProfileSource(...inputs) {
+  for (const input of inputs) {
+    const text = toText(input)
+    if (!text) continue
+    if (normalizeSupplierProfileSource(text) === 'gas') return 'gas'
+    const host = safeHostFromUrl(text)
+    if (host.includes('gasgoo.com')) return 'gas'
+  }
+  return 'gys'
+}
+
+function normalizeSupplierProfileView(input = '') {
+  const value = String(input || '').trim().toLowerCase()
+  if (value === 'gas') return 'gas'
+  if (value === 'gys') return 'gys'
+  return ''
+}
+
+function normalizeSupplierHomepageOnly(input = false) {
+  if (input === true || input === 1) return true
+  const value = String(input || '').trim().toLowerCase()
+  return value === 'true' || value === '1' || value === 'yes' || value === 'on'
+}
+
+function parseSupplierBusinessInfo(input) {
+  const data = input && typeof input === 'object' && !Array.isArray(input) ? input : {}
+  const result = {}
+  for (const [key, value] of Object.entries(data)) {
+    const nextKey = cleanSupplierFieldText(key)
+    const nextValue = cleanSupplierFieldText(value)
+    if (!nextKey || !nextValue) continue
+    result[nextKey] = nextValue
+  }
+  return result
+}
+
+function parseSupplierCustomerItems(input) {
+  const list = Array.isArray(input) ? input : []
+  return list
+    .map((item, idx) => {
+      const data = item && typeof item === 'object' ? item : {}
+      return {
+        id: toText(data.id) || `sc-${Date.now()}-${idx + 1}`,
+        productName: cleanSupplierFieldText(data.productName),
+        oemNames: parseStringArray(data.oemNames),
+      }
+    })
+    .filter((item) => item.productName || item.oemNames.length > 0)
+}
+
+function parseSupplierProductCaseItems(input) {
+  const list = Array.isArray(input) ? input : []
+  return list
+    .map((item, idx) => {
+      const data = item && typeof item === 'object' ? item : {}
+      return {
+        id: toText(data.id) || `pc-${Date.now()}-${idx + 1}`,
+        productName: cleanSupplierFieldText(data.productName),
+        vehicleModel: cleanSupplierFieldText(data.vehicleModel),
+        customerName: cleanSupplierFieldText(data.customerName),
+        description: cleanSupplierFieldText(data.description),
+      }
+    })
+    .filter((item) => item.productName || item.vehicleModel || item.customerName || item.description)
+}
+
+function parseSupplierFinancingItems(input) {
+  const list = Array.isArray(input) ? input : []
+  return list
+    .map((item, idx) => {
+      const data = item && typeof item === 'object' ? item : {}
+      return {
+        id: toText(data.id) || `fi-${Date.now()}-${idx + 1}`,
+        financingDate: cleanSupplierFieldText(data.financingDate),
+        round: cleanSupplierFieldText(data.round),
+        amount: cleanSupplierFieldText(data.amount),
+        investors: cleanSupplierFieldText(data.investors),
+      }
+    })
+    .filter((item) => item.financingDate || item.round || item.amount || item.investors)
+}
+
+function parseSupplierPatentItems(input) {
+  const list = Array.isArray(input) ? input : []
+  return list
+    .map((item, idx) => {
+      const data = item && typeof item === 'object' ? item : {}
+      return {
+        id: toText(data.id) || `pt-${Date.now()}-${idx + 1}`,
+        patentType: cleanSupplierFieldText(data.patentType),
+        publicationNo: cleanSupplierFieldText(data.publicationNo),
+        publicationDate: cleanSupplierFieldText(data.publicationDate),
+        title: cleanSupplierFieldText(data.title),
+        applicationNo: cleanSupplierFieldText(data.applicationNo),
+        applicationDate: cleanSupplierFieldText(data.applicationDate),
+        inventors: cleanSupplierFieldText(data.inventors),
+        assignee: cleanSupplierFieldText(data.assignee),
+        agency: cleanSupplierFieldText(data.agency),
+        agent: cleanSupplierFieldText(data.agent),
+        legalStatus: cleanSupplierFieldText(data.legalStatus),
+        summary: cleanSupplierFieldText(data.summary),
+      }
+    })
+    .filter((item) => Object.values(item).some((value, index) => index > 0 && value))
+}
+
+function parseSupplierAdminLicenseItems(input) {
+  const list = Array.isArray(input) ? input : []
+  return list
+    .map((item, idx) => {
+      const data = item && typeof item === 'object' ? item : {}
+      return {
+        id: toText(data.id) || `al-${Date.now()}-${idx + 1}`,
+        documentNo: cleanSupplierFieldText(data.documentNo),
+        authority: cleanSupplierFieldText(data.authority),
+        decisionDate: cleanSupplierFieldText(data.decisionDate),
+        content: cleanSupplierFieldText(data.content),
+        status: cleanSupplierFieldText(data.status),
+        validUntil: cleanSupplierFieldText(data.validUntil),
+        category: cleanSupplierFieldText(data.category),
+        region: cleanSupplierFieldText(data.region),
+      }
+    })
+    .filter((item) => Object.values(item).some((value, index) => index > 0 && value))
+}
+
+function parseSupplierTradeCreditItems(input) {
+  const list = Array.isArray(input) ? input : []
+  return list
+    .map((item, idx) => {
+      const data = item && typeof item === 'object' ? item : {}
+      return {
+        id: toText(data.id) || `tc-${Date.now()}-${idx + 1}`,
+        customsOffice: cleanSupplierFieldText(data.customsOffice),
+        businessType: cleanSupplierFieldText(data.businessType),
+        registrationDate: cleanSupplierFieldText(data.registrationDate),
+        registrationCode: cleanSupplierFieldText(data.registrationCode),
+        administrativeRegion: cleanSupplierFieldText(data.administrativeRegion),
+        economicRegion: cleanSupplierFieldText(data.economicRegion),
+        creditLevel: cleanSupplierFieldText(data.creditLevel),
+        annualReportStatus: cleanSupplierFieldText(data.annualReportStatus),
+        validityPeriod: cleanSupplierFieldText(data.validityPeriod),
+      }
+    })
+    .filter((item) => Object.values(item).some((value, index) => index > 0 && value))
+}
+
+function parseSupplierCourtNoticeItems(input) {
+  const list = Array.isArray(input) ? input : []
+  return list
+    .map((item, idx) => {
+      const data = item && typeof item === 'object' ? item : {}
+      return {
+        id: toText(data.id) || `cn-${Date.now()}-${idx + 1}`,
+        caseNo: cleanSupplierFieldText(data.caseNo),
+        hearingDate: cleanSupplierFieldText(data.hearingDate),
+        cause: cleanSupplierFieldText(data.cause),
+        plaintiff: cleanSupplierFieldText(data.plaintiff),
+        defendant: cleanSupplierFieldText(data.defendant),
+        court: cleanSupplierFieldText(data.court),
+        tribunal: cleanSupplierFieldText(data.tribunal),
+        region: cleanSupplierFieldText(data.region),
+      }
+    })
+    .filter((item) => Object.values(item).some((value, index) => index > 0 && value))
+}
+
+function parseSupplierProductionBaseItems(input) {
+  const list = Array.isArray(input) ? input : []
+  return list
+    .map((item, idx) => {
+      const data = item && typeof item === 'object' ? item : {}
+      return {
+        id: toText(data.id) || `pb-${Date.now()}-${idx + 1}`,
+        baseName: cleanSupplierFieldText(data.baseName),
+        region: cleanSupplierFieldText(data.region),
+        postalCode: cleanSupplierFieldText(data.postalCode),
+        address: cleanSupplierFieldText(data.address),
+        phone: cleanSupplierFieldText(data.phone),
+        mainProducts: cleanSupplierFieldText(data.mainProducts),
+      }
+    })
+    .filter((item) => Object.values(item).some((value, index) => index > 0 && value))
 }
 
 function extractSupplierNewsItemsFromHtml(html = '', baseUrl = '') {
@@ -1505,11 +2283,30 @@ function isSupplierDetailEntryUrl(urlText = '') {
     const parsed = new URL(String(urlText || '').trim())
     const host = String(parsed.hostname || '').toLowerCase()
     const pathname = String(parsed.pathname || '').toLowerCase()
+    if (host.includes('gasgoo.com')) {
+      // Gasgoo 分类/分页入口，属于列表页，不是企业详情页
+      if (/^\/supplier\/(?:oem|index)\.html$/.test(pathname)) return false
+      if (/^\/supplier\/c-\d+(?:-\d+)?\.html$/.test(pathname)) return false
+    }
     if (/^[^.]+\.cn\.gasgoo\.com$/.test(host) && (pathname === '/' || pathname === '')) return true
     if (pathname.includes('company.php')) return true
     if (parsed.searchParams.get('mid')) return true
     if (/(supplier|detail|company)/.test(pathname) && !pathname.includes('category.php')) return true
     return false
+  } catch {
+    return false
+  }
+}
+
+function isWebAccessSkill(skill = '') {
+  return /(^|[^a-z])web-access([^a-z]|$)/i.test(toText(skill))
+}
+
+function isGasgooSupplierUrl(urlText = '') {
+  try {
+    const parsed = new URL(String(urlText || '').trim())
+    const host = String(parsed.hostname || '').toLowerCase()
+    return /^[^.]+\.cn\.gasgoo\.com$/.test(host) || host === 'cn.gasgoo.com'
   } catch {
     return false
   }
@@ -1596,8 +2393,274 @@ function isSupplierDetailDomReady(html = '', plain = '') {
   const bodyText = cleanSupplierFieldText(String(plain || ''))
   if (htmlText.length >= 9000) return true
   if (/(公司简介|重点产品|配套情况|出口情况|企业证书|公司视频|公司新闻|联系我们)/.test(bodyText)) return true
+  if (/(业务信息|工商信息|知识产权|法律诉讼|行政许可)/.test(bodyText)) return true
   if (/company_(?:intro|goods|goods_parts|goods_export|list|video|news|contact)\.php\?mid=/i.test(htmlText)) return true
   return false
+}
+
+function extractKeyValuePairsFromTableHtml(html = '') {
+  const source = String(html || '')
+  const pairs = {}
+  for (const row of source.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)) {
+    const cells = [...String(row?.[1] || '').matchAll(/<(?:td|th)\b[^>]*>([\s\S]*?)<\/(?:td|th)>/gi)]
+      .map((cell) => cleanSupplierHtmlBlockText(cell?.[1] || ''))
+      .filter(Boolean)
+    if (cells.length < 2) continue
+    for (let idx = 0; idx + 1 < cells.length; idx += 2) {
+      const key = cleanSupplierFieldText(cells[idx] || '')
+      const value = cleanSupplierFieldText(cells[idx + 1] || '')
+      if (!key || !value) continue
+      if (!pairs[key] || value.length > pairs[key].length) {
+        pairs[key] = value
+      }
+    }
+  }
+  return pairs
+}
+
+function extractGasgooSectionFromPlain(plain = '', startLabel = '', endLabels = []) {
+  const body = cleanSupplierFieldText(String(plain || ''))
+  const start = cleanSupplierFieldText(startLabel)
+  const ends = Array.isArray(endLabels) ? endLabels.map((item) => cleanSupplierFieldText(item)).filter(Boolean) : []
+  if (!body || !start) return ''
+  const startIdx = body.indexOf(start)
+  if (startIdx < 0) return ''
+  const sliceStart = startIdx + start.length
+  let sliceEnd = body.length
+  for (const end of ends) {
+    const idx = body.indexOf(end, sliceStart)
+    if (idx > sliceStart && idx < sliceEnd) sliceEnd = idx
+  }
+  return cleanSupplierFieldText(body.slice(sliceStart, sliceEnd))
+}
+
+function extractGasgooCompanyTagsFromHtml(html = '') {
+  const tags = []
+  for (const matched of String(html || '').matchAll(/<div[^>]*class=["'][^"']*\bidentification\b[^"']*["'][^>]*>([\s\S]*?)<\/div>/gi)) {
+    const block = String(matched?.[1] || '')
+    for (const span of block.matchAll(/<span[^>]*>([\s\S]*?)<\/span>/gi)) {
+      const text = cleanSupplierFieldText(span?.[1] || '')
+      if (text) tags.push(text)
+    }
+  }
+  return parseSupplierCompanyTags(tags)
+}
+
+function extractGasgooTableRowsAfterTitle(html = '', title = '') {
+  const source = String(html || '')
+  const label = escapeSupplierRegexText(title)
+  if (!source || !label) return []
+  const pattern = new RegExp(
+    `<div[^>]*class=["'][^"']*dtitle[^"']*["'][^>]*>[\\s\\S]*?${label}[\\s\\S]*?<\\/div>[\\s\\S]*?<table[^>]*>[\\s\\S]*?<tbody[^>]*>([\\s\\S]*?)<\\/tbody>[\\s\\S]*?<\\/table>`,
+    'i',
+  )
+  const body = source.match(pattern)?.[1] || ''
+  if (!body) return []
+  const rows = []
+  const rawRows = [...body.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)]
+  if (rawRows.length === 0) return rows
+  const headerCells = [...String(rawRows[0]?.[1] || '').matchAll(/<(?:th|td)\b[^>]*>([\s\S]*?)<\/(?:th|td)>/gi)]
+    .map((cell) => cleanSupplierHtmlBlockText(cell?.[1] || ''))
+    .filter(Boolean)
+  if (headerCells.length === 0) return rows
+  for (let idx = 1; idx < rawRows.length; idx += 1) {
+    const cells = [...String(rawRows[idx]?.[1] || '').matchAll(/<(?:th|td)\b[^>]*>([\s\S]*?)<\/(?:th|td)>/gi)]
+      .map((cell) => cleanSupplierHtmlBlockText(cell?.[1] || ''))
+    if (cells.length === 0) continue
+    const row = {}
+    let valueOffset = 0
+    if ((headerCells[0] === '序号' || headerCells[0] === '排序') && cells.length >= headerCells.length) {
+      valueOffset = 1
+    }
+    for (let col = valueOffset; col < Math.min(cells.length, headerCells.length + valueOffset); col += 1) {
+      const header = headerCells[col - valueOffset]
+      const value = cells[col]
+      if (!header) continue
+      row[header] = value
+    }
+    if (Object.keys(row).length > 0) rows.push(row)
+  }
+  return rows
+}
+
+function parseGasgooCustomerItems(text = '') {
+  const source = cleanSupplierFieldText(String(text || '')
+    .replace(/直接配套[:：]?/g, '')
+    .replace(/间接配套[:：]?/g, ''))
+  if (!source) return []
+  const items = []
+  for (const matched of source.matchAll(/([^:：；;]{2,40})[:：]\s*([\s\S]*?)(?=(?:[^:：；;]{2,40}[:：])|$)/g)) {
+    const productName = cleanSupplierFieldText(matched?.[1] || '')
+    const oemNames = parseStringArray(
+      cleanSupplierFieldText(matched?.[2] || '')
+        .split(/[，,；;、]/g)
+        .map((item) => cleanSupplierFieldText(item)),
+    )
+    if (!productName && oemNames.length === 0) continue
+    items.push({
+      id: makeRuntimeId('sc'),
+      productName,
+      oemNames,
+    })
+  }
+  return parseSupplierCustomerItems(items)
+}
+
+function parseGasgooFinancingItems(rows = []) {
+  return parseSupplierFinancingItems(rows.map((row) => ({
+    id: makeRuntimeId('fi'),
+    financingDate: row['融资时间'] || '',
+    round: row['融资轮次'] || '',
+    amount: row['融资金额'] || '',
+    investors: row['投资方'] || '',
+  })))
+}
+
+function parseGasgooPatentItems(rows = []) {
+  return parseSupplierPatentItems(rows.map((row) => ({
+    id: makeRuntimeId('pt'),
+    patentType: row['专利类型'] || '',
+    publicationNo: row['公开（公告）号'] || '',
+    publicationDate: row['公开（公告）日期'] || '',
+    title: row['名称'] || '',
+  })))
+}
+
+function parseGasgooAdminLicenseItems(rows = []) {
+  return parseSupplierAdminLicenseItems(rows.map((row) => ({
+    id: makeRuntimeId('al'),
+    documentNo: row['决定文书号'] || '',
+    authority: row['许可机关'] || '',
+    decisionDate: row['决定日期'] || '',
+    content: row['内容'] || '',
+  })))
+}
+
+function parseGasgooTradeCreditItems(rows = []) {
+  return parseSupplierTradeCreditItems(rows.map((row) => ({
+    id: makeRuntimeId('tc'),
+    customsOffice: row['注册海关'] || '',
+    businessType: row['经营类别'] || '',
+    registrationDate: row['注册日期'] || '',
+  })))
+}
+
+function parseGasgooCourtNoticeItems(rows = []) {
+  return parseSupplierCourtNoticeItems(rows.map((row) => ({
+    id: makeRuntimeId('cn'),
+    caseNo: row['案号'] || '',
+    hearingDate: row['开庭时间'] || '',
+    cause: row['案由'] || '',
+    plaintiff: row['公告人/原告/上诉人/申请人'] || '',
+    defendant: row['被告人/被告/被上诉人/被申诉人'] || '',
+  })))
+}
+
+function parseGasgooProductionBaseItems(html = '') {
+  const items = []
+  for (const matched of String(html || '').matchAll(/class=["'][^"']*hiddenproduction[^"']*["'][^>]*data-value=["']([^"']+)["']/gi)) {
+    const parts = decodeBasicHtmlEntities(matched?.[1] || '').split('|')
+    items.push({
+      id: makeRuntimeId('pb'),
+      baseName: cleanSupplierFieldText(parts[0] || ''),
+      region: cleanSupplierFieldText(parts[1] || ''),
+      postalCode: cleanSupplierFieldText(parts[2] || ''),
+      address: cleanSupplierFieldText(parts[3] || ''),
+      phone: cleanSupplierFieldText(parts[4] || ''),
+      mainProducts: cleanSupplierFieldText(parts[6] || ''),
+    })
+  }
+  return parseSupplierProductionBaseItems(items)
+}
+
+function extractGasgooSupplierOverviewFromHtml(html = '', detailUrl = '') {
+  const plain = decodeBasicHtmlEntities(stripHtml(String(html || ''))).replace(/\s+/g, ' ').trim()
+  const title = extractTitle(html) || ''
+  const tablePairs = extractKeyValuePairsFromTableHtml(html)
+  const businessRows = extractGasgooTableRowsAfterTitle(html, '业务信息')
+  const businessInfo = parseSupplierBusinessInfo(businessRows[0] || {})
+  const industrialRows = extractGasgooTableRowsAfterTitle(html, '工商信息')
+  const industrialCommercialInfo = parseSupplierBusinessInfo(industrialRows[0] || {})
+  const financingItems = parseGasgooFinancingItems(extractGasgooTableRowsAfterTitle(html, '融资信息'))
+  const patentItems = parseGasgooPatentItems(extractGasgooTableRowsAfterTitle(html, '专利信息'))
+  const adminLicenseItems = parseGasgooAdminLicenseItems(extractGasgooTableRowsAfterTitle(html, '行政许可【信用中国】'))
+  const tradeCreditItems = parseGasgooTradeCreditItems(extractGasgooTableRowsAfterTitle(html, '进出口信用'))
+  const courtNoticeItems = parseGasgooCourtNoticeItems(extractGasgooTableRowsAfterTitle(html, '开庭公告'))
+  const productionBaseItems = parseGasgooProductionBaseItems(html)
+  const companyTags = extractGasgooCompanyTagsFromHtml(html)
+  const companyName = sanitizeSupplierCompanyName(
+    textByRegex(html, /<h1[^>]*>([\s\S]*?)<\/h1>/i)
+    || textByRegex(html, /<title[^>]*>([\s\S]*?)<\/title>/i)
+    || title,
+  )
+  const companyIntro = extractGasgooSectionFromPlain(
+    plain,
+    '公司简介',
+    ['业务信息', '联系我们', '工商信息', '生产基地', '企业员工'],
+  )
+  const mainProducts = cleanSupplierFieldText([
+    tablePairs['主要产品'] || '',
+    tablePairs['主营产品'] || '',
+    tablePairs['冲压'] || '',
+    tablePairs['铸造'] || '',
+    tablePairs['热成形'] || '',
+    tablePairs['非金属复合材料'] || '',
+    tablePairs['焊接大总成'] || '',
+  ].filter(Boolean).join('；'))
+  const qualitySystem = cleanSupplierFieldText(
+    tablePairs['体系认证']
+    || tablePairs['认证体系']
+    || extractGasgooSectionFromPlain(plain, '体系认证', ['公司网址', '直接配套客户', '间接配套客户']),
+  )
+  const contactAction = cleanSupplierFieldText([
+    tablePairs['联系人'] || '',
+    tablePairs['公司电话'] || '',
+    tablePairs['邮箱'] || '',
+    tablePairs['地址'] || '',
+  ].filter(Boolean).join('；'))
+  const normalized = normalizeSupplierDetailAtomicFields({
+    companyName,
+    companyIntro,
+    mainProducts,
+    qualitySystem,
+    contactAction,
+    legalRepresentative: tablePairs['法定代表人'] || tablePairs['法人代表'] || '',
+    registeredCapital: tablePairs['注册资本'] || tablePairs['注册资本(金)'] || '',
+    establishedDate: tablePairs['成立日期'] || tablePairs['成立时间'] || '',
+    employeesCount: tablePairs['员工人数'] || tablePairs['人员规模'] || '',
+    companyType: tablePairs['企业类型'] || tablePairs['公司类型'] || tablePairs['企业性质'] || '',
+    orgCode: tablePairs['统一社会信用代码'] || tablePairs['组织机构代码'] || '',
+    address: tablePairs['地址'] || '',
+    website: tablePairs['公司网址'] || '',
+    detailUrl,
+  })
+  normalized.companyIntro = cleanSupplierFieldText(normalized.companyIntro)
+  normalized.mainProducts = cleanSupplierFieldText(normalized.mainProducts)
+  normalized.qualitySystem = cleanSupplierFieldText(normalized.qualitySystem)
+  normalized.contactAction = cleanSupplierFieldText(normalized.contactAction)
+  return {
+    ...normalized,
+    companyTags,
+    businessInfo,
+    industrialCommercialInfo,
+    customerItems: parseGasgooCustomerItems(
+      businessInfo['配套客户']
+      || businessInfo['直接配套客户']
+      || businessInfo['间接配套客户']
+      || '',
+    ),
+    mainProductNames: dedupeSupplierProductNames(splitSupplierProductTexts(
+      businessInfo['主营产品'] || normalized.mainProducts || '',
+    )),
+    productCaseItems: [],
+    financingItems,
+    patentItems,
+    adminLicenseItems,
+    tradeCreditItems,
+    courtNoticeItems,
+    productionBaseItems,
+    newsItems: extractSupplierNewsItemsFromHtml(html, detailUrl),
+  }
 }
 
 function discoverSupplierDetailTabLinksFromHtml(html = '', baseUrl = '') {
@@ -1779,6 +2842,7 @@ function normalizeSupplierTask(task) {
     nodeName: task.nodeName,
     model: task.model,
     skill: task.skill,
+    homepageOnly: Boolean(task.homepageOnly),
     status: task.status,
     progress: task.progress,
     totalUrls: task.totalUrls,
@@ -1798,6 +2862,1180 @@ function normalizeSupplierTask(task) {
     cancelRequested: Boolean(task.cancelRequested),
     errorMessage: task.errorMessage,
     runLogs: task.runLogs.slice(-300),
+  }
+}
+
+function serializeSupplierTask(task) {
+  return {
+    ...normalizeSupplierTask(task),
+    sourceUrl: task.sourceUrl || '',
+    urlNodeMetaMap: task.urlNodeMetaMap || {},
+    filePath: task.filePath || '',
+    records: Array.isArray(task.records) ? task.records : [],
+    baseRowsBeforeCurrentUrl: Number(task.baseRowsBeforeCurrentUrl || 0),
+  }
+}
+
+async function persistSupplierTaskStore() {
+  const payload = [...supplierCrawlTaskStore.values()]
+    .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')))
+    .slice(0, 80)
+    .map(serializeSupplierTask)
+  await fs.mkdir(path.dirname(supplierTaskStoreFile), { recursive: true })
+  await fs.writeFile(supplierTaskStoreFile, JSON.stringify(payload, null, 2), 'utf8')
+}
+
+function schedulePersistSupplierTaskStore() {
+  supplierTaskStorePersistPending = true
+  supplierTaskStorePersistPromise = supplierTaskStorePersistPromise
+    .catch(() => {})
+    .then(async () => {
+      if (!supplierTaskStorePersistPending) return
+      supplierTaskStorePersistPending = false
+      await persistSupplierTaskStore()
+    })
+    .catch(() => {})
+}
+
+async function restoreSupplierTaskStore() {
+  try {
+    const raw = await fs.readFile(supplierTaskStoreFile, 'utf8')
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return
+    const nowText = () => new Date().toLocaleString('zh-CN', { hour12: false })
+    let changed = false
+    for (const item of parsed) {
+      if (!item || typeof item !== 'object') continue
+      const taskId = toText(item.taskId)
+      if (!taskId) continue
+      const task = {
+        taskId,
+        nodeId: item.nodeId ?? null,
+        nodeName: toText(item.nodeName),
+        sourceUrl: toText(item.sourceUrl),
+        urlNodeMetaMap: item.urlNodeMetaMap && typeof item.urlNodeMetaMap === 'object' ? item.urlNodeMetaMap : {},
+        model: toText(item.model) || codexModelOptions[0],
+        skill: toText(item.skill) || supplierSkillOptions[0],
+        homepageOnly: normalizeSupplierHomepageOnly(item.homepageOnly),
+        urls: Array.isArray(item.urls) ? item.urls.map((url) => toText(url)).filter(Boolean) : [],
+        status: toText(item.status) || 'pending',
+        progress: Math.max(0, Math.min(100, Number(item.progress || 0))),
+        totalUrls: Math.max(0, Number(item.totalUrls || 0)),
+        processedUrls: Math.max(0, Number(item.processedUrls || 0)),
+        totalRows: Math.max(0, Number(item.totalRows || 0)),
+        estimatedTotalRows: Math.max(0, Number(item.estimatedTotalRows || 0)),
+        successRows: Math.max(0, Number(item.successRows || 0)),
+        failedRows: Math.max(0, Number(item.failedRows || 0)),
+        createdAt: toText(item.createdAt) || new Date().toISOString(),
+        startedAt: toText(item.startedAt) || null,
+        endedAt: toText(item.endedAt) || null,
+        fileName: toText(item.fileName),
+        filePath: toText(item.filePath),
+        downloadUrl: toText(item.downloadUrl),
+        imported: Boolean(item.imported),
+        importSummary: item.importSummary || null,
+        cancelRequested: Boolean(item.cancelRequested),
+        errorMessage: toText(item.errorMessage),
+        runLogs: Array.isArray(item.runLogs) ? item.runLogs.map((line) => toText(line)).filter(Boolean).slice(-300) : [],
+        records: Array.isArray(item.records) ? item.records : [],
+        baseRowsBeforeCurrentUrl: Math.max(0, Number(item.baseRowsBeforeCurrentUrl || 0)),
+      }
+      if (['pending', 'running', 'cancelling'].includes(task.status)) {
+        task.status = 'failed'
+        task.progress = 100
+        task.endedAt = new Date().toISOString()
+        task.errorMessage = task.errorMessage || '服务重启导致任务中断，请重新提交抓取'
+        task.runLogs.push(`${nowText()} | 服务重启，任务已标记为中断`)
+        changed = true
+      }
+      supplierCrawlTaskStore.set(taskId, task)
+    }
+    if (changed) schedulePersistSupplierTaskStore()
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      console.warn('[supplier-task-store] restore failed:', error.message || error)
+    }
+  }
+}
+
+function createGasSupplyChainTaskId() {
+  const randomTail = Math.floor(Math.random() * 100000).toString().padStart(5, '0')
+  return `gas${Date.now()}${randomTail}`
+}
+
+function normalizeGasSupplyChainTask(task) {
+  return {
+    taskId: task.taskId,
+    sourceUrl: task.sourceUrl,
+    model: task.model,
+    skill: task.skill,
+    mode: task.mode,
+    status: task.status,
+    progress: task.progress,
+    totalUrls: task.totalUrls,
+    processedUrls: task.processedUrls,
+    totalRows: task.totalRows,
+    estimatedTotalRows: task.estimatedTotalRows || 0,
+    successRows: task.successRows,
+    failedRows: task.failedRows,
+    createdAt: task.createdAt,
+    startedAt: task.startedAt,
+    endedAt: task.endedAt,
+    urls: task.urls,
+    fileName: task.fileName,
+    downloadUrl: task.downloadUrl,
+    imported: task.imported,
+    importSummary: task.importSummary,
+    cancelRequested: Boolean(task.cancelRequested),
+    localExtractorEnabled: Boolean(resolveGasSyncLocalExtractorConfig(task)),
+    errorMessage: task.errorMessage,
+    runLogs: Array.isArray(task.runLogs) ? task.runLogs.slice(-300) : [],
+  }
+}
+
+function serializeGasSupplyChainTask(task) {
+  return {
+    ...normalizeGasSupplyChainTask(task),
+    localExtractorCommand: toText(task.localExtractorCommand),
+    localExtractorArgs: normalizeLocalExtractorArgs(task.localExtractorArgs),
+    localExtractorCwd: toText(task.localExtractorCwd),
+    localExtractorTimeoutMs: Math.max(5000, Number(task.localExtractorTimeoutMs || gasSyncLocalExtractTimeoutMsDefault)),
+    filePath: task.filePath || '',
+    records: Array.isArray(task.records) ? task.records : [],
+  }
+}
+
+async function persistGasSupplyChainTaskStore() {
+  const payload = [...gasSupplyChainTaskStore.values()]
+    .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')))
+    .slice(0, 80)
+    .map(serializeGasSupplyChainTask)
+  await fs.mkdir(path.dirname(gasSupplyChainTaskStoreFile), { recursive: true })
+  await fs.writeFile(gasSupplyChainTaskStoreFile, JSON.stringify(payload, null, 2), 'utf8')
+}
+
+function schedulePersistGasSupplyChainTaskStore() {
+  gasSupplyChainTaskStorePersistPending = true
+  gasSupplyChainTaskStorePersistPromise = gasSupplyChainTaskStorePersistPromise
+    .catch(() => {})
+    .then(async () => {
+      if (!gasSupplyChainTaskStorePersistPending) return
+      gasSupplyChainTaskStorePersistPending = false
+      await persistGasSupplyChainTaskStore()
+    })
+    .catch(() => {})
+}
+
+async function restoreGasSupplyChainTaskStore() {
+  try {
+    const raw = await fs.readFile(gasSupplyChainTaskStoreFile, 'utf8')
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return
+    const nowText = () => new Date().toLocaleString('zh-CN', { hour12: false })
+    let changed = false
+    for (const item of parsed) {
+      if (!item || typeof item !== 'object') continue
+      const taskId = toText(item.taskId)
+      if (!taskId) continue
+      const task = {
+        taskId,
+        sourceUrl: toText(item.sourceUrl) || 'https://i.gasgoo.com/',
+        model: toText(item.model) || codexModelOptions[0],
+        skill: toText(item.skill) || 'web-access',
+        mode: toText(item.mode) || 'full',
+        urls: Array.isArray(item.urls) ? item.urls.map((url) => toText(url)).filter(Boolean) : [],
+        localExtractorCommand: toText(item.localExtractorCommand),
+        localExtractorArgs: normalizeLocalExtractorArgs(item.localExtractorArgs),
+        localExtractorCwd: toText(item.localExtractorCwd),
+        localExtractorTimeoutMs: Math.max(5000, Number(item.localExtractorTimeoutMs || gasSyncLocalExtractTimeoutMsDefault)),
+        status: toText(item.status) || 'pending',
+        progress: Math.max(0, Math.min(100, Number(item.progress || 0))),
+        totalUrls: Math.max(0, Number(item.totalUrls || 0)),
+        processedUrls: Math.max(0, Number(item.processedUrls || 0)),
+        totalRows: Math.max(0, Number(item.totalRows || 0)),
+        estimatedTotalRows: Math.max(0, Number(item.estimatedTotalRows || 0)),
+        successRows: Math.max(0, Number(item.successRows || 0)),
+        failedRows: Math.max(0, Number(item.failedRows || 0)),
+        createdAt: toText(item.createdAt) || new Date().toISOString(),
+        startedAt: toText(item.startedAt) || null,
+        endedAt: toText(item.endedAt) || null,
+        fileName: toText(item.fileName),
+        filePath: toText(item.filePath),
+        downloadUrl: toText(item.downloadUrl),
+        imported: Boolean(item.imported),
+        importSummary: item.importSummary || null,
+        cancelRequested: Boolean(item.cancelRequested),
+        errorMessage: toText(item.errorMessage),
+        runLogs: Array.isArray(item.runLogs) ? item.runLogs.map((line) => toText(line)).filter(Boolean).slice(-300) : [],
+        records: Array.isArray(item.records) ? item.records : [],
+      }
+      if (['pending', 'running', 'cancelling'].includes(task.status)) {
+        task.status = 'failed'
+        task.progress = 100
+        task.endedAt = new Date().toISOString()
+        task.errorMessage = task.errorMessage || '服务重启导致任务中断，请重新提交抓取'
+        task.runLogs.push(`${nowText()} | 服务重启，任务已标记为中断`)
+        changed = true
+      }
+      gasSupplyChainTaskStore.set(taskId, task)
+    }
+    if (changed) schedulePersistGasSupplyChainTaskStore()
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      console.warn('[gas-supply-chain-task-store] restore failed:', error.message || error)
+    }
+  }
+}
+
+function parseGasSupplyChainOnclick(onclickText = '') {
+  const boomMatched = String(onclickText || '').match(/JumpOtherBoom\('([^']+)'\)/)
+  if (boomMatched?.[1]) {
+    return {
+      type: 'boom',
+      url: boomMatched[1],
+      rootCode: '',
+      secondCode: '',
+      thirdCode: '',
+    }
+  }
+  const matched = String(onclickText || '').match(/JumpOther\((\d+),(\d+),(\d+)\)/)
+  if (!matched) return null
+  return {
+    type: 'jump',
+    url: '',
+    rootCode: matched[1],
+    secondCode: matched[2],
+    thirdCode: matched[3],
+  }
+}
+
+function buildGasgooCategoryUrl(categoryCode = '') {
+  const code = toText(categoryCode)
+  return code ? `https://i.gasgoo.com/supplier/c-${code}.html` : ''
+}
+
+function extractGasgooCategoryCodeFromUrl(url = '') {
+  const matched = String(url || '').match(/(?:boom\/)?c-(\d+)\.html/i)
+  return matched ? toText(matched[1]) : ''
+}
+
+function toAbsoluteUrlByBase(baseUrl = '', href = '') {
+  const value = toText(href)
+  if (!value) return ''
+  try {
+    return new URL(value, baseUrl || 'https://i.gasgoo.com/').toString()
+  } catch {
+    return ''
+  }
+}
+
+function stripHtmlKeepText(html = '') {
+  return decodeBasicHtmlEntities(
+    String(html || '')
+      .replace(/<s\b[^>]*>[\s\S]*?<\/s>/gi, '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim(),
+  )
+}
+
+function isGasgooCaptchaPage(html = '') {
+  const text = String(html || '')
+  if (!text) return false
+  return /TencentCaptcha|WafCaptcha|ssl\.captcha\.qq\.com/i.test(text)
+}
+
+function parseGasgooSupplyChainNodesFromHtml(html, sourceUrl, taskMeta = {}) {
+  const page = String(html || '')
+  const rootMap = new Map()
+  const rootMatches = [...page.matchAll(/<li\s+onclick="JumpOther\((\d+),0,0\)"[^>]*id="menucid\1"[\s\S]*?<span[^>]*>([^<]+)<\/span>/gi)]
+  for (const match of rootMatches) {
+    const rootCode = toText(match[1])
+    const rootTitle = stripHtmlKeepText(match[2])
+    if (!rootCode || !rootTitle) continue
+    rootMap.set(rootCode, {
+      code: rootCode,
+      title: rootTitle,
+      url: buildGasgooCategoryUrl(rootCode),
+    })
+  }
+
+  const panelStarts = [...page.matchAll(/<div class="secMenu2022 cid(\d+)"/gi)]
+    .map((match) => ({ rootCode: toText(match[1]), index: match.index ?? 0 }))
+    .filter((item) => item.rootCode && rootMap.has(item.rootCode))
+
+  const rows = []
+  for (const root of rootMap.values()) {
+    rows.push({
+      sourceUrl,
+      pageUrl: sourceUrl,
+      model: taskMeta.model || '',
+      skill: taskMeta.skill || '',
+      mode: taskMeta.mode || 'full',
+      nodeLevel: 1,
+      nodeCode: root.code,
+      nodeTitle: root.title,
+      nodeUrl: root.url,
+      parentCode: '',
+      parentTitle: '',
+      parentUrl: '',
+      level1Code: root.code,
+      level1Title: root.title,
+      level1Url: root.url,
+      level2Code: '',
+      level2Title: '',
+      level2Url: '',
+      level3Code: '',
+      level3Title: '',
+      level3Url: '',
+      lineage: root.title,
+      status: 'success',
+      errorMessage: '',
+    })
+  }
+
+  for (let index = 0; index < panelStarts.length; index += 1) {
+    const current = panelStarts[index]
+    const nextIndex = index + 1 < panelStarts.length ? panelStarts[index + 1].index : page.length
+    const panelHtml = page.slice(current.index, nextIndex)
+    const root = rootMap.get(current.rootCode)
+    if (!root) continue
+    const dlMatches = [...panelHtml.matchAll(/<dl>[\s\S]*?<\/dl>/gi)].map((match) => match[0])
+    for (const dlHtml of dlMatches) {
+      const dtMatched = dlHtml.match(/<dt>[\s\S]*?<a[^>]*?(?:onclick="([^"]+)")?[^>]*>([\s\S]*?)<\/a>[\s\S]*?<\/dt>/i)
+      if (!dtMatched) continue
+      const secondTitle = stripHtmlKeepText(dtMatched[2])
+      if (!secondTitle) continue
+      const dtInfo = parseGasSupplyChainOnclick(dtMatched[1] || '')
+      let secondCode = toText(dtInfo?.secondCode)
+      if (!secondCode) {
+        const fallbackMatched = dlHtml.match(/JumpOther\(\d+,(\d+),(\d+)\)/)
+        if (fallbackMatched?.[1]) secondCode = toText(fallbackMatched[1])
+      }
+      const secondUrl = toText(dtInfo?.url) || buildGasgooCategoryUrl(secondCode)
+      rows.push({
+        sourceUrl,
+        pageUrl: sourceUrl,
+        model: taskMeta.model || '',
+        skill: taskMeta.skill || '',
+        mode: taskMeta.mode || 'full',
+        nodeLevel: 2,
+        nodeCode: secondCode,
+        nodeTitle: secondTitle,
+        nodeUrl: secondUrl,
+        parentCode: root.code,
+        parentTitle: root.title,
+        parentUrl: root.url,
+        level1Code: root.code,
+        level1Title: root.title,
+        level1Url: root.url,
+        level2Code: secondCode,
+        level2Title: secondTitle,
+        level2Url: secondUrl,
+        level3Code: '',
+        level3Title: '',
+        level3Url: '',
+        lineage: `${root.title} > ${secondTitle}`,
+        status: 'success',
+        errorMessage: '',
+      })
+
+      const ddMatched = dlHtml.match(/<dd>([\s\S]*?)<\/dd>/i)
+      const ddHtml = ddMatched?.[1] || ''
+      const thirdMatches = [...ddHtml.matchAll(/<a[^>]*onclick="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi)]
+      for (const thirdMatch of thirdMatches) {
+        const thirdInfo = parseGasSupplyChainOnclick(thirdMatch[1] || '')
+        const thirdTitle = stripHtmlKeepText(thirdMatch[2])
+        if (!thirdInfo || thirdInfo.type !== 'jump' || !toText(thirdInfo.thirdCode) || !thirdTitle) continue
+        rows.push({
+          sourceUrl,
+          pageUrl: sourceUrl,
+          model: taskMeta.model || '',
+          skill: taskMeta.skill || '',
+          mode: taskMeta.mode || 'full',
+          nodeLevel: 3,
+          nodeCode: toText(thirdInfo.thirdCode),
+          nodeTitle: thirdTitle,
+          nodeUrl: buildGasgooCategoryUrl(thirdInfo.thirdCode),
+          parentCode: secondCode,
+          parentTitle: secondTitle,
+          parentUrl: secondUrl,
+          level1Code: root.code,
+          level1Title: root.title,
+          level1Url: root.url,
+          level2Code: secondCode,
+          level2Title: secondTitle,
+          level2Url: secondUrl,
+          level3Code: toText(thirdInfo.thirdCode),
+          level3Title: thirdTitle,
+          level3Url: buildGasgooCategoryUrl(thirdInfo.thirdCode),
+          lineage: `${root.title} > ${secondTitle} > ${thirdTitle}`,
+          status: 'success',
+          errorMessage: '',
+        })
+      }
+    }
+  }
+
+  return rows
+}
+
+function parseGasgooSupplyChainNodesFromCategoryPageHtml(html, sourceUrl, taskMeta = {}) {
+  const page = String(html || '')
+  const rootBlocks = [...page.matchAll(/<li\s+id="(\d+)"[\s\S]*?(?=<li\s+id="\d+"|<\/ul>)/gi)]
+  const rows = []
+  for (const rootMatch of rootBlocks) {
+    const rootHtml = String(rootMatch[0] || '')
+    const rootCode = toText(rootMatch[1])
+    const rootTitleMatched = rootHtml.match(/<a[^>]*>\s*<span>([\s\S]*?)<\/span>\s*<\/a>/i)
+    const rootTitle = stripHtmlKeepText(rootTitleMatched?.[1] || '')
+    const rootUrl = buildGasgooCategoryUrl(rootCode)
+    if (!rootCode || !rootTitle) continue
+    rows.push({
+      sourceUrl,
+      pageUrl: sourceUrl,
+      model: taskMeta.model || '',
+      skill: taskMeta.skill || '',
+      mode: taskMeta.mode || 'full',
+      nodeLevel: 1,
+      nodeCode: rootCode,
+      nodeTitle: rootTitle,
+      nodeUrl: rootUrl,
+      parentCode: '',
+      parentTitle: '',
+      parentUrl: '',
+      level1Code: rootCode,
+      level1Title: rootTitle,
+      level1Url: rootUrl,
+      level2Code: '',
+      level2Title: '',
+      level2Url: '',
+      level3Code: '',
+      level3Title: '',
+      level3Url: '',
+      lineage: rootTitle,
+      status: 'success',
+      errorMessage: '',
+    })
+    const secBlocks = [...rootHtml.matchAll(/<div class="secLeven"[\s\S]*?<\/div>/gi)].map((match) => String(match[0] || ''))
+    for (const secHtml of secBlocks) {
+      const secondBlocks = [...secHtml.matchAll(/<li[^>]*>\s*<a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>\s*(?:<div class="threeLeven"[\s\S]*?<\/div>)?\s*<\/li>/gi)]
+      for (const secondMatch of secondBlocks) {
+      const secondHref = toText(secondMatch[1])
+      const secondTitle = stripHtmlKeepText(secondMatch[2] || '')
+      const secondCode = extractGasgooCategoryCodeFromUrl(secondHref)
+      const secondUrl = toAbsoluteUrlByBase(sourceUrl, secondHref) || buildGasgooCategoryUrl(secondCode)
+      if (!secondTitle) continue
+      rows.push({
+        sourceUrl,
+        pageUrl: sourceUrl,
+        model: taskMeta.model || '',
+        skill: taskMeta.skill || '',
+        mode: taskMeta.mode || 'full',
+        nodeLevel: 2,
+        nodeCode: secondCode,
+        nodeTitle: secondTitle,
+        nodeUrl: secondUrl,
+        parentCode: rootCode,
+        parentTitle: rootTitle,
+        parentUrl: rootUrl,
+        level1Code: rootCode,
+        level1Title: rootTitle,
+        level1Url: rootUrl,
+        level2Code: secondCode,
+        level2Title: secondTitle,
+        level2Url: secondUrl,
+        level3Code: '',
+        level3Title: '',
+        level3Url: '',
+        lineage: `${rootTitle} > ${secondTitle}`,
+        status: 'success',
+        errorMessage: '',
+      })
+        const secondItemHtml = String(secondMatch[0] || '')
+        const thirdMatches = [...secondItemHtml.matchAll(/<li[^>]*>\s*<a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>\s*<\/li>/gi)]
+        for (const thirdMatch of thirdMatches) {
+          const thirdHref = toText(thirdMatch[1])
+          const thirdTitle = stripHtmlKeepText(thirdMatch[2] || '')
+          const thirdCode = extractGasgooCategoryCodeFromUrl(thirdHref)
+          const thirdUrl = toAbsoluteUrlByBase(sourceUrl, thirdHref) || buildGasgooCategoryUrl(thirdCode)
+          if (!thirdTitle || thirdTitle === secondTitle) continue
+          rows.push({
+            sourceUrl,
+            pageUrl: sourceUrl,
+            model: taskMeta.model || '',
+            skill: taskMeta.skill || '',
+            mode: taskMeta.mode || 'full',
+            nodeLevel: 3,
+            nodeCode: thirdCode,
+            nodeTitle: thirdTitle,
+            nodeUrl: thirdUrl,
+            parentCode: secondCode,
+            parentTitle: secondTitle,
+            parentUrl: secondUrl,
+            level1Code: rootCode,
+            level1Title: rootTitle,
+            level1Url: rootUrl,
+            level2Code: secondCode,
+            level2Title: secondTitle,
+            level2Url: secondUrl,
+            level3Code: thirdCode,
+            level3Title: thirdTitle,
+            level3Url: thirdUrl,
+            lineage: `${rootTitle} > ${secondTitle} > ${thirdTitle}`,
+            status: 'success',
+            errorMessage: '',
+          })
+        }
+      }
+    }
+  }
+  return rows
+}
+
+function parseGasgooSupplyChainNodesUnified(html, sourceUrl, taskMeta = {}) {
+  const primary = parseGasgooSupplyChainNodesFromHtml(html, sourceUrl, taskMeta)
+  const secondary = parseGasgooSupplyChainNodesFromCategoryPageHtml(html, sourceUrl, taskMeta)
+  const merged = primary.length > 0 ? [...primary, ...secondary] : secondary
+  const unique = []
+  const seen = new Set()
+  for (const row of merged) {
+    const key = [row.nodeLevel, row.nodeCode, row.nodeTitle, row.parentCode, row.parentTitle].map((item) => toText(item)).join('|')
+    if (!key || seen.has(key)) continue
+    seen.add(key)
+    unique.push(row)
+  }
+  return unique
+}
+
+function resolveGasSyncLocalExtractorConfig(task = {}) {
+  const command = toText(task.localExtractorCommand) || gasSyncLocalExtractCommandDefault
+  if (!command) return null
+  return {
+    command,
+    args: normalizeLocalExtractorArgs(task.localExtractorArgs, gasSyncLocalExtractArgsJsonDefault),
+    cwd: toText(task.localExtractorCwd) || gasSyncLocalExtractCwdDefault || process.cwd(),
+    timeoutMs: Math.max(5000, Number(task.localExtractorTimeoutMs || gasSyncLocalExtractTimeoutMsDefault || 180000)),
+  }
+}
+
+async function extractGasSupplyChainRowsFromExtractorPayload(payload, taskMeta = {}, fallbackSourceUrl = '') {
+  let candidateRows = []
+  if (Array.isArray(payload)) {
+    candidateRows = payload
+  } else if (payload && typeof payload === 'object') {
+    const nestedData = payload.data && typeof payload.data === 'object' ? payload.data : null
+    if (Array.isArray(payload.records)) candidateRows = payload.records
+    else if (Array.isArray(payload.rows)) candidateRows = payload.rows
+    else if (Array.isArray(payload.items)) candidateRows = payload.items
+    else if (Array.isArray(payload.data)) candidateRows = payload.data
+    else if (Array.isArray(nestedData?.records)) candidateRows = nestedData.records
+    else if (Array.isArray(nestedData?.rows)) candidateRows = nestedData.rows
+    else if (Array.isArray(nestedData?.items)) candidateRows = nestedData.items
+  }
+  let rows = normalizeGasSupplyChainTaskRows(candidateRows, taskMeta, fallbackSourceUrl)
+  if (rows.length > 0) return rows
+
+  const filePath = toText(payload?.filePath || payload?.csvPath || payload?.outputCsvPath || payload?.data?.filePath || payload?.data?.csvPath)
+  if (!filePath) return []
+  if (!(await pathExists(filePath))) return []
+  const csvText = await fs.readFile(filePath, 'utf8')
+  const csvRows = parseCsvObjects(csvText)
+  rows = normalizeGasSupplyChainTaskRows(csvRows, taskMeta, fallbackSourceUrl)
+  return rows
+}
+
+async function runGasSyncLocalExtractor(task, nowText) {
+  const config = resolveGasSyncLocalExtractorConfig(task)
+  if (!config) return null
+  task.runLogs.push(`${nowText()} | 检测到本地提取脚本，开始执行：${config.command}`)
+  const childEnv = {
+    ...process.env,
+    GAS_SYNC_TASK_ID: toText(task.taskId),
+    GAS_SYNC_MODE: toText(task.mode || 'full'),
+    GAS_SYNC_SOURCE_URL: toText(task.sourceUrl),
+    GAS_SYNC_URLS_JSON: JSON.stringify(Array.isArray(task.urls) ? task.urls : []),
+    GAS_SYNC_TASK_PAYLOAD_JSON: JSON.stringify({
+      taskId: toText(task.taskId),
+      mode: toText(task.mode || 'full'),
+      model: toText(task.model),
+      skill: toText(task.skill),
+      sourceUrl: toText(task.sourceUrl),
+      urls: Array.isArray(task.urls) ? task.urls : [],
+    }),
+  }
+  const result = await execFileAsync(config.command, config.args, {
+    cwd: config.cwd,
+    timeout: config.timeoutMs,
+    maxBuffer: 20 * 1024 * 1024,
+    windowsHide: true,
+    env: childEnv,
+  })
+  const stdoutText = String(result?.stdout || '').trim()
+  const stderrText = String(result?.stderr || '').trim()
+  if (stderrText) {
+    task.runLogs.push(`${nowText()} | 本地脚本 stderr：${stderrText.slice(0, 800)}`)
+  }
+  const payload = parseJsonValueFromMixedText(stdoutText)
+  if (payload === null) {
+    throw new Error('本地提取脚本未输出可解析的 JSON 结果，请检查脚本 stdout')
+  }
+  const rows = await extractGasSupplyChainRowsFromExtractorPayload(payload, {
+    model: task.model,
+    skill: task.skill,
+    mode: task.mode,
+  }, task.sourceUrl)
+  if (rows.length === 0) {
+    throw new Error('本地提取脚本执行成功，但未返回可用节点记录')
+  }
+  task.runLogs.push(`${nowText()} | 本地脚本提取完成：${rows.length} 条节点`)
+  return { rows }
+}
+
+async function fetchGasSupplyChainHtmlWithPlaywright(url, context = {}) {
+  let session = null
+  try {
+    session = await createSupplierPlaywrightSession(url, context)
+    const page = session.page
+    try {
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: supplierPlaywrightGotoTimeoutMs })
+    } catch {
+      await page.goto(url, { waitUntil: 'commit', timeout: supplierPlaywrightGotoTimeoutMs })
+    }
+    await page.waitForTimeout(supplierPlaywrightWaitMs)
+    const finalUrl = page.url()
+    const html = await page.content()
+    return {
+      html: String(html || ''),
+      finalUrl,
+      sessionMode: session?.mode || '',
+      profileLabel: session?.profileLabel || '',
+      launchError: session?.launchError || '',
+    }
+  } finally {
+    if (session?.close) {
+      await session.close().catch(() => {})
+    }
+  }
+}
+
+async function fetchGasSupplyChainHtmlWithCdp(url, context = {}) {
+  let targetId = ''
+  let shouldCloseTarget = false
+  try {
+    const preferredUrl = toText(url)
+    let registeredTarget = null
+    try {
+      const raw = await fs.readFile(gasgooCdpTargetFile, 'utf8')
+      const parsed = JSON.parse(String(raw || '{}'))
+      if (toText(parsed?.targetId)) {
+        registeredTarget = parsed
+      }
+    } catch {
+      registeredTarget = null
+    }
+    const targetsPayload = await fetchCdpProxyJson('/targets', {}, 15000).catch(() => ({ value: [] }))
+    const targets = Array.isArray(targetsPayload?.value) ? targetsPayload.value : []
+    const matchedTarget = registeredTarget?.targetId
+      ? { targetId: toText(registeredTarget.targetId), url: toText(registeredTarget.url) || preferredUrl }
+      : (targets.find((item) => toText(item?.url) === preferredUrl)
+        || targets.find((item) => safeHostFromUrl(item?.url || '').includes('gasgoo.com')))
+    if (matchedTarget?.targetId) {
+      targetId = toText(matchedTarget.targetId)
+    } else {
+      const created = await fetchCdpProxyJson(`/new?url=${encodeURIComponent(url)}`, {}, 20000)
+      targetId = toText(created?.targetId)
+      shouldCloseTarget = true
+    }
+    if (!targetId) {
+      throw new Error('CDP proxy did not return targetId')
+    }
+    await new Promise((resolve) => setTimeout(resolve, 2500))
+    const info = await fetchCdpProxyJson(`/info?target=${encodeURIComponent(targetId)}`, {}, 10000)
+    const evaluated = await fetchCdpProxyJson(
+      `/eval?target=${encodeURIComponent(targetId)}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+        body: `(() => {
+          const clean = (value) => String(value || '').replace(/\\s+/g, ' ').trim()
+          const toAbs = (value) => {
+            try {
+              return value ? new URL(value, location.href).toString() : ''
+            } catch {
+              return ''
+            }
+          }
+          const codeOf = (value) => {
+            const matched = String(value || '').match(/(?:boom\\/)?c-(\\d+)\\.html/i)
+            return matched ? matched[1] : ''
+          }
+          try {
+            const records = []
+            const roots = Array.from(document.querySelectorAll('#container > li[id]'))
+            for (const rootLi of roots) {
+              const rootCode = clean(rootLi.id)
+              const rootAnchor = rootLi.querySelector('a[href]')
+              const rootTitle = clean(rootAnchor?.textContent)
+              const rootUrl = toAbs(rootAnchor?.getAttribute('href')) || (rootCode ? ('https://i.gasgoo.com/supplier/c-' + rootCode + '.html') : '')
+              if (!rootCode || !rootTitle) continue
+              records.push({
+                sourceUrl: location.href,
+                pageUrl: location.href,
+                nodeLevel: 1,
+                nodeCode: rootCode,
+                nodeTitle: rootTitle,
+                nodeUrl: rootUrl,
+                parentCode: '',
+                parentTitle: '',
+                parentUrl: '',
+                level1Code: rootCode,
+                level1Title: rootTitle,
+                level1Url: rootUrl,
+                level2Code: '',
+                level2Title: '',
+                level2Url: '',
+                level3Code: '',
+                level3Title: '',
+                level3Url: '',
+                lineage: rootTitle,
+                status: 'success',
+                errorMessage: '',
+              })
+              const secondItems = Array.from(rootLi.querySelectorAll('.secLeven > ol > li'))
+              for (const secondLi of secondItems) {
+                const secondA = secondLi.querySelector('a[href]')
+                const secondTitle = clean(secondA?.textContent)
+                const secondUrl = toAbs(secondA?.getAttribute('href'))
+                const secondCode = clean(codeOf(secondUrl))
+                if (!secondTitle) continue
+                records.push({
+                  sourceUrl: location.href,
+                  pageUrl: location.href,
+                  nodeLevel: 2,
+                  nodeCode: secondCode,
+                  nodeTitle: secondTitle,
+                  nodeUrl: secondUrl,
+                  parentCode: rootCode,
+                  parentTitle: rootTitle,
+                  parentUrl: rootUrl,
+                  level1Code: rootCode,
+                  level1Title: rootTitle,
+                  level1Url: rootUrl,
+                  level2Code: secondCode,
+                  level2Title: secondTitle,
+                  level2Url: secondUrl,
+                  level3Code: '',
+                  level3Title: '',
+                  level3Url: '',
+                  lineage: clean([rootTitle, secondTitle].join(' > ')),
+                  status: 'success',
+                  errorMessage: '',
+                })
+                const thirdItems = Array.from(secondLi.querySelectorAll('.threeLeven > ol > li > a[href]'))
+                for (const thirdA of thirdItems) {
+                  const thirdTitle = clean(thirdA.textContent)
+                  const thirdUrl = toAbs(thirdA.getAttribute('href'))
+                  const thirdCode = clean(codeOf(thirdUrl))
+                  if (!thirdTitle) continue
+                  records.push({
+                    sourceUrl: location.href,
+                    pageUrl: location.href,
+                    nodeLevel: 3,
+                    nodeCode: thirdCode,
+                    nodeTitle: thirdTitle,
+                    nodeUrl: thirdUrl,
+                    parentCode: secondCode,
+                    parentTitle: secondTitle,
+                    parentUrl: secondUrl,
+                    level1Code: rootCode,
+                    level1Title: rootTitle,
+                    level1Url: rootUrl,
+                    level2Code: secondCode,
+                    level2Title: secondTitle,
+                    level2Url: secondUrl,
+                    level3Code: thirdCode,
+                    level3Title: thirdTitle,
+                    level3Url: thirdUrl,
+                    lineage: clean([rootTitle, secondTitle, thirdTitle].join(' > ')),
+                    status: 'success',
+                    errorMessage: '',
+                  })
+                }
+              }
+            }
+            return {
+              href: location.href,
+              title: document.title,
+              readyState: document.readyState,
+              html: document.documentElement ? document.documentElement.outerHTML : '',
+              records,
+            }
+          } catch (error) {
+            return {
+              href: location.href,
+              title: document.title || '',
+              readyState: document.readyState || '',
+              html: document.documentElement ? document.documentElement.outerHTML : '',
+              records: [],
+              evalError: String(error && error.message ? error.message : error || ''),
+            }
+          }
+        })()`,
+      },
+      20000,
+    )
+    const payload = evaluated?.value || {}
+    const finalUrl = toText(payload.href || info?.url) || url
+    const html = String(payload.html || '')
+    const records = Array.isArray(payload.records) ? payload.records : []
+    if (!html && records.length === 0) {
+      throw new Error(`CDP returned empty payload for ${finalUrl}`)
+    }
+    if (finalUrl.startsWith('chrome-error://')) {
+      throw new Error(`CDP opened browser error page: ${toText(payload.title || info?.title) || finalUrl}`)
+    }
+    return {
+      html,
+      records,
+      finalUrl,
+      pageTitle: toText(payload.title || info?.title),
+      readyState: toText(payload.readyState || info?.ready),
+      sessionMode: shouldCloseTarget ? 'cdp-proxy' : 'cdp-existing-tab',
+      profileLabel: 'chrome:remote-debugging',
+      launchError: '',
+      skill: toText(context?.skill) || 'web-access',
+    }
+  } finally {
+    if (targetId && shouldCloseTarget) {
+      await fetchCdpProxyJson(`/close?target=${encodeURIComponent(targetId)}`, {}, 10000).catch(() => {})
+    }
+  }
+}
+
+async function runGasSupplyChainSyncTask(task) {
+  const nowText = () => new Date().toLocaleString('zh-CN', { hour12: false })
+  const taskStart = Date.now()
+  task.status = 'running'
+  task.startedAt = new Date().toISOString()
+  task.progress = 1
+  task.runLogs.push(`${nowText()} | 任务开始：模式=${task.mode === 'full' ? '全量' : '增量'}，URL=${task.sourceUrl}`)
+  task.runLogs.push(`${nowText()} | 抓取技能=${task.skill || 'web-access'}，模型=${task.model || codexModelOptions[0]}`)
+  task.runLogs.push(`${nowText()} | 抓取通道=web-access（仅）`)
+  schedulePersistGasSupplyChainTaskStore()
+
+  const rows = []
+  for (const currentUrl of task.urls) {
+      if (task.cancelRequested) {
+        task.status = 'cancelled'
+        task.endedAt = new Date().toISOString()
+        task.progress = 100
+        task.runLogs.push(`${nowText()} | 任务已取消，停止抓取`)
+        schedulePersistGasSupplyChainTaskStore()
+        return
+      }
+
+      task.runLogs.push(`${nowText()} | 开始抓取 GAS 首页分类：${currentUrl}`)
+      try {
+        const response = await fetchWithTimeout(currentUrl, 15000, { Referer: 'https://i.gasgoo.com/' })
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`)
+        }
+        const html = await response.text()
+        const httpCaptcha = isGasgooCaptchaPage(html)
+        if (httpCaptcha) {
+          task.runLogs.push(`${nowText()} | HTTP 返回验证码页，尝试走 web-access 的 CDP 会话抓取`)
+        } else {
+          task.runLogs.push(`${nowText()} | 页面下载完成，开始解析一级/二级/三级节点`)
+        }
+        let effectiveRows = httpCaptcha
+          ? []
+          : parseGasgooSupplyChainNodesUnified(html, currentUrl, {
+              model: task.model,
+              skill: task.skill,
+              mode: task.mode,
+            })
+        task.runLogs.push(`${nowText()} | HTTP 解析结果：${effectiveRows.length} 条`)
+        let effectiveUrl = currentUrl
+        if (effectiveRows.length === 0) {
+          task.runLogs.push(`${nowText()} | HTTP 未解析到节点，尝试使用 CDP Proxy 复用真实 Chrome 会话`)
+          try {
+            const cdpResult = await withTimeout(
+              fetchGasSupplyChainHtmlWithCdp(currentUrl, { skill: 'web-access' }),
+              30000,
+              'cdp gas supply chain timeout',
+            )
+            task.runLogs.push(
+              `${nowText()} | CDP会话：${cdpResult.sessionMode || 'unknown'}${cdpResult.profileLabel ? `，profile=${cdpResult.profileLabel}` : ''}${cdpResult.pageTitle ? `，title=${cdpResult.pageTitle}` : ''}${cdpResult.readyState ? `，ready=${cdpResult.readyState}` : ''}`,
+            )
+            effectiveUrl = cdpResult.finalUrl || currentUrl
+            const cdpHtml = String(cdpResult.html || '')
+            if (isGasgooCaptchaPage(cdpHtml)) {
+              throw new Error('验证码拦截：请先在 web-access 浏览器会话中完成验证，然后重试同步任务')
+            }
+            effectiveRows = Array.isArray(cdpResult.records) && cdpResult.records.length > 0
+              ? cdpResult.records.map((item) => ({
+                  ...item,
+                  sourceUrl: item.sourceUrl || effectiveUrl,
+                  pageUrl: item.pageUrl || effectiveUrl,
+                  model: task.model || item.model || '',
+                  skill: 'web-access',
+                  mode: task.mode || item.mode || 'full',
+                }))
+              : parseGasgooSupplyChainNodesUnified(cdpHtml, effectiveUrl, {
+                  model: task.model,
+                  skill: 'web-access',
+                  mode: task.mode,
+                })
+            task.runLogs.push(`${nowText()} | CDP 解析结果：${effectiveRows.length} 条`)
+          } catch (cdpError) {
+            const rawMsg = toText(cdpError?.message || '')
+            const friendly = rawMsg.includes('{"error":"Uncaught"}')
+              ? 'CDP Proxy 执行脚本异常（Uncaught），请先在 web-access 浏览器中打开目标页并确保页面已完成加载后重试'
+              : (rawMsg || 'unknown error')
+            task.runLogs.push(`${nowText()} | CDP Proxy 抓取失败：${friendly}`)
+            throw cdpError
+          }
+        }
+        if (effectiveRows.length === 0) {
+          throw new Error('web-access 会话下仍未解析到供应链节点，请确认该 URL 是否为分类页，或先在浏览器完成验证码后重试')
+        }
+        rows.push(...effectiveRows)
+        task.successRows = effectiveRows.length
+        task.totalRows = rows.length
+        task.estimatedTotalRows = rows.length
+        task.processedUrls += 1
+        task.progress = 92
+        task.runLogs.push(`${nowText()} | 节点解析完成：一级 ${effectiveRows.filter((item) => item.nodeLevel === 1).length} 条，二级 ${effectiveRows.filter((item) => item.nodeLevel === 2).length} 条，三级 ${effectiveRows.filter((item) => item.nodeLevel === 3).length} 条`)
+        schedulePersistGasSupplyChainTaskStore()
+      } catch (error) {
+        task.failedRows += 1
+        task.processedUrls += 1
+        task.errorMessage = error.message === 'cdp gas supply chain timeout'
+            ? 'CDP Proxy 抓取超时，请确认 Chrome 已开启并允许 remote debugging'
+            : (error.message || '抓取失败')
+        task.runLogs.push(`${nowText()} | 抓取失败：${task.errorMessage}`)
+        throw error
+      }
+    }
+
+  const fileName = `gas_supply_chain_${Date.now()}.csv`
+  const absPath = path.join(crawlExportDir, fileName)
+  const header = [
+    'source_url',
+    'page_url',
+    'model',
+    'skill',
+    'mode',
+    'node_level',
+    'node_code',
+    'node_title',
+    'node_url',
+    'parent_code',
+    'parent_title',
+    'parent_url',
+    'level1_code',
+    'level1_title',
+    'level1_url',
+    'level2_code',
+    'level2_title',
+    'level2_url',
+    'level3_code',
+    'level3_title',
+    'level3_url',
+    'lineage',
+    'status',
+    'error_message',
+  ]
+  const lines = [
+    header.join(','),
+    ...rows.map((row) => [
+      row.sourceUrl,
+      row.pageUrl,
+      row.model,
+      row.skill,
+      row.mode,
+      row.nodeLevel,
+      row.nodeCode,
+      row.nodeTitle,
+      row.nodeUrl,
+      row.parentCode,
+      row.parentTitle,
+      row.parentUrl,
+      row.level1Code,
+      row.level1Title,
+      row.level1Url,
+      row.level2Code,
+      row.level2Title,
+      row.level2Url,
+      row.level3Code,
+      row.level3Title,
+      row.level3Url,
+      row.lineage,
+      row.status,
+      row.errorMessage,
+    ].map(csvEscape).join(',')),
+  ]
+  await fs.writeFile(absPath, lines.join('\n'), 'utf8')
+
+  task.fileName = fileName
+  task.filePath = absPath
+  task.downloadUrl = `/api/crawl-exports/${encodeURIComponent(fileName)}`
+  task.records = rows
+  task.totalRows = rows.length
+  task.estimatedTotalRows = rows.length
+  task.progress = 100
+  task.status = 'done'
+  task.endedAt = new Date().toISOString()
+  task.runLogs.push(`${nowText()} | CSV 已生成：${fileName}，共 ${rows.length} 条节点`)
+  task.runLogs.push(`${nowText()} | 任务完成，总耗时 ${Date.now() - taskStart}ms`)
+  schedulePersistGasSupplyChainTaskStore()
+}
+
+async function upsertGasSupplyChainNode(client, payload) {
+  const existing = await client.query(
+    `
+    SELECT id, synced_supplier_count AS "syncedSupplierCount"
+    FROM ${gasSupplyChainNodeTable}
+    WHERE parent_id IS NOT DISTINCT FROM $1
+      AND node_level = $2
+      AND node_title = $3
+    LIMIT 1
+    `,
+    [payload.parentId, payload.nodeLevel, payload.nodeTitle],
+  )
+  if (existing.rowCount > 0) {
+    const current = existing.rows[0]
+    await client.query(
+      `
+      UPDATE ${gasSupplyChainNodeTable}
+      SET
+        node_url = $2,
+        source_url = $3,
+        synced_at = $4,
+        updated_at = NOW()
+      WHERE id = $1
+      `,
+      [current.id, payload.nodeUrl || '', payload.sourceUrl || '', payload.syncedAt || null],
+    )
+    return { id: current.id, created: false, syncedSupplierCount: Number(current.syncedSupplierCount || 0) }
+  }
+  const inserted = await client.query(
+    `
+    INSERT INTO ${gasSupplyChainNodeTable}
+    (parent_id, node_level, node_title, node_url, source_url, synced_supplier_count, synced_at, updated_at)
+    VALUES ($1, $2, $3, $4, $5, 0, $6, NOW())
+    RETURNING id
+    `,
+    [payload.parentId, payload.nodeLevel, payload.nodeTitle, payload.nodeUrl || '', payload.sourceUrl || '', payload.syncedAt || null],
+  )
+  return { id: inserted.rows[0].id, created: true, syncedSupplierCount: 0 }
+}
+
+async function importGasSupplyChainTaskRows(records, mode = 'full') {
+  if (!Array.isArray(records) || records.length === 0) {
+    throw new Error('没有可入库的 GAS 供应链节点')
+  }
+  const client = await pool.connect()
+  const summary = {
+    importedRows: records.length,
+    inserted: 0,
+    updated: 0,
+    level1Inserted: 0,
+    level2Inserted: 0,
+    level3Inserted: 0,
+    level1Updated: 0,
+    level2Updated: 0,
+    level3Updated: 0,
+    syncedSuppliers: 0,
+  }
+  try {
+    await client.query('BEGIN')
+    if (mode === 'full') {
+      await client.query(`DELETE FROM ${gasSupplyChainNodeTable}`)
+    }
+    const importTime = new Date().toISOString()
+    const level1Rows = records.filter((item) => Number(item.nodeLevel) === 1)
+    const level2Rows = records.filter((item) => Number(item.nodeLevel) === 2)
+    const level3Rows = records.filter((item) => Number(item.nodeLevel) === 3)
+    const level1Map = new Map()
+    const level2Map = new Map()
+
+    for (const row of level1Rows) {
+      const result = await upsertGasSupplyChainNode(client, {
+        parentId: null,
+        nodeLevel: 1,
+        nodeTitle: toText(row.level1Title || row.nodeTitle),
+        nodeUrl: toText(row.level1Url || row.nodeUrl),
+        sourceUrl: toText(row.sourceUrl),
+        syncedAt: importTime,
+      })
+      level1Map.set(toText(row.level1Code || row.nodeCode || row.level1Title || row.nodeTitle), result.id)
+      if (result.created) {
+        summary.inserted += 1
+        summary.level1Inserted += 1
+      } else {
+        summary.updated += 1
+        summary.level1Updated += 1
+        summary.syncedSuppliers += Number(result.syncedSupplierCount || 0)
+      }
+    }
+
+    for (const row of level2Rows) {
+      const level1Key = toText(row.level1Code || row.level1Title)
+      const parentId = level1Map.get(level1Key) || null
+      const result = await upsertGasSupplyChainNode(client, {
+        parentId,
+        nodeLevel: 2,
+        nodeTitle: toText(row.level2Title || row.nodeTitle),
+        nodeUrl: toText(row.level2Url || row.nodeUrl),
+        sourceUrl: toText(row.sourceUrl),
+        syncedAt: importTime,
+      })
+      level2Map.set(toText(row.level2Code || row.nodeCode || row.level2Title || row.nodeTitle), result.id)
+      if (result.created) {
+        summary.inserted += 1
+        summary.level2Inserted += 1
+      } else {
+        summary.updated += 1
+        summary.level2Updated += 1
+        summary.syncedSuppliers += Number(result.syncedSupplierCount || 0)
+      }
+    }
+
+    for (const row of level3Rows) {
+      const level2Key = toText(row.level2Code || row.parentCode || row.level2Title || row.parentTitle)
+      const parentId = level2Map.get(level2Key) || null
+      const result = await upsertGasSupplyChainNode(client, {
+        parentId,
+        nodeLevel: 3,
+        nodeTitle: toText(row.level3Title || row.nodeTitle),
+        nodeUrl: toText(row.level3Url || row.nodeUrl),
+        sourceUrl: toText(row.sourceUrl),
+        syncedAt: importTime,
+      })
+      if (result.created) {
+        summary.inserted += 1
+        summary.level3Inserted += 1
+      } else {
+        summary.updated += 1
+        summary.level3Updated += 1
+        summary.syncedSuppliers += Number(result.syncedSupplierCount || 0)
+      }
+    }
+
+    await client.query('COMMIT')
+    return {
+      ...summary,
+      updatedNodes: summary.inserted + summary.updated,
+      mode,
+      syncedAt: importTime,
+    }
+  } catch (error) {
+    await client.query('ROLLBACK')
+    throw error
+  } finally {
+    client.release()
   }
 }
 
@@ -2175,8 +4413,8 @@ function isLikelySupplierDetailHref(href = '') {
   if (!text) return false
   if (text.startsWith('javascript:') || text.startsWith('#')) return false
   if (/category\.php|article\.php|show_article\.php|help\.php|search|login|regist|news|about|contact|sitemap/.test(text)) return false
-  if (/(company|supplier|corp|qiye|member|shop|detail|show_)/.test(text)) return true
-  if (/\.html?$/.test(text) && /(company|supplier|corp|qiye|member|shop|detail|show_)/.test(text)) return true
+  if (/(company|supplier|corp|qiye|member|shop|detail|show_|oemhome)/.test(text)) return true
+  if (/\.html?$/.test(text) && /(company|supplier|corp|qiye|member|shop|detail|show_|oemhome)/.test(text)) return true
   return false
 }
 
@@ -2188,10 +4426,20 @@ function sanitizeSupplierCompanyName(name = '') {
     .replace(/\s*[-—–|｜]\s*中国汽车供应商网.*$/i, '')
     .replace(/\s*[-—–|｜]\s*全面展示中国最优质汽车供应商.*$/i, '')
     .replace(/\s*[-—–|｜]\s*汽车行业电子商务平台.*$/i, '')
+    .replace(/\s*[-—–|｜]\s*汽车行业整车厂\/主机厂\s*[-—–|｜]\s*盖世汽车社区.*$/i, '')
+    .replace(/\s*[-—–|｜]\s*盖世汽车社区.*$/i, '')
     .replace(/^\d+[.)、]\s*/, '')
     .replace(/\s{2,}/g, ' ')
     .trim()
   return text
+}
+
+function extractGasOemBrandVehicleFromText(text = '') {
+  const plain = cleanSupplierFieldText(text)
+  if (!plain) return { brand: '', vehicleModel: '' }
+  const brand = cleanSupplierFieldText(textByRegex(plain, /(?:^|[；;|｜\s])品牌[:：]\s*([^；;|｜]+)/i))
+  const vehicleModel = cleanSupplierFieldText(textByRegex(plain, /(?:^|[；;|｜\s])车型[:：]\s*([^；;|｜]+)/i))
+  return { brand, vehicleModel }
 }
 
 function isLikelyCompanyName(name = '') {
@@ -2437,6 +4685,10 @@ function buildSupplierSuccessRow(params = {}) {
     detailUrl = ''
   }
   const fromText = parseSupplierExtraByText(params.blockText || '')
+  const mergedMainProducts = cleanSupplierFieldText(toText(params.mainProducts) || fromText.mainProducts)
+  const brandVehicleFromText = extractGasOemBrandVehicleFromText(
+    [toText(params.brand), toText(params.vehicleModel), mergedMainProducts, toText(params.blockText)].filter(Boolean).join('；'),
+  )
   const normalizedAtomic = normalizeSupplierDetailAtomicFields({
     companyType: params.companyType,
     orgCode: params.orgCode,
@@ -2454,7 +4706,9 @@ function buildSupplierSuccessRow(params = {}) {
     listPageUrl: params.listPageUrl,
     detailUrl,
     companyName,
-    mainProducts: cleanSupplierFieldText(toText(params.mainProducts) || fromText.mainProducts),
+    brand: cleanSupplierFieldText(toText(params.brand) || brandVehicleFromText.brand),
+    vehicleModel: cleanSupplierFieldText(toText(params.vehicleModel) || brandVehicleFromText.vehicleModel),
+    mainProducts: mergedMainProducts,
     fitExport: cleanSupplierFieldText(toText(params.fitExport) || fromText.fitExport),
     qualitySystem: cleanSupplierFieldText(toText(params.qualitySystem) || fromText.qualitySystem),
     region: cleanSupplierFieldText(toText(params.region) || fromText.region),
@@ -2477,7 +4731,7 @@ function buildSupplierHtmlDiagnostics(html = '', pageUrl = '') {
   const plain = decodeBasicHtmlEntities(stripHtml(page)).replace(/\s+/g, ' ').trim()
   const liAlistsCount = [...page.matchAll(/<li[^>]*class\s*=\s*["'][^"']*\balists\b[^"']*["'][^>]*>/gi)].length
   const trCount = [...page.matchAll(/<tr\b[^>]*>/gi)].length
-  const companyLinkCount = [...page.matchAll(/(?:company\.php|free\.php)\?mid=\d+/gi)].length
+  const companyLinkCount = [...page.matchAll(/(?:company\.php|free\.php)\?mid=\d+|\/oemhome\/\d+\.html/gi)].length
   return {
     pageTitle: extractTitle(page),
     pageTextLen: plain.length,
@@ -2518,6 +4772,68 @@ function extractSupplierRowsFromCategoryHtml(html, listPageUrl, context = {}) {
       qualitySystem,
       region,
       contactAction: '查看/收藏',
+      listPageUrl,
+      context,
+    })
+    if (!row) continue
+    const rowKey = `${row.companyName}@@${row.detailUrl}`
+    if (seenKey.has(rowKey)) continue
+    seenKey.add(rowKey)
+    rows.push(row)
+  }
+
+  // gasgoo 整车厂列表结构：dl + a.comName22 + /oemhome/{id}.html
+  const dlMatches = [...page.matchAll(/<dl\b[^>]*>[\s\S]*?<\/dl>/gi)]
+  for (const matched of dlMatches) {
+    const dlHtml = String(matched[0] || '')
+    const companyAnchor = dlHtml.match(/<a[^>]*class\s*=\s*["'][^"']*\bcomName22\b[^"']*["'][^>]*href\s*=\s*["']([^"']*\/oemhome\/\d+\.html[^"']*)["'][^>]*>([\s\S]*?)<\/a>/i)
+      || dlHtml.match(/<a[^>]*href\s*=\s*["']([^"']*\/oemhome\/\d+\.html[^"']*)["'][^>]*>([\s\S]*?)<\/a>/i)
+    const detailHref = toText(companyAnchor?.[1])
+    const companyName = decodeBasicHtmlEntities(stripHtml(companyAnchor?.[2] || ''))
+    if (!isLikelyCompanyName(companyName) || !isLikelySupplierDetailHref(detailHref)) continue
+    const allSpans = [...dlHtml.matchAll(/<p[^>]*class\s*=\s*["'][^"']*\bfullCar\b[^"']*["'][^>]*>[\s\S]*?<\/p>/gi)]
+      .flatMap((block) => [...String(block[0] || '').matchAll(/<span[^>]*>([\s\S]*?)<\/span>/gi)])
+      .map((item) => cleanSupplierFieldText(item?.[1] || ''))
+      .filter(Boolean)
+    const regionText = allSpans.find((item) => /所在地[:：]/.test(item)) || ''
+    const capitalText = allSpans.find((item) => /注册资金[:：]/.test(item)) || ''
+    const region = cleanSupplierFieldText(regionText.replace(/^.*?所在地[:：]\s*/i, '') || allSpans[0] || '')
+    const registeredCapital = cleanSupplierFieldText(capitalText.replace(/^.*?注册资金[:：]\s*/i, '') || allSpans[1] || '')
+    const brandText = textByRegex(dlHtml, /<p[^>]*class\s*=\s*["'][^"']*\bbltxt\b[^"']*["'][^>]*>\s*<strong>\s*品牌[:：]\s*<\/strong>\s*([\s\S]*?)<\/p>/i)
+    const modelText = textByRegex(dlHtml, /<p[^>]*class\s*=\s*["'][^"']*\bbltxt\b[^"']*["'][^>]*>\s*<strong>\s*车型[:：]\s*<\/strong>\s*([\s\S]*?)<\/p>/i)
+    const row = buildSupplierSuccessRow({
+      companyName,
+      detailHref,
+      blockText: decodeBasicHtmlEntities(stripHtml(dlHtml)),
+      brand: brandText,
+      vehicleModel: modelText,
+      mainProducts: [brandText && `品牌：${brandText}`, modelText && `车型：${modelText}`].filter(Boolean).join('；'),
+      region,
+      registeredCapital,
+      contactAction: '查看',
+      listPageUrl,
+      context,
+    })
+    if (!row) continue
+    const rowKey = `${row.companyName}@@${row.detailUrl}`
+    if (seenKey.has(rowKey)) continue
+    seenKey.add(rowKey)
+    rows.push(row)
+  }
+
+  // gasgoo 整车厂全量索引（异步渲染到 #ManufacturerList）
+  const oemIndexAnchors = [
+    ...page.matchAll(/<div[^>]*id\s*=\s*["']ManufacturerList["'][^>]*>[\s\S]*?<\/div>/gi),
+  ].flatMap((scope) => [...String(scope[0] || '').matchAll(/<a[^>]*href\s*=\s*["']([^"']*\/oemhome\/\d+\.html[^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi)])
+  for (const anchor of oemIndexAnchors) {
+    const detailHref = toText(anchor?.[1])
+    const companyName = decodeBasicHtmlEntities(stripHtml(anchor?.[2] || ''))
+    if (!isLikelyCompanyName(companyName) || !isLikelySupplierDetailHref(detailHref)) continue
+    const row = buildSupplierSuccessRow({
+      companyName,
+      detailHref,
+      blockText: companyName,
+      contactAction: '查看',
       listPageUrl,
       context,
     })
@@ -2688,6 +5004,24 @@ function extractSupplierPaginationUrlsFromHtml(html = '', currentUrl = '') {
       }
     }
   }
+  // gasgoo 整车厂分页：/supplier/oem/index-{n}.html
+  const oemPageNums = [...page.matchAll(/\/supplier\/oem\/index-(\d{1,4})\.html/gi)]
+    .map((item) => Number(item?.[1] || 0))
+    .filter((n) => Number.isInteger(n) && n >= 2 && n <= 300)
+  if (oemPageNums.length > 0 || isGasgooOemListUrl(currentUrl)) {
+    const detectedMaxPage = oemPageNums.length > 0 ? Math.max(...oemPageNums) : 1
+    // Gasgoo OEM 列表常只渲染前几页数字，先保底补齐到 15 页，避免第一页后断流。
+    const targetMaxPage = isGasgooOemListUrl(currentUrl)
+      ? Math.max(detectedMaxPage, 15)
+      : detectedMaxPage
+    for (let pageNo = 2; pageNo <= targetMaxPage; pageNo += 1) {
+      try {
+        urls.add(new URL(`/supplier/oem/index-${pageNo}.html`, currentUrl).toString())
+      } catch {
+        // ignore invalid url
+      }
+    }
+  }
   return [...urls]
 }
 
@@ -2696,6 +5030,10 @@ function isSameSupplierCategoryUrl(baseUrl = '', candidateUrl = '') {
     const base = new URL(baseUrl)
     const candidate = new URL(candidateUrl)
     if (base.host !== candidate.host) return false
+    const isGasgooOemPath = (pathname = '') => /^\/supplier\/oem(?:\.html|\/index-\d+\.html)?$/i.test(pathname || '')
+    if (isGasgooOemPath(base.pathname) && isGasgooOemPath(candidate.pathname)) {
+      return true
+    }
     if (base.pathname !== candidate.pathname) return false
     for (const key of ['cid', 'pid', 'catid']) {
       const baseVal = base.searchParams.get(key) || ''
@@ -2724,6 +5062,31 @@ function buildSyntheticPaginationUrls(baseUrl = '', totalCount = 0, firstPageRow
         // ignore invalid url
       }
     }
+  }
+  return [...new Set(generated)]
+}
+
+function isGasgooOemListUrl(urlText = '') {
+  try {
+    const parsed = new URL(String(urlText || '').trim())
+    if (!/(^|\.)gasgoo\.com$/i.test(parsed.hostname)) return false
+    return /^\/supplier\/oem(?:\.html|\/index-\d+\.html)?$/i.test(parsed.pathname || '')
+  } catch {
+    return false
+  }
+}
+
+function buildGasgooOemPaginationUrls(baseUrl = '', maxPage = 15) {
+  const generated = []
+  const upper = Math.max(2, Math.min(80, Number(maxPage || 15)))
+  try {
+    const parsed = new URL(baseUrl)
+    const root = `${parsed.protocol}//${parsed.host}`
+    for (let pageNo = 2; pageNo <= upper; pageNo += 1) {
+      generated.push(`${root}/supplier/oem/index-${pageNo}.html`)
+    }
+  } catch {
+    // ignore invalid base url
   }
   return [...new Set(generated)]
 }
@@ -2913,7 +5276,8 @@ function extractSupplierDetailFromHtml(html = '', detailUrl = '') {
   return normalized
 }
 
-async function fetchSupplierDetailAggregateByHttp(detailUrl) {
+async function fetchSupplierDetailAggregateByHttp(detailUrl, options = {}) {
+  const homepageOnly = normalizeSupplierHomepageOnly(options?.homepageOnly)
   let detail = {}
   const snapshots = []
   const fetchedUrls = new Set()
@@ -2976,8 +5340,10 @@ async function fetchSupplierDetailAggregateByHttp(detailUrl) {
   }
 
   enqueueTabUrl(detailUrl, '首页')
-  for (const candidate of buildSupplierDetailTabUrls(detailUrl)) {
-    enqueueTabUrl(candidate, '')
+  if (!homepageOnly) {
+    for (const candidate of buildSupplierDetailTabUrls(detailUrl)) {
+      enqueueTabUrl(candidate, '')
+    }
   }
 
   while (queue.length > 0) {
@@ -2987,7 +5353,9 @@ async function fetchSupplierDetailAggregateByHttp(detailUrl) {
     fetchedUrls.add(currentUrl)
     const detailFetched = await fetchTextWithRetries(currentUrl, supplierHttpTimeoutMs, supplierHttpRetryCount)
     const tabKey = classifySupplierDetailTab(current?.label || '', currentUrl)
-    const parsed = extractSupplierDetailFromHtml(detailFetched.text, currentUrl)
+    const parsed = isGasgooSupplierUrl(currentUrl)
+      ? extractGasgooSupplierOverviewFromHtml(detailFetched.text, currentUrl)
+      : extractSupplierDetailFromHtml(detailFetched.text, currentUrl)
     mergeParsedDetail(parsed, tabKey)
     snapshots.push({
       label: current?.label || currentUrl,
@@ -2995,12 +5363,14 @@ async function fetchSupplierDetailAggregateByHttp(detailUrl) {
       html: detailFetched.text,
       plain: decodeBasicHtmlEntities(stripHtml(String(detailFetched.text || ''))).replace(/\s+/g, ' ').trim(),
     })
-    for (const discovered of discoverSupplierDetailTabLinksFromHtml(detailFetched.text, currentUrl)) {
-      enqueueTabUrl(discovered.url, discovered.label || discovered.tabKey || '')
-    }
-    if (!tabKey || tabKey === 'home') {
-      for (const candidate of buildSupplierDetailTabUrls(currentUrl)) {
-        enqueueTabUrl(candidate, '')
+    if (!homepageOnly) {
+      for (const discovered of discoverSupplierDetailTabLinksFromHtml(detailFetched.text, currentUrl)) {
+        enqueueTabUrl(discovered.url, discovered.label || discovered.tabKey || '')
+      }
+      if (!tabKey || tabKey === 'home') {
+        for (const candidate of buildSupplierDetailTabUrls(currentUrl)) {
+          enqueueTabUrl(candidate, '')
+        }
       }
     }
   }
@@ -3019,7 +5389,8 @@ async function fetchSupplierDetailAggregateByHttp(detailUrl) {
   }
 }
 
-async function enrichSupplierRowsByDetailPages(rows, task, nowText) {
+async function enrichSupplierRowsByDetailPages(rows, task, nowText, options = {}) {
+  const homepageOnly = normalizeSupplierHomepageOnly(options?.homepageOnly || task?.homepageOnly)
   const result = Array.isArray(rows) ? rows : []
   const candidatesCount = result.filter((row) => row?.detailUrl && row.status === 'success').length
   if (task?.runLogs) {
@@ -3038,7 +5409,7 @@ async function enrichSupplierRowsByDetailPages(rows, task, nowText) {
     let resolved = false
     for (const detailUrl of detailCandidates) {
       try {
-        let { detail, mergedHtml, mergedPlain } = await fetchSupplierDetailAggregateByHttp(detailUrl)
+        let { detail, mergedHtml, mergedPlain } = await fetchSupplierDetailAggregateByHttp(detailUrl, { homepageOnly })
         const llmDetail = await extractSupplierDetailByLlm({
           html: mergedHtml,
           plain: mergedPlain,
@@ -3062,6 +5433,11 @@ async function enrichSupplierRowsByDetailPages(rows, task, nowText) {
         applySupplierDetailField(row, 'employeesCount', detail.employeesCount)
         applySupplierDetailField(row, 'legalRepresentative', detail.legalRepresentative)
         applySupplierDetailField(row, 'newsSummary', detail.newsSummary)
+        const brandVehicle = extractGasOemBrandVehicleFromText(
+          [toText(detail.brand), toText(detail.vehicleModel), toText(row.mainProducts), toText(detail.mainProducts)].filter(Boolean).join('；'),
+        )
+        if (!toText(row.brand)) row.brand = brandVehicle.brand
+        if (!toText(row.vehicleModel)) row.vehicleModel = brandVehicle.vehicleModel
         row.detailUrl = detailUrl
         resolved = true
         resolvedCount += 1
@@ -3082,14 +5458,10 @@ async function enrichSupplierRowsByDetailPages(rows, task, nowText) {
 }
 
 async function extractSupplierPageDataWithPlaywright(listPageUrl, context = {}) {
-  let browser
+  let session
   try {
-    const { chromium } = await import('playwright')
-    browser = await chromium.launch({ headless: true, args: buildPlaywrightLaunchArgs(listPageUrl) })
-    const page = await browser.newPage({
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/136.0.0.0 Safari/537.36',
-      viewport: { width: 1366, height: 900 },
-    })
+    session = await createSupplierPlaywrightSession(listPageUrl, context)
+    const page = session.page
     await page.route('**/*', (route) => {
       const type = route.request().resourceType()
       if (type === 'image' || type === 'font' || type === 'media') return route.abort()
@@ -3235,14 +5607,17 @@ async function extractSupplierPageDataWithPlaywright(listPageUrl, context = {}) 
     const diagnostics = {
       ...(buildSupplierHtmlDiagnostics(html, finalUrl) || {}),
       ...((evaluateData && evaluateData.diagnostics) || {}),
+      playwrightMode: session?.mode || '',
+      playwrightProfile: session?.profileLabel || '',
+      playwrightLaunchError: session?.launchError || '',
     }
     await page.close().catch(() => {})
     return { rows, totalCount, paginationUrls, finalUrl, perPage, source: 'playwright', diagnostics }
   } catch {
     return { rows: [], totalCount: 0, paginationUrls: [], finalUrl: listPageUrl, source: 'playwright', diagnostics: {} }
   } finally {
-    if (browser) {
-      await browser.close().catch(() => {})
+    if (session?.close) {
+      await session.close()
     }
   }
 }
@@ -3320,13 +5695,127 @@ async function importSupplierBaseRows(records, fileName = '') {
   }
 }
 
-async function importSupplierProfileRows(records) {
+async function importGasOemRows(records, fileName = '') {
   if (!Array.isArray(records) || records.length === 0) {
-    return { importedRows: 0, inserted: 0, updated: 0 }
+    return { importedRows: 0, normalizedRows: 0, inserted: 0, updated: 0, fileName, duplicateNamesInFile: 0 }
+  }
+  const normalizedMap = new Map()
+  let duplicateNamesInFile = 0
+  for (const item of records) {
+    const rawName = toText(item.oemName || item.companyName)
+    const oemName = sanitizeSupplierCompanyName(rawName)
+    if (!oemName) continue
+    const key = oemName.toLowerCase()
+    const parsedBrandVehicle = extractGasOemBrandVehicleFromText(
+      [toText(item.brand), toText(item.vehicleModel), toText(item.mainProducts)].filter(Boolean).join('；'),
+    )
+    const next = {
+      oemName,
+      brand: cleanSupplierFieldText(toText(item.brand) || parsedBrandVehicle.brand),
+      vehicleModel: cleanSupplierFieldText(toText(item.vehicleModel) || parsedBrandVehicle.vehicleModel),
+      region: toText(item.region),
+      registeredCapital: toText(item.registeredCapital),
+      website: toText(item.website || item.detailUrl),
+      model: toText(item.model),
+      skill: toText(item.skill),
+      sourceFile: fileName,
+    }
+    const prev = normalizedMap.get(key)
+    if (!prev) {
+      normalizedMap.set(key, next)
+      continue
+    }
+    duplicateNamesInFile += 1
+    normalizedMap.set(key, {
+      ...prev,
+      brand: prev.brand || next.brand,
+      vehicleModel: prev.vehicleModel || next.vehicleModel,
+      region: prev.region || next.region,
+      registeredCapital: prev.registeredCapital || next.registeredCapital,
+      website: prev.website || next.website,
+      model: prev.model || next.model,
+      skill: prev.skill || next.skill,
+    })
+  }
+  const normalizedRows = [...normalizedMap.values()]
+  if (normalizedRows.length === 0) {
+    return { importedRows: records.length, normalizedRows: 0, inserted: 0, updated: 0, fileName, duplicateNamesInFile }
   }
   const client = await pool.connect()
   let inserted = 0
   let updated = 0
+  try {
+    await client.query('BEGIN')
+    for (const item of normalizedRows) {
+      const oemName = sanitizeSupplierCompanyName(toText(item.oemName || item.companyName))
+      if (!oemName) continue
+      const result = await client.query(
+        `
+        INSERT INTO ${gasOemTable}
+          (oem_name, brand, vehicle_model, region, registered_capital, website, model, skill, source_file, updated_at)
+        VALUES
+          ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())
+        ON CONFLICT (oem_name)
+        DO UPDATE SET
+          brand = CASE
+            WHEN ${gasOemTable}.brand = '' THEN EXCLUDED.brand
+            ELSE ${gasOemTable}.brand
+          END,
+          vehicle_model = CASE
+            WHEN ${gasOemTable}.vehicle_model = '' THEN EXCLUDED.vehicle_model
+            ELSE ${gasOemTable}.vehicle_model
+          END,
+          region = CASE
+            WHEN ${gasOemTable}.region = '' THEN EXCLUDED.region
+            ELSE ${gasOemTable}.region
+          END,
+          registered_capital = CASE
+            WHEN ${gasOemTable}.registered_capital = '' THEN EXCLUDED.registered_capital
+            ELSE ${gasOemTable}.registered_capital
+          END,
+          website = CASE
+            WHEN ${gasOemTable}.website = '' THEN EXCLUDED.website
+            ELSE ${gasOemTable}.website
+          END,
+          model = EXCLUDED.model,
+          skill = EXCLUDED.skill,
+          source_file = EXCLUDED.source_file,
+          updated_at = NOW()
+        RETURNING (xmax = 0) AS inserted
+        `,
+        [
+          oemName,
+          toText(item.brand),
+          toText(item.vehicleModel),
+          toText(item.region),
+          toText(item.registeredCapital),
+          toText(item.website || item.detailUrl),
+          toText(item.model),
+          toText(item.skill),
+          fileName,
+        ],
+      )
+      if (Boolean(result.rows[0]?.inserted)) inserted += 1
+      else updated += 1
+    }
+    await client.query('COMMIT')
+    return { importedRows: records.length, normalizedRows: normalizedRows.length, inserted, updated, fileName, duplicateNamesInFile }
+  } catch (error) {
+    await client.query('ROLLBACK')
+    throw error
+  } finally {
+    client.release()
+  }
+}
+
+async function importSupplierProfileRows(records) {
+  if (!Array.isArray(records) || records.length === 0) {
+    return { importedRows: 0, inserted: 0, updated: 0, affectedNodeIds: [] }
+  }
+  const client = await pool.connect()
+  let inserted = 0
+  let updated = 0
+  const affectedNodeIdSet = new Set()
   try {
     const [oemDictRes, countryDictRes, certDictRes] = await Promise.all([
       client.query(`SELECT name FROM ${supplierOemDictTable} ORDER BY sort_order ASC, id ASC`),
@@ -3341,6 +5830,13 @@ async function importSupplierProfileRows(records) {
     for (const item of records) {
       const companyName = toText(item.companyName)
       if (!companyName) continue
+      const profileSource = detectSupplierProfileSource(
+        item.profileSource,
+        item.website,
+        item.detailUrl,
+        item.sourceUrl,
+        item.listPageUrl,
+      )
       const hasFitSituationField = Object.prototype.hasOwnProperty.call(item, 'fitSituation')
       const hasExportSituationField = Object.prototype.hasOwnProperty.call(item, 'exportSituation')
       const normalizedItem = normalizeSupplierDetailAtomicFields({
@@ -3438,6 +5934,18 @@ async function importSupplierProfileRows(records) {
             : []
         )
       const productFitDetails = []
+      const companyTags = parseSupplierCompanyTags(item.companyTags)
+      const businessInfo = parseSupplierBusinessInfo(item.businessInfo)
+      const industrialCommercialInfo = parseSupplierBusinessInfo(item.industrialCommercialInfo)
+      const mainProductNames = dedupeSupplierProductNames(item.mainProductNames || productNameList)
+      const customerItems = parseSupplierCustomerItems(item.customerItems)
+      const productCaseItems = parseSupplierProductCaseItems(item.productCaseItems)
+      const financingItems = parseSupplierFinancingItems(item.financingItems)
+      const patentItems = parseSupplierPatentItems(item.patentItems)
+      const adminLicenseItems = parseSupplierAdminLicenseItems(item.adminLicenseItems)
+      const tradeCreditItems = parseSupplierTradeCreditItems(item.tradeCreditItems)
+      const courtNoticeItems = parseSupplierCourtNoticeItems(item.courtNoticeItems)
+      const productionBaseItems = parseSupplierProductionBaseItems(item.productionBaseItems)
       const companyNews = newsItems.length > 0
         ? newsItems.map((entry) => toText(entry.title)).filter(Boolean).join('；')
         : ''
@@ -3449,16 +5957,17 @@ async function importSupplierProfileRows(records) {
         `
         SELECT
           id,
+          profile_source AS "profileSource",
           related_node_id AS "relatedNodeId",
           related_node_name AS "relatedNodeName",
           related_node_ids AS "relatedNodeIds",
           related_node_names AS "relatedNodeNames"
         FROM ${supplierProfileTable}
-        WHERE company_name = $1
+        WHERE company_name = $1 AND profile_source = $2
         ORDER BY id ASC
         LIMIT 1
         `,
-        [companyName],
+        [companyName, profileSource],
       )
       const mergedNodeRefs = mergeSupplierNodeRefs(
         existing.rows[0]?.relatedNodeIds || [],
@@ -3466,6 +5975,13 @@ async function importSupplierProfileRows(records) {
         item.nodeId,
         toText(item.nodeName),
       )
+      for (const nodeId of mergedNodeRefs.ids || []) {
+        const parsedNodeId = Number(nodeId)
+        if (Number.isInteger(parsedNodeId) && parsedNodeId > 0) {
+          affectedNodeIdSet.add(parsedNodeId)
+        }
+      }
+      let profileId = null
       if (existing.rowCount > 0) {
         await client.query(
           `
@@ -3542,6 +6058,22 @@ async function importSupplierProfileRows(records) {
               WHEN CHAR_LENGTH($25) >= 20 AND CHAR_LENGTH($25) > CHAR_LENGTH(company_news) + 12 THEN $25
               ELSE company_news
             END,
+            company_tags = CASE
+              WHEN jsonb_array_length(company_tags) = 0 OR jsonb_array_length($28::jsonb) > jsonb_array_length(company_tags) THEN $28::jsonb
+              ELSE company_tags
+            END,
+            main_product_names = CASE
+              WHEN jsonb_array_length(main_product_names) = 0 OR jsonb_array_length($29::jsonb) > jsonb_array_length(main_product_names) THEN $29::jsonb
+              ELSE main_product_names
+            END,
+            business_info = CASE
+              WHEN business_info = '{}'::jsonb AND $30::jsonb <> '{}'::jsonb THEN $30::jsonb
+              ELSE business_info
+            END,
+            industrial_commercial_info = CASE
+              WHEN industrial_commercial_info = '{}'::jsonb AND $31::jsonb <> '{}'::jsonb THEN $31::jsonb
+              ELSE industrial_commercial_info
+            END,
             updated_at = NOW()
           WHERE id = $1
           `,
@@ -3573,23 +6105,37 @@ async function importSupplierProfileRows(records) {
             companyNews,
             JSON.stringify(mergedNodeRefs.ids),
             JSON.stringify(mergedNodeRefs.names),
+            JSON.stringify(companyTags),
+            JSON.stringify(mainProductNames),
+            JSON.stringify(businessInfo),
+            JSON.stringify(industrialCommercialInfo),
           ],
         )
+        profileId = Number(existing.rows[0].id)
         updated += 1
       } else {
         const initialNodeRefs = mergeSupplierNodeRefs([], [], item.nodeId, toText(item.nodeName))
-        await client.query(
+        for (const nodeId of initialNodeRefs.ids || []) {
+          const parsedNodeId = Number(nodeId)
+          if (Number.isInteger(parsedNodeId) && parsedNodeId > 0) {
+            affectedNodeIdSet.add(parsedNodeId)
+          }
+        }
+        const insertedProfile = await client.query(
           `
           INSERT INTO ${supplierProfileTable}
           (
-            related_node_id, related_node_name, related_node_ids, related_node_names, company_name, legal_representative, org_code, registered_capital, established_date, employees_count, company_type,
+            profile_source, related_node_id, related_node_name, related_node_ids, related_node_names, company_name, legal_representative, org_code, registered_capital, established_date, employees_count, company_type,
             website, company_intro, fit_situation, export_situation, certificates, address, products,
-            contacts, fit_oems, product_fit_details, export_countries, certificate_items, company_news, news_items, updated_at
+            contacts, fit_oems, product_fit_details, export_countries, certificate_items, company_news, news_items,
+            company_tags, main_product_names, business_info, industrial_commercial_info, updated_at
           )
           VALUES
-          ($1,$2,$3::jsonb,$4::jsonb,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18::jsonb,$19::jsonb,$20::jsonb,$21::jsonb,$22::jsonb,$23::jsonb,$24,$25::jsonb,NOW())
+          ($1,$2,$3,$4::jsonb,$5::jsonb,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19::jsonb,$20::jsonb,$21::jsonb,$22::jsonb,$23::jsonb,$24::jsonb,$25,$26::jsonb,$27::jsonb,$28::jsonb,$29::jsonb,$30::jsonb,NOW())
+          RETURNING id
           `,
           [
+            profileSource,
             item.nodeId ? Number(item.nodeId) : null,
             toText(item.nodeName),
             JSON.stringify(initialNodeRefs.ids),
@@ -3615,19 +6161,591 @@ async function importSupplierProfileRows(records) {
             JSON.stringify(certItems),
             companyNews,
             JSON.stringify(newsItems),
+            JSON.stringify(companyTags),
+            JSON.stringify(mainProductNames),
+            JSON.stringify(businessInfo),
+            JSON.stringify(industrialCommercialInfo),
           ],
         )
+        profileId = Number(insertedProfile.rows[0].id)
         inserted += 1
+      }
+      if (profileId && customerItems.length > 0) {
+        await replaceSupplierProfileChildRows(
+          client,
+          supplierProfileCustomerTable,
+          profileId,
+          customerItems,
+          `INSERT INTO ${supplierProfileCustomerTable} (profile_id, sort_order, product_name, oem_names, updated_at) VALUES ($1,$2,$3,$4::jsonb,NOW())`,
+          (entry, idx) => [profileId, idx + 1, entry.productName, JSON.stringify(entry.oemNames)],
+        )
+      }
+      if (profileId && productCaseItems.length > 0) {
+        await replaceSupplierProfileChildRows(
+          client,
+          supplierProfileProductCaseTable,
+          profileId,
+          productCaseItems,
+          `INSERT INTO ${supplierProfileProductCaseTable} (profile_id, sort_order, product_name, vehicle_model, customer_name, description, updated_at) VALUES ($1,$2,$3,$4,$5,$6,NOW())`,
+          (entry, idx) => [profileId, idx + 1, entry.productName, entry.vehicleModel, entry.customerName, entry.description],
+        )
+      }
+      if (profileId && financingItems.length > 0) {
+        await replaceSupplierProfileChildRows(
+          client,
+          supplierProfileFinancingTable,
+          profileId,
+          financingItems,
+          `INSERT INTO ${supplierProfileFinancingTable} (profile_id, sort_order, financing_date, financing_round, financing_amount, investors, updated_at) VALUES ($1,$2,$3,$4,$5,$6,NOW())`,
+          (entry, idx) => [profileId, idx + 1, entry.financingDate, entry.round, entry.amount, entry.investors],
+        )
+      }
+      if (profileId && patentItems.length > 0) {
+        await replaceSupplierProfileChildRows(
+          client,
+          supplierProfilePatentTable,
+          profileId,
+          patentItems,
+          `INSERT INTO ${supplierProfilePatentTable} (profile_id, sort_order, patent_type, publication_no, publication_date, title, application_no, application_date, inventors, assignee, agency, agent, legal_status, summary, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NOW())`,
+          (entry, idx) => [profileId, idx + 1, entry.patentType, entry.publicationNo, entry.publicationDate, entry.title, entry.applicationNo, entry.applicationDate, entry.inventors, entry.assignee, entry.agency, entry.agent, entry.legalStatus, entry.summary],
+        )
+      }
+      if (profileId && adminLicenseItems.length > 0) {
+        await replaceSupplierProfileChildRows(
+          client,
+          supplierProfileAdminLicenseTable,
+          profileId,
+          adminLicenseItems,
+          `INSERT INTO ${supplierProfileAdminLicenseTable} (profile_id, sort_order, document_no, authority, decision_date, content, status, valid_until, category, region, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW())`,
+          (entry, idx) => [profileId, idx + 1, entry.documentNo, entry.authority, entry.decisionDate, entry.content, entry.status, entry.validUntil, entry.category, entry.region],
+        )
+      }
+      if (profileId && tradeCreditItems.length > 0) {
+        await replaceSupplierProfileChildRows(
+          client,
+          supplierProfileTradeCreditTable,
+          profileId,
+          tradeCreditItems,
+          `INSERT INTO ${supplierProfileTradeCreditTable} (profile_id, sort_order, customs_office, business_type, registration_date, registration_code, administrative_region, economic_region, credit_level, annual_report_status, validity_period, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW())`,
+          (entry, idx) => [profileId, idx + 1, entry.customsOffice, entry.businessType, entry.registrationDate, entry.registrationCode, entry.administrativeRegion, entry.economicRegion, entry.creditLevel, entry.annualReportStatus, entry.validityPeriod],
+        )
+      }
+      if (profileId && courtNoticeItems.length > 0) {
+        await replaceSupplierProfileChildRows(
+          client,
+          supplierProfileCourtNoticeTable,
+          profileId,
+          courtNoticeItems,
+          `INSERT INTO ${supplierProfileCourtNoticeTable} (profile_id, sort_order, case_no, hearing_date, cause, plaintiff, defendant, court, tribunal, region, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW())`,
+          (entry, idx) => [profileId, idx + 1, entry.caseNo, entry.hearingDate, entry.cause, entry.plaintiff, entry.defendant, entry.court, entry.tribunal, entry.region],
+        )
+      }
+      if (profileId && productionBaseItems.length > 0) {
+        await replaceSupplierProfileChildRows(
+          client,
+          supplierProfileProductionBaseTable,
+          profileId,
+          productionBaseItems,
+          `INSERT INTO ${supplierProfileProductionBaseTable} (profile_id, sort_order, base_name, region, postal_code, address, phone, main_products, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())`,
+          (entry, idx) => [profileId, idx + 1, entry.baseName, entry.region, entry.postalCode, entry.address, entry.phone, entry.mainProducts],
+        )
+      }
+      if (profileId && newsItems.length > 0) {
+        await replaceSupplierProfileChildRows(
+          client,
+          supplierProfileNewsTable,
+          profileId,
+          newsItems,
+          `INSERT INTO ${supplierProfileNewsTable} (profile_id, sort_order, title, source, publish_date, content, updated_at) VALUES ($1,$2,$3,$4,$5,$6,NOW())`,
+          (entry, idx) => [profileId, idx + 1, entry.title, entry.source, entry.publishDate, entry.content],
+        )
       }
     }
     await client.query('COMMIT')
-    return { importedRows: records.length, inserted, updated }
+    return {
+      importedRows: records.length,
+      inserted,
+      updated,
+      affectedNodeIds: [...affectedNodeIdSet],
+    }
   } catch (error) {
     await client.query('ROLLBACK')
     throw error
   } finally {
     client.release()
   }
+}
+
+async function refreshGasSupplyChainSyncedSupplierCounts(nodeIds = []) {
+  const normalizedIds = [...new Set(
+    (Array.isArray(nodeIds) ? nodeIds : [])
+      .map((item) => Number(item))
+      .filter((item) => Number.isInteger(item) && item > 0),
+  )]
+  if (normalizedIds.length === 0) {
+    return { updatedNodeCount: 0, totalSuppliers: 0, nodeCounts: [] }
+  }
+  const client = await pool.connect()
+  try {
+    const result = await client.query(
+      `
+      WITH target_nodes AS (
+        SELECT DISTINCT unnest($1::bigint[]) AS node_id
+      ),
+      counts AS (
+        SELECT
+          tn.node_id,
+          COUNT(DISTINCT sp.id)::int AS supplier_count
+        FROM target_nodes tn
+        LEFT JOIN ${supplierProfileTable} sp
+          ON sp.profile_source = 'gas'
+         AND (
+           sp.related_node_id = tn.node_id
+           OR EXISTS (
+             SELECT 1
+             FROM jsonb_array_elements_text(COALESCE(sp.related_node_ids, '[]'::jsonb)) AS j(value)
+             WHERE j.value ~ '^[0-9]+$'
+               AND j.value::bigint = tn.node_id
+           )
+         )
+        GROUP BY tn.node_id
+      )
+      UPDATE ${gasSupplyChainNodeTable} node
+      SET
+        synced_supplier_count = COALESCE(counts.supplier_count, 0),
+        synced_at = CASE WHEN COALESCE(counts.supplier_count, 0) > 0 THEN NOW() ELSE NULL END,
+        updated_at = NOW()
+      FROM target_nodes
+      LEFT JOIN counts ON counts.node_id = target_nodes.node_id
+      WHERE node.id = target_nodes.node_id
+      RETURNING node.id, node.synced_supplier_count AS "syncedSupplierCount"
+      `,
+      [normalizedIds],
+    )
+    return {
+      updatedNodeCount: result.rowCount || 0,
+      totalSuppliers: result.rows.reduce((sum, row) => sum + Number(row.syncedSupplierCount || 0), 0),
+      nodeCounts: result.rows.map((row) => ({
+        nodeId: Number(row.id),
+        syncedSupplierCount: Number(row.syncedSupplierCount || 0),
+      })),
+    }
+  } finally {
+    client.release()
+  }
+}
+
+async function fetchSupplierProfileDetailById(client, id) {
+  const result = await client.query(
+    `
+    SELECT
+      id,
+      profile_source AS "profileSource",
+      related_node_id AS "relatedNodeId",
+      related_node_name AS "relatedNodeName",
+      related_node_ids AS "relatedNodeIds",
+      related_node_names AS "relatedNodeNames",
+      company_name AS "companyName",
+      company_name_en AS "companyNameEn",
+      legal_representative AS "legalRepresentative",
+      org_code AS "orgCode",
+      registered_capital AS "registeredCapital",
+      established_date AS "establishedDate",
+      employees_count AS "employeesCount",
+      company_type AS "companyType",
+      contact_person AS "contactPerson",
+      contact_title AS "contactTitle",
+      phone,
+      mobile,
+      email,
+      website,
+      postal_code AS "postalCode",
+      address,
+      company_intro AS "companyIntro",
+      fit_situation AS "fitSituation",
+      export_situation AS "exportSituation",
+      certificates,
+      company_news AS "companyNews",
+      products,
+      contacts,
+      fit_oems AS "fitOems",
+      product_fit_details AS "productFitDetails",
+      export_countries AS "exportCountries",
+      certificate_items AS "certificateItems",
+      news_items AS "legacyNewsItems",
+      company_tags AS "companyTags",
+      main_product_names AS "mainProductNames",
+      business_info AS "businessInfo",
+      industrial_commercial_info AS "industrialCommercialInfo",
+      TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') AS "createdAt",
+      TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') AS "updatedAt"
+    FROM ${supplierProfileTable}
+    WHERE id = $1
+    LIMIT 1
+    `,
+    [id],
+  )
+  if (result.rowCount === 0) return null
+  const row = result.rows[0]
+  const [
+    customerRes,
+    productCaseRes,
+    financingRes,
+    patentRes,
+    adminLicenseRes,
+    tradeCreditRes,
+    courtNoticeRes,
+    productionBaseRes,
+    newsRes,
+  ] = await Promise.all([
+    client.query(`SELECT product_name AS "productName", oem_names AS "oemNames" FROM ${supplierProfileCustomerTable} WHERE profile_id = $1 ORDER BY sort_order ASC, id ASC`, [id]),
+    client.query(`SELECT product_name AS "productName", vehicle_model AS "vehicleModel", customer_name AS "customerName", description FROM ${supplierProfileProductCaseTable} WHERE profile_id = $1 ORDER BY sort_order ASC, id ASC`, [id]),
+    client.query(`SELECT financing_date AS "financingDate", financing_round AS "round", financing_amount AS "amount", investors FROM ${supplierProfileFinancingTable} WHERE profile_id = $1 ORDER BY sort_order ASC, id ASC`, [id]),
+    client.query(`SELECT patent_type AS "patentType", publication_no AS "publicationNo", publication_date AS "publicationDate", title, application_no AS "applicationNo", application_date AS "applicationDate", inventors, assignee, agency, agent, legal_status AS "legalStatus", summary FROM ${supplierProfilePatentTable} WHERE profile_id = $1 ORDER BY sort_order ASC, id ASC`, [id]),
+    client.query(`SELECT document_no AS "documentNo", authority, decision_date AS "decisionDate", content, status, valid_until AS "validUntil", category, region FROM ${supplierProfileAdminLicenseTable} WHERE profile_id = $1 ORDER BY sort_order ASC, id ASC`, [id]),
+    client.query(`SELECT customs_office AS "customsOffice", business_type AS "businessType", registration_date AS "registrationDate", registration_code AS "registrationCode", administrative_region AS "administrativeRegion", economic_region AS "economicRegion", credit_level AS "creditLevel", annual_report_status AS "annualReportStatus", validity_period AS "validityPeriod" FROM ${supplierProfileTradeCreditTable} WHERE profile_id = $1 ORDER BY sort_order ASC, id ASC`, [id]),
+    client.query(`SELECT case_no AS "caseNo", hearing_date AS "hearingDate", cause, plaintiff, defendant, court, tribunal, region FROM ${supplierProfileCourtNoticeTable} WHERE profile_id = $1 ORDER BY sort_order ASC, id ASC`, [id]),
+    client.query(`SELECT base_name AS "baseName", region, postal_code AS "postalCode", address, phone, main_products AS "mainProducts" FROM ${supplierProfileProductionBaseTable} WHERE profile_id = $1 ORDER BY sort_order ASC, id ASC`, [id]),
+    client.query(`SELECT title, source, publish_date AS "publishDate", content FROM ${supplierProfileNewsTable} WHERE profile_id = $1 ORDER BY sort_order ASC, id ASC`, [id]),
+  ])
+  const parsedNewsItems = newsRes.rowCount > 0 ? parseSupplierNewsItems(newsRes.rows) : parseSupplierNewsItems(row.legacyNewsItems || [])
+  return {
+    ...row,
+    relatedNodeIds: parseBigintArrayLoose(row.relatedNodeIds || []),
+    relatedNodeNames: parseStringArray(row.relatedNodeNames || []),
+    contacts: parseSupplierProfileContacts(row.contacts || []),
+    products: parseSupplierProfileProducts(row.products || []),
+    fitOems: parseStringArray(row.fitOems || []),
+    productFitDetails: parseSupplierProductFitDetails(row.productFitDetails || []),
+    exportCountries: parseStringArray(row.exportCountries || []),
+    certificateItems: parseStringArray(row.certificateItems || []),
+    companyTags: parseSupplierCompanyTags(row.companyTags || []),
+    mainProductNames: dedupeSupplierProductNames(row.mainProductNames || []),
+    businessInfo: parseSupplierBusinessInfo(row.businessInfo || {}),
+    industrialCommercialInfo: parseSupplierBusinessInfo(row.industrialCommercialInfo || {}),
+    customerItems: parseSupplierCustomerItems(customerRes.rows),
+    productCaseItems: parseSupplierProductCaseItems(productCaseRes.rows),
+    financingItems: parseSupplierFinancingItems(financingRes.rows),
+    patentItems: parseSupplierPatentItems(patentRes.rows),
+    adminLicenseItems: parseSupplierAdminLicenseItems(adminLicenseRes.rows),
+    tradeCreditItems: parseSupplierTradeCreditItems(tradeCreditRes.rows),
+    courtNoticeItems: parseSupplierCourtNoticeItems(courtNoticeRes.rows),
+    productionBaseItems: parseSupplierProductionBaseItems(productionBaseRes.rows),
+    newsItems: parsedNewsItems,
+  }
+}
+
+function normalizeSupplierProfilePayload(payload = {}, current = null) {
+  const base = current && typeof current === 'object' ? current : {}
+  const contacts = Object.prototype.hasOwnProperty.call(payload, 'contacts')
+    ? parseSupplierProfileContacts(payload.contacts)
+    : parseSupplierProfileContacts(base.contacts)
+  const primaryContact = contacts[0] || {}
+  const fitOems = Object.prototype.hasOwnProperty.call(payload, 'fitOems')
+    ? parseStringArray(payload.fitOems)
+    : parseStringArray(base.fitOems)
+  const exportCountries = Object.prototype.hasOwnProperty.call(payload, 'exportCountries')
+    ? parseStringArray(payload.exportCountries)
+    : parseStringArray(base.exportCountries)
+  const certificateItems = Object.prototype.hasOwnProperty.call(payload, 'certificateItems')
+    ? parseStringArray(payload.certificateItems)
+    : parseStringArray(base.certificateItems)
+  const newsItems = Object.prototype.hasOwnProperty.call(payload, 'newsItems')
+    ? parseSupplierNewsItems(payload.newsItems)
+    : parseSupplierNewsItems(base.newsItems)
+  const relatedNodeIds = Object.prototype.hasOwnProperty.call(payload, 'relatedNodeIds') || Object.prototype.hasOwnProperty.call(payload, 'relatedNodeId')
+    ? parseBigintArrayLoose(payload.relatedNodeIds)
+    : parseBigintArrayLoose(base.relatedNodeIds)
+  const singleNodeId = payload.relatedNodeId ? Number(payload.relatedNodeId) : null
+  if (Number.isInteger(singleNodeId) && singleNodeId > 0 && !relatedNodeIds.includes(singleNodeId)) relatedNodeIds.unshift(singleNodeId)
+  const relatedNodeNames = Object.prototype.hasOwnProperty.call(payload, 'relatedNodeNames') || Object.prototype.hasOwnProperty.call(payload, 'relatedNodeName')
+    ? parseStringArray(payload.relatedNodeNames)
+    : parseStringArray(base.relatedNodeNames)
+  const singleNodeName = toText(payload.relatedNodeName)
+  if (singleNodeName && !relatedNodeNames.includes(singleNodeName)) relatedNodeNames.unshift(singleNodeName)
+  return {
+    relatedNodeIds,
+    relatedNodeNames,
+    profileSource: Object.prototype.hasOwnProperty.call(payload, 'profileSource')
+      ? normalizeSupplierProfileSource(payload.profileSource)
+      : detectSupplierProfileSource(base.profileSource, payload.website, base.website),
+    companyName: toText(Object.prototype.hasOwnProperty.call(payload, 'companyName') ? payload.companyName : base.companyName),
+    companyNameEn: toText(Object.prototype.hasOwnProperty.call(payload, 'companyNameEn') ? payload.companyNameEn : base.companyNameEn),
+    legalRepresentative: toText(Object.prototype.hasOwnProperty.call(payload, 'legalRepresentative') ? payload.legalRepresentative : base.legalRepresentative),
+    orgCode: toText(Object.prototype.hasOwnProperty.call(payload, 'orgCode') ? payload.orgCode : base.orgCode),
+    registeredCapital: toText(Object.prototype.hasOwnProperty.call(payload, 'registeredCapital') ? payload.registeredCapital : base.registeredCapital),
+    establishedDate: toText(Object.prototype.hasOwnProperty.call(payload, 'establishedDate') ? payload.establishedDate : base.establishedDate),
+    employeesCount: toText(Object.prototype.hasOwnProperty.call(payload, 'employeesCount') ? payload.employeesCount : base.employeesCount),
+    companyType: toText(Object.prototype.hasOwnProperty.call(payload, 'companyType') ? payload.companyType : base.companyType),
+    website: toText(Object.prototype.hasOwnProperty.call(payload, 'website') ? payload.website : base.website),
+    postalCode: toText(Object.prototype.hasOwnProperty.call(payload, 'postalCode') ? payload.postalCode : base.postalCode),
+    address: toText(Object.prototype.hasOwnProperty.call(payload, 'address') ? payload.address : base.address),
+    companyIntro: toText(Object.prototype.hasOwnProperty.call(payload, 'companyIntro') ? payload.companyIntro : base.companyIntro),
+    fitSituation: toText(Object.prototype.hasOwnProperty.call(payload, 'fitSituation') ? payload.fitSituation : base.fitSituation) || fitOems.join('，'),
+    exportSituation: toText(Object.prototype.hasOwnProperty.call(payload, 'exportSituation') ? payload.exportSituation : base.exportSituation) || exportCountries.join('，'),
+    certificates: toText(Object.prototype.hasOwnProperty.call(payload, 'certificates') ? payload.certificates : base.certificates) || certificateItems.join('，'),
+    companyNews: toText(Object.prototype.hasOwnProperty.call(payload, 'companyNews') ? payload.companyNews : base.companyNews) || newsItems.map((item) => item.title).filter(Boolean).join('；'),
+    products: Object.prototype.hasOwnProperty.call(payload, 'products') ? parseSupplierProfileProducts(payload.products) : parseSupplierProfileProducts(base.products),
+    contacts,
+    fitOems,
+    productFitDetails: Object.prototype.hasOwnProperty.call(payload, 'productFitDetails') ? parseSupplierProductFitDetails(payload.productFitDetails) : parseSupplierProductFitDetails(base.productFitDetails),
+    exportCountries,
+    certificateItems,
+    companyTags: Object.prototype.hasOwnProperty.call(payload, 'companyTags') ? parseSupplierCompanyTags(payload.companyTags) : parseSupplierCompanyTags(base.companyTags),
+    mainProductNames: Object.prototype.hasOwnProperty.call(payload, 'mainProductNames') ? dedupeSupplierProductNames(payload.mainProductNames) : dedupeSupplierProductNames(base.mainProductNames),
+    businessInfo: Object.prototype.hasOwnProperty.call(payload, 'businessInfo') ? parseSupplierBusinessInfo(payload.businessInfo) : parseSupplierBusinessInfo(base.businessInfo),
+    industrialCommercialInfo: Object.prototype.hasOwnProperty.call(payload, 'industrialCommercialInfo') ? parseSupplierBusinessInfo(payload.industrialCommercialInfo) : parseSupplierBusinessInfo(base.industrialCommercialInfo),
+    customerItems: Object.prototype.hasOwnProperty.call(payload, 'customerItems') ? parseSupplierCustomerItems(payload.customerItems) : parseSupplierCustomerItems(base.customerItems),
+    productCaseItems: Object.prototype.hasOwnProperty.call(payload, 'productCaseItems') ? parseSupplierProductCaseItems(payload.productCaseItems) : parseSupplierProductCaseItems(base.productCaseItems),
+    financingItems: Object.prototype.hasOwnProperty.call(payload, 'financingItems') ? parseSupplierFinancingItems(payload.financingItems) : parseSupplierFinancingItems(base.financingItems),
+    patentItems: Object.prototype.hasOwnProperty.call(payload, 'patentItems') ? parseSupplierPatentItems(payload.patentItems) : parseSupplierPatentItems(base.patentItems),
+    adminLicenseItems: Object.prototype.hasOwnProperty.call(payload, 'adminLicenseItems') ? parseSupplierAdminLicenseItems(payload.adminLicenseItems) : parseSupplierAdminLicenseItems(base.adminLicenseItems),
+    tradeCreditItems: Object.prototype.hasOwnProperty.call(payload, 'tradeCreditItems') ? parseSupplierTradeCreditItems(payload.tradeCreditItems) : parseSupplierTradeCreditItems(base.tradeCreditItems),
+    courtNoticeItems: Object.prototype.hasOwnProperty.call(payload, 'courtNoticeItems') ? parseSupplierCourtNoticeItems(payload.courtNoticeItems) : parseSupplierCourtNoticeItems(base.courtNoticeItems),
+    productionBaseItems: Object.prototype.hasOwnProperty.call(payload, 'productionBaseItems') ? parseSupplierProductionBaseItems(payload.productionBaseItems) : parseSupplierProductionBaseItems(base.productionBaseItems),
+    newsItems,
+    contactPerson: toText(primaryContact.contactPerson),
+    contactTitle: toText(primaryContact.contactTitle),
+    phone: toText(primaryContact.phone),
+    mobile: toText(primaryContact.mobile),
+    email: toText(primaryContact.email),
+  }
+}
+
+async function replaceSupplierProfileChildRows(client, tableName, profileId, items, insertSql, mapItem) {
+  await client.query(`DELETE FROM ${tableName} WHERE profile_id = $1`, [profileId])
+  for (let idx = 0; idx < items.length; idx += 1) {
+    await client.query(insertSql, mapItem(items[idx], idx))
+  }
+}
+
+async function saveSupplierProfileRecord(client, id, payload) {
+  const current = id ? await fetchSupplierProfileDetailById(client, id) : null
+  const next = normalizeSupplierProfilePayload(payload, current)
+  if (!next.companyName) throw new Error('公司名称不能为空')
+  await upsertSupplierDictItems(client, supplierOemDictTable, next.fitOems)
+  await upsertSupplierDictItems(client, supplierCountryDictTable, next.exportCountries)
+  await upsertSupplierDictItems(client, supplierCertDictTable, next.certificateItems)
+  let profileId = id
+  if (profileId) {
+    await client.query(
+      `
+      UPDATE ${supplierProfileTable}
+      SET
+        profile_source = $2,
+        related_node_id = $3,
+        related_node_name = $4,
+        related_node_ids = $5::jsonb,
+        related_node_names = $6::jsonb,
+        company_name = $7,
+        company_name_en = $8,
+        legal_representative = $9,
+        org_code = $10,
+        registered_capital = $11,
+        established_date = $12,
+        employees_count = $13,
+        company_type = $14,
+        contact_person = $15,
+        contact_title = $16,
+        phone = $17,
+        mobile = $18,
+        email = $19,
+        website = $20,
+        postal_code = $21,
+        address = $22,
+        company_intro = $23,
+        fit_situation = $24,
+        export_situation = $25,
+        certificates = $26,
+        company_news = $27,
+        products = $28::jsonb,
+        contacts = $29::jsonb,
+        fit_oems = $30::jsonb,
+        product_fit_details = $31::jsonb,
+        export_countries = $32::jsonb,
+        certificate_items = $33::jsonb,
+        news_items = $34::jsonb,
+        company_tags = $35::jsonb,
+        main_product_names = $36::jsonb,
+        business_info = $37::jsonb,
+        industrial_commercial_info = $38::jsonb,
+        updated_at = NOW()
+      WHERE id = $1
+      `,
+      [
+        profileId,
+        next.profileSource,
+        next.relatedNodeIds[0] || null,
+        next.relatedNodeNames.join('，'),
+        JSON.stringify(next.relatedNodeIds),
+        JSON.stringify(next.relatedNodeNames),
+        next.companyName,
+        next.companyNameEn,
+        next.legalRepresentative,
+        next.orgCode,
+        next.registeredCapital,
+        next.establishedDate,
+        next.employeesCount,
+        next.companyType,
+        next.contactPerson,
+        next.contactTitle,
+        next.phone,
+        next.mobile,
+        next.email,
+        next.website,
+        next.postalCode,
+        next.address,
+        next.companyIntro,
+        next.fitSituation,
+        next.exportSituation,
+        next.certificates,
+        next.companyNews,
+        JSON.stringify(next.products),
+        JSON.stringify(next.contacts),
+        JSON.stringify(next.fitOems),
+        JSON.stringify(next.productFitDetails),
+        JSON.stringify(next.exportCountries),
+        JSON.stringify(next.certificateItems),
+        JSON.stringify(next.newsItems),
+        JSON.stringify(next.companyTags),
+        JSON.stringify(next.mainProductNames),
+        JSON.stringify(next.businessInfo),
+        JSON.stringify(next.industrialCommercialInfo),
+      ],
+    )
+  } else {
+    const inserted = await client.query(
+      `
+      INSERT INTO ${supplierProfileTable}
+      (
+        profile_source,
+        related_node_id, related_node_name, related_node_ids, related_node_names,
+        company_name, company_name_en, legal_representative, org_code, registered_capital, established_date, employees_count,
+        company_type, contact_person, contact_title, phone, mobile, email, website, postal_code, address,
+        company_intro, fit_situation, export_situation, certificates, company_news, products,
+        contacts, fit_oems, product_fit_details, export_countries, certificate_items, news_items,
+        company_tags, main_product_names, business_info, industrial_commercial_info, updated_at
+      )
+      VALUES
+      ($1,$2,$3,$4::jsonb,$5::jsonb,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27::jsonb,$28::jsonb,$29::jsonb,$30::jsonb,$31::jsonb,$32::jsonb,$33::jsonb,$34::jsonb,$35::jsonb,$36::jsonb,$37::jsonb,NOW())
+      RETURNING id
+      `,
+      [
+        next.profileSource,
+        next.relatedNodeIds[0] || null,
+        next.relatedNodeNames.join('，'),
+        JSON.stringify(next.relatedNodeIds),
+        JSON.stringify(next.relatedNodeNames),
+        next.companyName,
+        next.companyNameEn,
+        next.legalRepresentative,
+        next.orgCode,
+        next.registeredCapital,
+        next.establishedDate,
+        next.employeesCount,
+        next.companyType,
+        next.contactPerson,
+        next.contactTitle,
+        next.phone,
+        next.mobile,
+        next.email,
+        next.website,
+        next.postalCode,
+        next.address,
+        next.companyIntro,
+        next.fitSituation,
+        next.exportSituation,
+        next.certificates,
+        next.companyNews,
+        JSON.stringify(next.products),
+        JSON.stringify(next.contacts),
+        JSON.stringify(next.fitOems),
+        JSON.stringify(next.productFitDetails),
+        JSON.stringify(next.exportCountries),
+        JSON.stringify(next.certificateItems),
+        JSON.stringify(next.newsItems),
+        JSON.stringify(next.companyTags),
+        JSON.stringify(next.mainProductNames),
+        JSON.stringify(next.businessInfo),
+        JSON.stringify(next.industrialCommercialInfo),
+      ],
+    )
+    profileId = Number(inserted.rows[0].id)
+  }
+
+  await replaceSupplierProfileChildRows(
+    client,
+    supplierProfileCustomerTable,
+    profileId,
+    next.customerItems,
+    `INSERT INTO ${supplierProfileCustomerTable} (profile_id, sort_order, product_name, oem_names, updated_at) VALUES ($1,$2,$3,$4::jsonb,NOW())`,
+    (item, idx) => [profileId, idx + 1, item.productName, JSON.stringify(item.oemNames)],
+  )
+  await replaceSupplierProfileChildRows(
+    client,
+    supplierProfileProductCaseTable,
+    profileId,
+    next.productCaseItems,
+    `INSERT INTO ${supplierProfileProductCaseTable} (profile_id, sort_order, product_name, vehicle_model, customer_name, description, updated_at) VALUES ($1,$2,$3,$4,$5,$6,NOW())`,
+    (item, idx) => [profileId, idx + 1, item.productName, item.vehicleModel, item.customerName, item.description],
+  )
+  await replaceSupplierProfileChildRows(
+    client,
+    supplierProfileFinancingTable,
+    profileId,
+    next.financingItems,
+    `INSERT INTO ${supplierProfileFinancingTable} (profile_id, sort_order, financing_date, financing_round, financing_amount, investors, updated_at) VALUES ($1,$2,$3,$4,$5,$6,NOW())`,
+    (item, idx) => [profileId, idx + 1, item.financingDate, item.round, item.amount, item.investors],
+  )
+  await replaceSupplierProfileChildRows(
+    client,
+    supplierProfilePatentTable,
+    profileId,
+    next.patentItems,
+    `INSERT INTO ${supplierProfilePatentTable} (profile_id, sort_order, patent_type, publication_no, publication_date, title, application_no, application_date, inventors, assignee, agency, agent, legal_status, summary, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NOW())`,
+    (item, idx) => [profileId, idx + 1, item.patentType, item.publicationNo, item.publicationDate, item.title, item.applicationNo, item.applicationDate, item.inventors, item.assignee, item.agency, item.agent, item.legalStatus, item.summary],
+  )
+  await replaceSupplierProfileChildRows(
+    client,
+    supplierProfileAdminLicenseTable,
+    profileId,
+    next.adminLicenseItems,
+    `INSERT INTO ${supplierProfileAdminLicenseTable} (profile_id, sort_order, document_no, authority, decision_date, content, status, valid_until, category, region, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW())`,
+    (item, idx) => [profileId, idx + 1, item.documentNo, item.authority, item.decisionDate, item.content, item.status, item.validUntil, item.category, item.region],
+  )
+  await replaceSupplierProfileChildRows(
+    client,
+    supplierProfileTradeCreditTable,
+    profileId,
+    next.tradeCreditItems,
+    `INSERT INTO ${supplierProfileTradeCreditTable} (profile_id, sort_order, customs_office, business_type, registration_date, registration_code, administrative_region, economic_region, credit_level, annual_report_status, validity_period, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW())`,
+    (item, idx) => [profileId, idx + 1, item.customsOffice, item.businessType, item.registrationDate, item.registrationCode, item.administrativeRegion, item.economicRegion, item.creditLevel, item.annualReportStatus, item.validityPeriod],
+  )
+  await replaceSupplierProfileChildRows(
+    client,
+    supplierProfileCourtNoticeTable,
+    profileId,
+    next.courtNoticeItems,
+    `INSERT INTO ${supplierProfileCourtNoticeTable} (profile_id, sort_order, case_no, hearing_date, cause, plaintiff, defendant, court, tribunal, region, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW())`,
+    (item, idx) => [profileId, idx + 1, item.caseNo, item.hearingDate, item.cause, item.plaintiff, item.defendant, item.court, item.tribunal, item.region],
+  )
+  await replaceSupplierProfileChildRows(
+    client,
+    supplierProfileProductionBaseTable,
+    profileId,
+    next.productionBaseItems,
+    `INSERT INTO ${supplierProfileProductionBaseTable} (profile_id, sort_order, base_name, region, postal_code, address, phone, main_products, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())`,
+    (item, idx) => [profileId, idx + 1, item.baseName, item.region, item.postalCode, item.address, item.phone, item.mainProducts],
+  )
+  await replaceSupplierProfileChildRows(
+    client,
+    supplierProfileNewsTable,
+    profileId,
+    next.newsItems,
+    `INSERT INTO ${supplierProfileNewsTable} (profile_id, sort_order, title, source, publish_date, content, updated_at) VALUES ($1,$2,$3,$4,$5,$6,NOW())`,
+    (item, idx) => [profileId, idx + 1, item.title, item.source, item.publishDate, item.content],
+  )
+  return profileId
 }
 
 async function collectNodeUrlsForSupplierCrawl(nodeId) {
@@ -3712,6 +6830,215 @@ async function extractSupplierPageDataByHttp(pageUrl, context = {}) {
   }
 }
 
+async function extractSupplierPageDataByCdp(pageUrl, context = {}) {
+  let targetId = ''
+  let shouldCloseTarget = false
+  try {
+    const preferredUrl = toText(pageUrl)
+    const preferredHost = safeHostFromUrl(preferredUrl)
+    const preferredPath = (() => {
+      try {
+        return new URL(preferredUrl).pathname || ''
+      } catch {
+        return ''
+      }
+    })()
+    let registeredTarget = null
+    try {
+      const raw = await fs.readFile(gasgooCdpTargetFile, 'utf8')
+      const parsed = JSON.parse(String(raw || '{}'))
+      if (toText(parsed?.targetId)) {
+        registeredTarget = parsed
+      }
+    } catch {
+      registeredTarget = null
+    }
+    const targetsPayload = await fetchCdpProxyJson('/targets', {}, 15000).catch(() => ({ value: [] }))
+    const targets = Array.isArray(targetsPayload?.value) ? targetsPayload.value : []
+    const targetByRegistered = registeredTarget?.targetId
+      ? targets.find((item) => toText(item?.targetId) === toText(registeredTarget.targetId))
+      : null
+    const targetByExactUrl = targets.find((item) => toText(item?.url) === preferredUrl)
+    const targetBySamePath = preferredPath
+      ? targets.find((item) => {
+        try {
+          const u = new URL(toText(item?.url))
+          return safeHostFromUrl(u.toString()) === preferredHost && (u.pathname || '') === preferredPath
+        } catch {
+          return false
+        }
+      })
+      : null
+    const targetByGasgooHost = targets.find((item) => safeHostFromUrl(item?.url || '').includes('gasgoo.com'))
+    const matchedTarget = targetByRegistered || targetByExactUrl || targetBySamePath || targetByGasgooHost
+    if (matchedTarget?.targetId) {
+      targetId = toText(matchedTarget.targetId)
+    } else {
+      const created = await fetchCdpProxyJson(`/new?url=${encodeURIComponent(pageUrl)}`, {}, 20000)
+      targetId = toText(created?.targetId)
+      shouldCloseTarget = true
+    }
+    if (!targetId) throw new Error('CDP proxy did not return targetId')
+    await fs.mkdir(path.dirname(gasgooCdpTargetFile), { recursive: true }).catch(() => {})
+    await fs.writeFile(
+      gasgooCdpTargetFile,
+      JSON.stringify({ targetId, url: preferredUrl }, null, 2),
+      'utf8',
+    ).catch(() => {})
+    await fetchCdpProxyJson(
+      `/navigate?target=${encodeURIComponent(targetId)}&url=${encodeURIComponent(preferredUrl)}`,
+      {},
+      15000,
+    ).catch(() => ({}))
+    await fetchCdpProxyJson(
+      `/eval?target=${encodeURIComponent(targetId)}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+        body: `(() => {
+          const desired = ${JSON.stringify(preferredUrl)}
+          const current = String(location.href || '')
+          if (desired && current !== desired) {
+            location.href = desired
+            return { redirected: true, from: current, to: desired }
+          }
+          return { redirected: false, from: current, to: desired }
+        })()`,
+      },
+      12000,
+    ).catch(() => ({}))
+    await new Promise((resolve) => setTimeout(resolve, 2600))
+    let info = await fetchCdpProxyJson(`/info?target=${encodeURIComponent(targetId)}`, {}, 10000).catch(() => ({}))
+    for (let i = 0; i < 6; i += 1) {
+      const currentUrl = toText(info?.url)
+      if (currentUrl && !/^about:blank$/i.test(currentUrl) && !/^chrome-error:\/\//i.test(currentUrl)) break
+      await new Promise((resolve) => setTimeout(resolve, 500))
+      info = await fetchCdpProxyJson(`/info?target=${encodeURIComponent(targetId)}`, {}, 10000).catch(() => info)
+    }
+    const evaluated = await fetchCdpProxyJson(
+      `/eval?target=${encodeURIComponent(targetId)}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+        body: `(async () => {
+          const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+          const toAbs = (value) => {
+            try { return value ? new URL(value, location.href).toString() : '' } catch { return '' }
+          }
+          const pickManufacturerRows = () => Array
+            .from(document.querySelectorAll('#ManufacturerList a[href*="/oemhome/"]'))
+            .map((a) => ({
+              companyName: String(a.textContent || '').replace(/\\s+/g, ' ').trim(),
+              detailHref: String(a.getAttribute('href') || '').trim(),
+            }))
+            .filter((item) => item.companyName && item.detailHref)
+            .map((item) => ({ ...item, detailHref: toAbs(item.detailHref) || item.detailHref }))
+          for (let i = 0; i < 10; i += 1) {
+            const count = pickManufacturerRows().length
+            if (count >= 30) break
+            await sleep(350)
+          }
+          let manufacturerRows = pickManufacturerRows()
+          if (manufacturerRows.length < 30 && /\\/supplier\\/oem\\.html/i.test(location.pathname || '')) {
+            try {
+              const response = await fetch('/gasgoo/cn/sns20/webmodel/handler/SupplierHandler.ajax', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+                body: 'Action=Manufacturers',
+                credentials: 'include',
+              })
+              const text = await response.text()
+              if (text && text.trim().startsWith('[')) {
+                const data = JSON.parse(text)
+                manufacturerRows = (Array.isArray(data) ? data : [])
+                  .map((item) => ({
+                    companyName: String(item?.ManufacturerShortName || '').replace(/\\s+/g, ' ').trim(),
+                    detailHref: item?.ManufacturerId ? '/oemhome/' + String(item.ManufacturerId).trim() + '.html' : '',
+                  }))
+                  .filter((item) => item.companyName && item.detailHref)
+                  .map((item) => ({ ...item, detailHref: toAbs(item.detailHref) || item.detailHref }))
+              }
+            } catch {
+              // ignore ajax fallback
+            }
+          }
+          return {
+            href: location.href,
+            title: document.title || '',
+            readyState: document.readyState || '',
+            html: document.documentElement ? document.documentElement.outerHTML : '',
+            manufacturerRows,
+          }
+        })()`,
+      },
+      20000,
+    )
+    const payload = evaluated?.value || {}
+    const finalUrl = toText(payload.href || info?.url) || pageUrl
+    const html = String(payload.html || '')
+    if (!html) {
+      throw new Error(`CDP returned empty payload for ${finalUrl}`)
+    }
+    if (finalUrl.startsWith('chrome-error://')) {
+      throw new Error(`CDP opened browser error page: ${toText(payload.title || info?.title) || finalUrl}`)
+    }
+    const rows = extractSupplierRowsFromCategoryHtml(html, finalUrl, {
+      ...context,
+      sourceUrl: context.sourceUrl || finalUrl,
+    })
+    if (Array.isArray(payload.manufacturerRows) && payload.manufacturerRows.length > 0) {
+      for (const item of payload.manufacturerRows) {
+        const fromIndex = buildSupplierSuccessRow({
+          companyName: item.companyName,
+          detailHref: item.detailHref,
+          blockText: item.companyName,
+          contactAction: '查看',
+          listPageUrl: finalUrl,
+          context: {
+            ...context,
+            sourceUrl: context.sourceUrl || finalUrl,
+          },
+        })
+        if (!fromIndex) continue
+        if (!rows.some((existing) => existing.companyName === fromIndex.companyName && existing.detailUrl === fromIndex.detailUrl)) {
+          rows.push(fromIndex)
+        }
+      }
+    }
+    const diagnostics = {
+      ...(buildSupplierHtmlDiagnostics(html, finalUrl) || {}),
+      cdpTitle: toText(payload.title || info?.title),
+      cdpReadyState: toText(payload.readyState || info?.ready),
+      cdpMode: shouldCloseTarget ? 'web-access-proxy' : 'web-access-existing-tab',
+    }
+    const totalCount = extractSupplierTotalCountFromHtml(html)
+    const perPage = extractSupplierPerPageFromHtml(html)
+    const paginationUrls = extractSupplierPaginationUrlsFromHtml(html, finalUrl)
+    const mergedPaginationUrls = paginationUrls.length > 0
+      ? paginationUrls
+      : buildSyntheticPaginationUrls(finalUrl, totalCount, perPage || rows.length || 10)
+    return { rows, totalCount, paginationUrls: mergedPaginationUrls, finalUrl, perPage, source: 'cdp-web-access', diagnostics }
+  } catch (error) {
+    const rawMessage = toText(error?.message || 'cdp fetch failed')
+    const friendlyMessage = /ECONNREFUSED|Failed to fetch|abort|timed out|CDP proxy HTTP/i.test(rawMessage)
+      ? 'web-access CDP 服务不可用，请先启动 web-access 服务；用 Chrome 打开并确认目标页加载完成后重试'
+      : rawMessage
+    return {
+      rows: [],
+      totalCount: 0,
+      paginationUrls: [],
+      finalUrl: pageUrl,
+      source: 'cdp-web-access',
+      diagnostics: {},
+      errorMessage: friendlyMessage,
+    }
+  } finally {
+    if (targetId && shouldCloseTarget) {
+      await fetchCdpProxyJson(`/close?target=${encodeURIComponent(targetId)}`, {}, 10000).catch(() => {})
+    }
+  }
+}
+
 function hasSupplierDetailPayload(detail = {}) {
   if (!detail || typeof detail !== 'object') return false
   return Boolean(
@@ -3767,6 +7094,9 @@ function shouldSupplementSupplierDetailByPlaywright(detail = {}, detailUrl = '')
 
 function buildSupplierRowFromDetail(detail = {}, context = {}, sourceUrl = '', detailUrl = '', options = {}) {
   const normalized = normalizeSupplierDetailAtomicFields(detail)
+  const brandVehicle = extractGasOemBrandVehicleFromText(
+    [toText(detail.brand), toText(detail.vehicleModel), toText(normalized.mainProducts)].filter(Boolean).join('；'),
+  )
   return {
     nodeId: context.nodeId || null,
     nodeName: context.nodeName || '',
@@ -3776,6 +7106,8 @@ function buildSupplierRowFromDetail(detail = {}, context = {}, sourceUrl = '', d
     listPageUrl: sourceUrl || detailUrl || '',
     detailUrl: detailUrl || sourceUrl || '',
     companyName: toText(normalized.companyName),
+    brand: cleanSupplierFieldText(toText(detail.brand) || brandVehicle.brand),
+    vehicleModel: cleanSupplierFieldText(toText(detail.vehicleModel) || brandVehicle.vehicleModel),
     mainProducts: toText(normalized.mainProducts),
     fitSituation: cleanSupplierFieldText(toText(detail.fitSituation)),
     exportSituation: cleanSupplierFieldText(toText(detail.exportSituation)),
@@ -3795,20 +7127,28 @@ function buildSupplierRowFromDetail(detail = {}, context = {}, sourceUrl = '', d
     legalRepresentative: toText(normalized.legalRepresentative),
     newsSummary: toText(normalized.newsSummary),
     newsItems: Array.isArray(detail.newsItems) ? parseSupplierNewsItems(detail.newsItems) : [],
+    companyTags: parseSupplierCompanyTags(detail.companyTags),
+    businessInfo: parseSupplierBusinessInfo(detail.businessInfo),
+    industrialCommercialInfo: parseSupplierBusinessInfo(detail.industrialCommercialInfo),
+    mainProductNames: dedupeSupplierProductNames(detail.mainProductNames || splitSupplierProductTexts(normalized.mainProducts)),
+    customerItems: parseSupplierCustomerItems(detail.customerItems),
+    productCaseItems: parseSupplierProductCaseItems(detail.productCaseItems),
+    financingItems: parseSupplierFinancingItems(detail.financingItems),
+    patentItems: parseSupplierPatentItems(detail.patentItems),
+    adminLicenseItems: parseSupplierAdminLicenseItems(detail.adminLicenseItems),
+    tradeCreditItems: parseSupplierTradeCreditItems(detail.tradeCreditItems),
+    courtNoticeItems: parseSupplierCourtNoticeItems(detail.courtNoticeItems),
+    productionBaseItems: parseSupplierProductionBaseItems(detail.productionBaseItems),
     status: toText(options.status) || 'success',
     errorMessage: toText(options.errorMessage),
   }
 }
 
 async function extractSupplierDetailDataByPlaywright(url, context = {}) {
-  let browser
+  let session
   try {
-    const { chromium } = await import('playwright')
-    browser = await chromium.launch({ headless: true, args: buildPlaywrightLaunchArgs(url) })
-    const page = await browser.newPage({
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/136.0.0.0 Safari/537.36',
-      viewport: { width: 1366, height: 900 },
-    })
+    session = await createSupplierPlaywrightSession(url, context)
+    const page = session.page
     await page.route('**/*', (route) => {
       const type = route.request().resourceType()
       if (type === 'image' || type === 'font' || type === 'media') return route.abort()
@@ -3863,6 +7203,22 @@ async function extractSupplierDetailDataByPlaywright(url, context = {}) {
     const firstHtml = await page.content()
     registerTabMeta(discoverSupplierDetailTabLinksFromHtml(firstHtml, page.url()))
     pushSnapshot('首页', firstHtml, page.url(), 'home')
+    if (isGasgooSupplierUrl(finalUrl || url)) {
+      const gasgooDetail = extractGasgooSupplierOverviewFromHtml(firstHtml, finalUrl || url)
+      if (hasSupplierDetailPayload(gasgooDetail)) {
+        return {
+          detail: gasgooDetail,
+          finalUrl,
+          html: firstHtml,
+          plain: decodeBasicHtmlEntities(stripHtml(firstHtml)).replace(/\s+/g, ' ').trim(),
+          source: 'playwright',
+          context,
+          sessionMode: session?.mode || '',
+          profileLabel: session?.profileLabel || '',
+          launchError: session?.launchError || '',
+        }
+      }
+    }
     for (const discovered of discoverSupplierDetailSubpageUrlsFromHtml(firstHtml, page.url())) {
       discoveredSubpageUrls.add(discovered)
     }
@@ -3969,17 +7325,28 @@ async function extractSupplierDetailDataByPlaywright(url, context = {}) {
       .map((snap) => `<!-- TAB:${snap.label} URL:${snap.url} -->\n${snap.html}`)
       .join('\n\n')
     const mergedPlain = snapshots.map((snap) => snap.plain).join(' ')
-    return { detail, finalUrl, html: mergedHtml, plain: mergedPlain, source: 'playwright', context }
+    return {
+      detail,
+      finalUrl,
+      html: mergedHtml,
+      plain: mergedPlain,
+      source: 'playwright',
+      context,
+      sessionMode: session?.mode || '',
+      profileLabel: session?.profileLabel || '',
+      launchError: session?.launchError || '',
+    }
   } finally {
-    if (browser) await browser.close().catch(() => {})
+    if (session?.close) await session.close()
   }
 }
 
 async function crawlSupplierDetailByUrlVariants(url, context, task, nowText) {
   const candidateUrls = buildSupplierDetailUrlCandidates(url)
   task?.runLogs?.push(`${nowText()} | 详情模式：URL变体 ${candidateUrls.length} 个`)
-  const preferPlaywright = /playwright/i.test(toText(context?.skill))
-  task?.runLogs?.push(`${nowText()} | 详情抓取策略：${preferPlaywright ? '优先 Playwright（按所选技能）' : '优先 HTTP（失败再 Playwright）'}`)
+  const useWebAccess = isWebAccessSkill(context?.skill)
+  const preferPlaywright = !useWebAccess && /playwright/i.test(toText(context?.skill))
+  task?.runLogs?.push(`${nowText()} | 详情抓取策略：${preferPlaywright ? '优先 Playwright（按所选技能）' : (useWebAccess ? 'web-access 下仅 HTTP（禁用 Playwright 回退）' : '优先 HTTP（失败再 Playwright）')}`)
   let lastError = ''
   const variantErrors = []
   for (let idx = 0; idx < candidateUrls.length; idx += 1) {
@@ -4001,6 +7368,9 @@ async function crawlSupplierDetailByUrlVariants(url, context, task, nowText) {
           80000,
           'playwright detail primary timeout',
         )
+        task?.runLogs?.push(
+          `${nowText()} | Playwright会话：${playwrightData.sessionMode || 'unknown'}${playwrightData.profileLabel ? `，profile=${playwrightData.profileLabel}` : ''}${playwrightData.launchError ? `，fallback=${playwrightData.launchError}` : ''}`,
+        )
         supplementAttempted = true
         supplementSucceeded = !String(playwrightData.finalUrl || '').startsWith('chrome-error://')
         detail = mergeSupplierDetailWithLlm(detail, playwrightData.detail || {})
@@ -4021,7 +7391,7 @@ async function crawlSupplierDetailByUrlVariants(url, context, task, nowText) {
         )
         if (shouldSupplementSupplierDetailByPlaywright(detail, finalUrl || candidateUrl)) {
           task?.runLogs?.push(`${nowText()} | Playwright结果仍不完整，回退尝试 HTTP 聚合`)
-          const httpData = await fetchSupplierDetailAggregateByHttp(candidateUrl)
+          const httpData = await fetchSupplierDetailAggregateByHttp(candidateUrl, { homepageOnly: context?.homepageOnly })
           const llmDetailByHttp = await extractSupplierDetailByLlm({
             html: httpData.mergedHtml,
             plain: httpData.mergedPlain,
@@ -4037,7 +7407,7 @@ async function crawlSupplierDetailByUrlVariants(url, context, task, nowText) {
           )
         }
       } else {
-        const httpData = await fetchSupplierDetailAggregateByHttp(candidateUrl)
+        const httpData = await fetchSupplierDetailAggregateByHttp(candidateUrl, { homepageOnly: context?.homepageOnly })
         detail = httpData.detail || {}
         html = httpData.mergedHtml
         mergedPlain = httpData.mergedPlain
@@ -4051,7 +7421,7 @@ async function crawlSupplierDetailByUrlVariants(url, context, task, nowText) {
         task?.runLogs?.push(
           `${nowText()} | HTTP聚合结果：name=${toText(detail.companyName).slice(0, 40) || '-'}，intro=${toText(detail.companyIntro).length}，products=${toText(detail.mainProducts).length}，fit=${toText(detail.fitSituation).length}，export=${toText(detail.exportSituation).length}，contact=${toText(detail.contactAction).length}，quality=${toText(detail.qualitySystem).length}`,
         )
-        if (shouldSupplementSupplierDetailByPlaywright(detail, finalUrl || candidateUrl)) {
+        if (!useWebAccess && shouldSupplementSupplierDetailByPlaywright(detail, finalUrl || candidateUrl)) {
           supplementAttempted = true
           task?.runLogs?.push(`${nowText()} | 详情变体[${idx + 1}] 触发 Playwright 补抓（多tab/子页）`)
           try {
@@ -4059,6 +7429,9 @@ async function crawlSupplierDetailByUrlVariants(url, context, task, nowText) {
               extractSupplierDetailDataByPlaywright(candidateUrl, context),
               80000,
               'playwright detail supplement timeout',
+            )
+            task?.runLogs?.push(
+              `${nowText()} | Playwright补抓会话：${playwrightData.sessionMode || 'unknown'}${playwrightData.profileLabel ? `，profile=${playwrightData.profileLabel}` : ''}${playwrightData.launchError ? `，fallback=${playwrightData.launchError}` : ''}`,
             )
             supplementSucceeded = !String(playwrightData.finalUrl || '').startsWith('chrome-error://')
             detail = mergeSupplierDetailWithLlm(detail, playwrightData.detail || {})
@@ -4112,7 +7485,7 @@ async function crawlSupplierDetailByUrlVariants(url, context, task, nowText) {
         try {
           if (preferPlaywright) {
             task?.runLogs?.push(`${nowText()} | Playwright 超时，回退尝试 HTTP 详情抓取`)
-            const httpOnly = await fetchSupplierDetailAggregateByHttp(candidateUrl)
+            const httpOnly = await fetchSupplierDetailAggregateByHttp(candidateUrl, { homepageOnly: context?.homepageOnly })
             let fallbackDetail = httpOnly.detail || {}
             if (hasSupplierDetailPayload(fallbackDetail)) {
               task?.runLogs?.push(`${nowText()} | HTTP 回退成功：${candidateUrl}`)
@@ -4122,7 +7495,7 @@ async function crawlSupplierDetailByUrlVariants(url, context, task, nowText) {
                 totalCount: 1,
               }
             }
-          } else {
+          } else if (!useWebAccess) {
             task?.runLogs?.push(`${nowText()} | HTTP 超时，直接尝试 Playwright 详情抓取`)
             const pwOnly = await withTimeout(
               extractSupplierDetailDataByPlaywright(candidateUrl, context),
@@ -4138,6 +7511,8 @@ async function crawlSupplierDetailByUrlVariants(url, context, task, nowText) {
                 totalCount: 1,
               }
             }
+          } else {
+            task?.runLogs?.push(`${nowText()} | web-access 模式下不回退 Playwright，保持 HTTP 结果`)
           }
         } catch (pwFallbackError) {
           const fallbackMessage = pwFallbackError?.message || 'unknown error'
@@ -4160,9 +7535,11 @@ async function crawlSupplierDetailByUrlVariants(url, context, task, nowText) {
 async function crawlSupplierRowsByUrlVariants(url, context, task, nowText) {
   const candidateUrls = buildSupplierUrlCandidates(url)
   task?.runLogs?.push(`${nowText()} | 列表模式：URL变体 ${candidateUrls.length} 个`)
-  const preferPlaywright = /playwright/i.test(toText(context?.skill))
-  task?.runLogs?.push(`${nowText()} | 抓取策略：${preferPlaywright ? '优先 Playwright（按所选技能）' : '优先 HTTP（失败再 Playwright）'}`)
+  const useWebAccess = isWebAccessSkill(context?.skill)
+  const preferPlaywright = !useWebAccess && /playwright/i.test(toText(context?.skill))
+  task?.runLogs?.push(`${nowText()} | 抓取策略：${preferPlaywright ? '优先 Playwright（按所选技能）' : (useWebAccess ? '优先 web-access(CDP)，失败回退 HTTP（禁用 Playwright）' : '优先 HTTP（失败再 Playwright）')}`)
   let best = { rows: [], totalCount: 0, paginationUrls: [], candidateUrl: '', pagesVisited: 0 }
+  let webAccessLastError = ''
 
   for (let candidateIndex = 0; candidateIndex < candidateUrls.length; candidateIndex += 1) {
     const candidateUrl = candidateUrls[candidateIndex]
@@ -4189,6 +7566,37 @@ async function crawlSupplierRowsByUrlVariants(url, context, task, nowText) {
           task?.runLogs?.push(`${nowText()} | 分页Playwright结果为空，切换 HTTP：${pageUrl}`)
           pageData = await extractSupplierPageDataByHttp(pageUrl, context)
           pageSource = 'HTTP'
+        }
+      } else if (useWebAccess) {
+        pageData = await withTimeout(
+          extractSupplierPageDataByCdp(pageUrl, context),
+          45000,
+          'web-access cdp page timeout',
+        )
+        pageSource = 'web-access(CDP)'
+        if (pageData.rows.length === 0) {
+          const d = pageData?.diagnostics || {}
+          task?.runLogs?.push(
+            `${nowText()} | CDP空页诊断：title=${toText(d.pageTitle) || '-'}，textLen=${Number(d.pageTextLen || 0)}，li.alists=${Number(d.liAlistsCount || 0)}，tr=${Number(d.trCount || 0)}，companyLinks=${Number(d.companyLinkCount || 0)}，url=${toText(pageData.finalUrl || pageUrl)}`,
+          )
+          if (isGasgooOemListUrl(pageUrl) && (pageData.paginationUrls || []).length === 0) {
+            const fallbackPages = buildGasgooOemPaginationUrls(pageUrl, 15)
+            if (fallbackPages.length > 0) {
+              pageData.paginationUrls = fallbackPages
+              task?.runLogs?.push(`${nowText()} | oem分页兜底：自动补充 ${fallbackPages.length} 页候选链接`)
+            }
+          }
+          webAccessLastError = toText(pageData.errorMessage || webAccessLastError)
+          task?.runLogs?.push(`${nowText()} | 分页web-access结果为空，切换 HTTP：${pageUrl}${pageData.errorMessage ? `，原因：${pageData.errorMessage}` : ''}`)
+          pageData = await extractSupplierPageDataByHttp(pageUrl, context)
+          pageSource = 'HTTP'
+          if (pageData.rows.length === 0 && isGasgooOemListUrl(pageUrl) && (pageData.paginationUrls || []).length === 0) {
+            const fallbackPages = buildGasgooOemPaginationUrls(pageUrl, 15)
+            if (fallbackPages.length > 0) {
+              pageData.paginationUrls = fallbackPages
+              task?.runLogs?.push(`${nowText()} | HTTP空页但识别为oem，继续按分页模板推进 ${fallbackPages.length} 页`)
+            }
+          }
         }
       } else {
         pageData = await extractSupplierPageDataByHttp(pageUrl, context)
@@ -4235,6 +7643,9 @@ async function crawlSupplierRowsByUrlVariants(url, context, task, nowText) {
           if (!seenPages.has(nextPageUrl)) pendingPages.push(nextPageUrl)
         }
       }
+      if (task?.runLogs) {
+        task.runLogs.push(`${nowText()} | 分页入队后：待抓页 ${pendingPages.length}`)
+      }
 
       if (expectedTotal > 0 && collectedRows.length >= expectedTotal) break
     }
@@ -4263,8 +7674,16 @@ async function crawlSupplierRowsByUrlVariants(url, context, task, nowText) {
   if (best.rows.length > 0) {
     task?.runLogs?.push(`${nowText()} | 最优列表变体：${best.candidateUrl}，页数 ${best.pagesVisited}，准备做详情补全`)
     const enrichStart = Date.now()
-    best.rows = await enrichSupplierRowsByDetailPages(best.rows, task, nowText)
+    best.rows = await enrichSupplierRowsByDetailPages(best.rows, task, nowText, { homepageOnly: context?.homepageOnly })
     task?.runLogs?.push(`${nowText()} | 详情补全阶段耗时 ${Date.now() - enrichStart}ms`)
+  }
+  if (best.rows.length === 0 && useWebAccess) {
+    const fallbackGuide = '请先启动 web-access 服务；用 Chrome 打开并完成目标页加载（建议仅保留该目标标签页）；然后在 Edge 系统页点击 01提交抓取重试'
+    return {
+      ...best,
+      candidateUrls,
+      errorMessage: webAccessLastError ? `${webAccessLastError}；${fallbackGuide}` : fallbackGuide,
+    }
   }
   return { ...best, candidateUrls }
 }
@@ -4277,6 +7696,10 @@ async function runSupplierCrawlTask(task) {
   task.progress = 1
   task.runLogs.push(`${nowText()} | 任务开始：节点 ${task.nodeName || task.nodeId}，URL ${task.totalUrls} 个`)
   task.runLogs.push(`${nowText()} | 抽取模式：Codex模型 + 规则补充（model=${task.model || 'gpt-5.4'}）`)
+  if (task.homepageOnly) {
+    task.runLogs.push(`${nowText()} | 详情抓取策略：仅抓企业首页（禁用详情Tab扩展）`)
+  }
+  schedulePersistSupplierTaskStore()
   const rows = []
   for (const url of task.urls) {
     if (task.cancelRequested) {
@@ -4284,6 +7707,7 @@ async function runSupplierCrawlTask(task) {
       task.endedAt = new Date().toISOString()
       task.progress = Math.max(task.progress, 100)
       task.runLogs.push(`${nowText()} | 任务已取消，停止抓取`)
+      schedulePersistSupplierTaskStore()
       return
     }
     task.runLogs.push(`${nowText()} | 开始抓取：${url}`)
@@ -4299,10 +7723,12 @@ async function runSupplierCrawlTask(task) {
       model: task.model,
       skill: task.skill,
       sourceUrl: toText(urlMeta?.sourceUrl) || task.sourceUrl || url,
+      homepageOnly: Boolean(task.homepageOnly),
     }
     task.runLogs.push(`${nowText()} | 抓取上下文：nodeId=${crawlContext.nodeId || '-'}，nodeName=${crawlContext.nodeName || '-'}，skill=${crawlContext.skill || '-'}`)
     try {
-      const detailMode = isSupplierDetailEntryUrl(url)
+      const forceListMode = String(task?.crawlMode || '').toLowerCase() === 'list'
+      const detailMode = forceListMode ? false : isSupplierDetailEntryUrl(url)
       task.runLogs.push(`${nowText()} | 识别模式：${detailMode ? '详情页直抓' : '列表分页抓取+详情补全'}`)
       const urlStart = Date.now()
       const crawlResult = detailMode
@@ -4389,6 +7815,7 @@ async function runSupplierCrawlTask(task) {
     task.estimatedTotalRows = Math.max(task.estimatedTotalRows || 0, rows.length)
     task.baseRowsBeforeCurrentUrl = rows.length
     updateSupplierTaskProgressRealtime(task)
+    schedulePersistSupplierTaskStore()
   }
 
   const fileName = `supplier_result_${Date.now()}.csv`
@@ -4402,6 +7829,8 @@ async function runSupplierCrawlTask(task) {
     'list_page_url',
     'detail_url',
     'company_name',
+    'brand',
+    'vehicle_model',
     'main_products',
     'fit_export',
     'quality_system',
@@ -4435,6 +7864,8 @@ async function runSupplierCrawlTask(task) {
         row.listPageUrl || '',
         row.detailUrl || '',
         row.companyName || '',
+        row.brand || '',
+        row.vehicleModel || '',
         row.mainProducts || '',
         row.fitExport || '',
         row.qualitySystem || '',
@@ -4472,6 +7903,7 @@ async function runSupplierCrawlTask(task) {
   task.endedAt = new Date().toISOString()
   task.runLogs.push(`${nowText()} | CSV 已生成：${fileName}，共 ${rows.length} 条`)
   task.runLogs.push(`${nowText()} | 任务完成：成功 ${task.successRows} 条，失败 ${task.failedRows} 条，总耗时 ${Date.now() - taskStart}ms`)
+  schedulePersistSupplierTaskStore()
 }
 
 function ensureTitleChain(record) {
@@ -5242,6 +8674,7 @@ async function crawlAndCollectRows(seedUrl, crawlType, context = {}) {
       skill: context.skill || '',
       sourceUrl: context.sourceUrl || seedUrl,
       businessEntity: context.businessEntity || '',
+      homepageOnly: normalizeSupplierHomepageOnly(context.homepageOnly),
     }
     try {
       const result = isSupplierDetailEntryUrl(seedUrl)
@@ -5658,6 +9091,57 @@ app.get('/api/codex/models', authMiddleware, (_req, res) => {
 
 app.get('/api/crawl/skills', authMiddleware, (_req, res) => {
   return res.json({ code: 200, message: 'success', data: supplierSkillOptions })
+})
+
+app.get('/api/crawl/precheck', authMiddleware, async (req, res) => {
+  const skill = toText(req.query.skill).toLowerCase()
+  if (!isWebAccessSkill(skill)) {
+    return res.json({
+      code: 200,
+      message: 'success',
+      data: {
+        skill,
+        ready: true,
+        checks: [{ name: 'skill', ready: true, message: '当前技能无需 web-access 环境预检' }],
+        hint: '',
+      },
+    })
+  }
+  try {
+    const targetsPayload = await fetchCdpProxyJson('/targets', {}, 10000)
+    const targets = Array.isArray(targetsPayload?.value) ? targetsPayload.value : []
+    const gasgooTargets = targets.filter((item) => safeHostFromUrl(item?.url || '').includes('gasgoo.com'))
+    return res.json({
+      code: 200,
+      message: 'success',
+      data: {
+        skill: 'web-access',
+        ready: true,
+        checks: [
+          { name: 'web-access-cdp', ready: true, message: `CDP 服务可用（可见标签页 ${targets.length} 个）` },
+          { name: 'gasgoo-tab', ready: true, message: gasgooTargets.length > 0 ? `检测到 Gasgoo 标签页 ${gasgooTargets.length} 个` : '未检测到 Gasgoo 标签页（抓取时可自动打开）' },
+        ],
+        hint: '',
+      },
+    })
+  } catch (error) {
+    return res.json({
+      code: 200,
+      message: 'success',
+      data: {
+        skill: 'web-access',
+        ready: false,
+        checks: [
+          {
+            name: 'web-access-cdp',
+            ready: false,
+            message: `CDP 服务不可用：${toText(error?.message || 'unknown error')}`,
+          },
+        ],
+        hint: '请先启动 web-access 服务；用 Chrome 打开并完成目标页加载（建议仅保留该目标标签页）；确认后再点击 01提交抓取。',
+      },
+    })
+  }
 })
 
 app.get('/api/inventories', authMiddleware, async (req, res) => {
@@ -6518,6 +10002,7 @@ app.post('/api/supply-chain/nodes/:id/supplier-crawl-tasks', authMiddleware, asy
     }
     const model = toText(req.body?.model) || codexModelOptions[0]
     const skill = toText(req.body?.skill) || supplierSkillOptions[0]
+    const homepageOnly = normalizeSupplierHomepageOnly(req.body?.homepageOnly)
     const taskId = createSupplierTaskId()
     const task = {
       taskId,
@@ -6526,6 +10011,7 @@ app.post('/api/supply-chain/nodes/:id/supplier-crawl-tasks', authMiddleware, asy
       sourceUrl: toText(node.sourceUrl || node.nodeUrl),
       model,
       skill,
+      homepageOnly,
       urls,
       status: 'pending',
       progress: 0,
@@ -6549,6 +10035,7 @@ app.post('/api/supply-chain/nodes/:id/supplier-crawl-tasks', authMiddleware, asy
       endedAt: null,
     }
     supplierCrawlTaskStore.set(taskId, task)
+    schedulePersistSupplierTaskStore()
     void runSupplierCrawlTask(task).catch((error) => {
       task.status = 'failed'
       task.errorMessage = error.message || '任务执行失败'
@@ -6556,6 +10043,7 @@ app.post('/api/supply-chain/nodes/:id/supplier-crawl-tasks', authMiddleware, asy
       task.endedAt = new Date().toISOString()
       const nowText = () => new Date().toLocaleString('zh-CN', { hour12: false })
       task.runLogs.push(`${nowText()} | 执行失败：${task.errorMessage}`)
+      schedulePersistSupplierTaskStore()
     })
     return res.json({
       code: 200,
@@ -6596,6 +10084,8 @@ app.post('/api/suppliers/source-crawl-tasks', authMiddleware, async (req, res) =
     }
     const model = toText(req.body?.model) || codexModelOptions[0]
     const skill = toText(req.body?.skill) || supplierSkillOptions[0]
+    const crawlMode = String(req.body?.crawlMode || '').trim().toLowerCase() === 'list' ? 'list' : ''
+    const homepageOnly = normalizeSupplierHomepageOnly(req.body?.homepageOnly)
     const taskId = createSupplierTaskId()
     const task = {
       taskId,
@@ -6605,6 +10095,8 @@ app.post('/api/suppliers/source-crawl-tasks', authMiddleware, async (req, res) =
       urlNodeMetaMap,
       model,
       skill,
+      crawlMode,
+      homepageOnly,
       urls,
       status: 'pending',
       progress: 0,
@@ -6628,6 +10120,7 @@ app.post('/api/suppliers/source-crawl-tasks', authMiddleware, async (req, res) =
       endedAt: null,
     }
     supplierCrawlTaskStore.set(taskId, task)
+    schedulePersistSupplierTaskStore()
     void runSupplierCrawlTask(task).catch((error) => {
       task.status = 'failed'
       task.errorMessage = error.message || '任务执行失败'
@@ -6635,6 +10128,7 @@ app.post('/api/suppliers/source-crawl-tasks', authMiddleware, async (req, res) =
       task.endedAt = new Date().toISOString()
       const nowText = () => new Date().toLocaleString('zh-CN', { hour12: false })
       task.runLogs.push(`${nowText()} | 执行失败：${task.errorMessage}`)
+      schedulePersistSupplierTaskStore()
     })
     return res.json({
       code: 200,
@@ -6672,6 +10166,7 @@ app.post('/api/supplier-crawl-tasks/:taskId/cancel', authMiddleware, (req, res) 
   task.status = 'cancelling'
   const nowText = () => new Date().toLocaleString('zh-CN', { hour12: false })
   task.runLogs.push(`${nowText()} | 收到取消指令，正在结束任务...`)
+  schedulePersistSupplierTaskStore()
   return res.json({ code: 200, message: 'cancel_requested', data: normalizeSupplierTask(task) })
 })
 
@@ -6686,6 +10181,7 @@ app.post('/api/supplier-crawl-tasks/:taskId/import', authMiddleware, async (req,
   }
   try {
     const includeProfile = req.body?.includeProfile === true || String(req.body?.includeProfile || '').toLowerCase() === 'true'
+    const forcedProfileSource = normalizeSupplierProfileView(req.body?.profileSource)
     let records = Array.isArray(task.records) ? task.records : []
     if (records.length === 0 && task.fileName) {
       const csvPath = path.join(crawlExportDir, path.basename(task.fileName))
@@ -6722,18 +10218,30 @@ app.post('/api/supplier-crawl-tasks/:taskId/import', authMiddleware, async (req,
       }))
     }
     const validRecords = records.filter((item) => toText(item.companyName))
+    const profileRecords = forcedProfileSource
+      ? validRecords.map((item) => ({ ...item, profileSource: forcedProfileSource }))
+      : validRecords
     const baseSummary = await importSupplierBaseRows(validRecords, task.fileName || '')
     const profileSummary = includeProfile
-      ? await importSupplierProfileRows(validRecords)
-      : { inserted: 0, updated: 0, skipped: true }
+      ? await importSupplierProfileRows(profileRecords)
+      : { inserted: 0, updated: 0, skipped: true, affectedNodeIds: [] }
+    const gasSyncSummary = includeProfile
+      ? await refreshGasSupplyChainSyncedSupplierCounts(profileSummary.affectedNodeIds || [])
+      : { updatedNodeCount: 0, totalSuppliers: 0, nodeCounts: [] }
     const importSummary = {
       ...baseSummary,
       profileInserted: profileSummary.inserted || 0,
       profileUpdated: profileSummary.updated || 0,
       profileSkipped: Boolean(profileSummary.skipped),
+      importedCompanies: [...new Set(validRecords.map((item) => toText(item.companyName)).filter(Boolean))].length,
+      profileSource: forcedProfileSource || '',
+      gasSyncedNodeCount: gasSyncSummary.updatedNodeCount || 0,
+      gasSyncedSupplierTotal: gasSyncSummary.totalSuppliers || 0,
+      gasSyncedNodeDetails: gasSyncSummary.nodeCounts || [],
     }
     task.imported = true
     task.importSummary = importSummary
+    schedulePersistSupplierTaskStore()
     return res.json({ code: 200, message: 'imported', data: importSummary })
   } catch (error) {
     return res.status(500).json({ code: 500, message: `入库失败: ${error.message}`, data: null })
@@ -7259,7 +10767,253 @@ app.delete('/api/suppliers/clear-all', authMiddleware, async (_req, res) => {
   }
 })
 
-app.get('/api/supplier-profiles/options', authMiddleware, async (_req, res) => {
+app.get('/api/gas-oems', authMiddleware, async (req, res) => {
+  const limit = Math.min(Math.max(Number(req.query.limit || 1000), 1), 5000)
+  const keyword = toText(req.query.keyword)
+  const params = []
+  const whereClauses = []
+  if (keyword) {
+    params.push(`%${keyword}%`)
+    whereClauses.push(`(
+      oem_name ILIKE $${params.length}
+      OR brand ILIKE $${params.length}
+      OR vehicle_model ILIKE $${params.length}
+      OR region ILIKE $${params.length}
+      OR registered_capital ILIKE $${params.length}
+      OR website ILIKE $${params.length}
+    )`)
+  }
+  params.push(limit)
+  const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : ''
+  try {
+    const result = await pool.query(
+      `
+      SELECT
+        id,
+        oem_name AS "oemName",
+        brand,
+        vehicle_model AS "vehicleModel",
+        region,
+        registered_capital AS "registeredCapital",
+        website,
+        model,
+        skill,
+        TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') AS "createdAt",
+        TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') AS "updatedAt"
+      FROM ${gasOemTable}
+      ${whereSql}
+      ORDER BY updated_at DESC, id DESC
+      LIMIT $${params.length}
+      `,
+      params,
+    )
+    return res.json({ code: 200, message: 'success', data: result.rows })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `查询整车厂失败: ${error.message}`, data: null })
+  }
+})
+
+app.get('/api/gas-oems/:id', authMiddleware, async (req, res) => {
+  const id = Number(req.params.id)
+  if (!Number.isInteger(id) || id <= 0) {
+    return res.status(400).json({ code: 400, message: '无效记录ID', data: null })
+  }
+  try {
+    const result = await pool.query(
+      `
+      SELECT
+        id,
+        oem_name AS "oemName",
+        brand,
+        vehicle_model AS "vehicleModel",
+        region,
+        registered_capital AS "registeredCapital",
+        website,
+        model,
+        skill,
+        TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') AS "createdAt",
+        TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') AS "updatedAt"
+      FROM ${gasOemTable}
+      WHERE id = $1
+      LIMIT 1
+      `,
+      [id],
+    )
+    if (result.rowCount === 0) {
+      return res.status(404).json({ code: 404, message: '记录不存在', data: null })
+    }
+    return res.json({ code: 200, message: 'success', data: result.rows[0] })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `查询整车厂详情失败: ${error.message}`, data: null })
+  }
+})
+
+app.post('/api/gas-oems', authMiddleware, async (req, res) => {
+  const oemName = sanitizeSupplierCompanyName(toText(req.body?.oemName))
+  if (!oemName) {
+    return res.status(400).json({ code: 400, message: '车企名称不能为空', data: null })
+  }
+  try {
+      const inserted = await pool.query(
+        `
+      INSERT INTO ${gasOemTable}
+        (oem_name, brand, vehicle_model, region, registered_capital, website, model, skill, source_file, updated_at)
+      VALUES
+        ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())
+      RETURNING id
+      `,
+      [
+        oemName,
+        toText(req.body?.brand),
+        toText(req.body?.vehicleModel),
+        toText(req.body?.region),
+        toText(req.body?.registeredCapital),
+        toText(req.body?.website),
+        toText(req.body?.model),
+        toText(req.body?.skill),
+        toText(req.body?.sourceFile),
+      ],
+    )
+    return res.json({ code: 200, message: 'created', data: { id: String(inserted.rows[0].id) } })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `新增整车厂失败: ${error.message}`, data: null })
+  }
+})
+
+app.put('/api/gas-oems/:id', authMiddleware, async (req, res) => {
+  const id = Number(req.params.id)
+  if (!Number.isInteger(id) || id <= 0) {
+    return res.status(400).json({ code: 400, message: '无效记录ID', data: null })
+  }
+  const payload = req.body || {}
+  const textFieldMap = {
+    oemName: 'oem_name',
+    brand: 'brand',
+    vehicleModel: 'vehicle_model',
+    region: 'region',
+    registeredCapital: 'registered_capital',
+    website: 'website',
+    model: 'model',
+    skill: 'skill',
+    sourceFile: 'source_file',
+  }
+  const setClauses = []
+  const params = []
+  for (const [key, column] of Object.entries(textFieldMap)) {
+    if (!Object.prototype.hasOwnProperty.call(payload, key)) continue
+    const raw = toText(payload[key])
+    params.push(key === 'oemName' ? sanitizeSupplierCompanyName(raw) : raw)
+    setClauses.push(`${column} = $${params.length}`)
+  }
+  if (setClauses.length === 0) {
+    return res.status(400).json({ code: 400, message: '没有可更新字段', data: null })
+  }
+  setClauses.push('updated_at = NOW()')
+  params.push(id)
+  try {
+    const updated = await pool.query(
+      `UPDATE ${gasOemTable} SET ${setClauses.join(', ')} WHERE id = $${params.length} RETURNING id`,
+      params,
+    )
+    if (updated.rowCount === 0) {
+      return res.status(404).json({ code: 404, message: '记录不存在', data: null })
+    }
+    return res.json({ code: 200, message: 'updated', data: { id: String(id) } })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `更新整车厂失败: ${error.message}`, data: null })
+  }
+})
+
+app.delete('/api/gas-oems/item/:id', authMiddleware, async (req, res) => {
+  const id = Number(req.params.id)
+  if (!Number.isInteger(id) || id <= 0) {
+    return res.status(400).json({ code: 400, message: '无效记录ID', data: null })
+  }
+  try {
+    const deleted = await pool.query(`DELETE FROM ${gasOemTable} WHERE id = $1 RETURNING id`, [id])
+    if (deleted.rowCount === 0) {
+      return res.status(404).json({ code: 404, message: '记录不存在', data: null })
+    }
+    return res.json({ code: 200, message: 'deleted', data: { id: String(id) } })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `删除整车厂失败: ${error.message}`, data: null })
+  }
+})
+
+app.delete('/api/gas-oems/batch-delete', authMiddleware, async (req, res) => {
+  const ids = Array.isArray(req.body?.ids)
+    ? req.body.ids.map((item) => Number(item)).filter((item) => Number.isInteger(item) && item > 0)
+    : []
+  if (ids.length === 0) {
+    return res.status(400).json({ code: 400, message: '请提供有效 ids', data: null })
+  }
+  try {
+    const deleted = await pool.query(
+      `DELETE FROM ${gasOemTable} WHERE id = ANY($1::bigint[]) RETURNING id`,
+      [ids],
+    )
+    return res.json({ code: 200, message: 'batch_deleted', data: { deletedCount: deleted.rowCount || 0 } })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `批量删除整车厂失败: ${error.message}`, data: null })
+  }
+})
+
+app.delete('/api/gas-oems/clear-all', authMiddleware, async (_req, res) => {
+  try {
+    const deleted = await pool.query(`DELETE FROM ${gasOemTable} RETURNING id`)
+    return res.json({ code: 200, message: 'cleared', data: { deletedCount: deleted.rowCount || 0 } })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `清空整车厂失败: ${error.message}`, data: null })
+  }
+})
+
+app.post('/api/gas-oems/sync-tasks/:taskId/import', authMiddleware, async (req, res) => {
+  const taskId = String(req.params.taskId || '').trim()
+  const task = supplierCrawlTaskStore.get(taskId)
+  if (!task) {
+    return res.status(404).json({ code: 404, message: '任务不存在', data: null })
+  }
+  if (task.status !== 'done') {
+    return res.status(400).json({ code: 400, message: '任务尚未完成，不能入库', data: null })
+  }
+  try {
+    let records = Array.isArray(task.records) ? task.records : []
+    if (records.length === 0 && task.fileName) {
+      const csvPath = path.join(crawlExportDir, path.basename(task.fileName))
+      const csvText = await fs.readFile(csvPath, 'utf8')
+      records = parseCsvObjects(csvText).map((item) => ({
+        oemName: toText(item.company_name),
+        companyName: toText(item.company_name),
+        brand: toText(item.brand),
+        vehicleModel: toText(item.vehicle_model || item.vehicleModel),
+        region: toText(item.region),
+        registeredCapital: toText(item.registered_capital),
+        website: toText(item.website || item.detail_url),
+        model: toText(item.model) || task.model,
+        skill: toText(item.skill) || task.skill,
+      }))
+    }
+    const validRecords = records.filter((item) => toText(item.oemName || item.companyName))
+    const importSummary = await importGasOemRows(validRecords, task.fileName || '')
+    task.imported = true
+    task.importSummary = importSummary
+    schedulePersistSupplierTaskStore()
+    return res.json({ code: 200, message: 'imported', data: importSummary })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `整车厂入库失败: ${error.message}`, data: null })
+  }
+})
+
+app.get('/api/supplier-profiles/options', authMiddleware, async (req, res) => {
+  const view = normalizeSupplierProfileView(req.query.view)
+  const treeTable = view === 'gas' ? gasSupplyChainNodeTable : supplyChainNodeTable
+  const sourceWhereSql = view === 'gas'
+    ? `WHERE node_id IN (SELECT id FROM ${gasSupplyChainNodeTable}) OR detail_url ILIKE '%gasgoo%' OR list_page_url ILIKE '%gasgoo%'`
+    : (
+      view === 'gys'
+        ? `WHERE (node_id IS NULL OR node_id NOT IN (SELECT id FROM ${gasSupplyChainNodeTable})) AND detail_url NOT ILIKE '%gasgoo%' AND list_page_url NOT ILIKE '%gasgoo%'`
+        : ''
+    )
   try {
     const [oemResult, countryResult, certResult, sourceResult, treeResult] = await Promise.all([
       pool.query(`SELECT id, name FROM ${supplierOemDictTable} ORDER BY sort_order ASC, id ASC LIMIT 1000`),
@@ -7278,6 +11032,7 @@ app.get('/api/supplier-profiles/options', authMiddleware, async (_req, res) => {
           quality_system AS "qualitySystem",
           region
         FROM ${supplierBaseTable}
+        ${sourceWhereSql}
         ORDER BY updated_at DESC, id DESC
         LIMIT 3000
       `),
@@ -7287,7 +11042,7 @@ app.get('/api/supplier-profiles/options', authMiddleware, async (_req, res) => {
           parent_id AS "parentId",
           node_level AS "nodeLevel",
           node_title AS "nodeTitle"
-        FROM ${supplyChainNodeTable}
+        FROM ${treeTable}
         ORDER BY node_level ASC, id ASC
         LIMIT 20000
       `),
@@ -7340,12 +11095,16 @@ app.get('/api/supplier-profiles/options', authMiddleware, async (_req, res) => {
 app.get('/api/supplier-profiles', authMiddleware, async (req, res) => {
   const limit = Math.min(Math.max(Number(req.query.limit || 1000), 1), 5000)
   const keyword = toText(req.query.keyword)
+  const view = normalizeSupplierProfileView(req.query.view)
   const params = []
-  let whereSql = ''
+  const whereClauses = []
+  if (view) {
+    params.push(view)
+    whereClauses.push(`profile_source = $${params.length}`)
+  }
   if (keyword) {
     params.push(`%${keyword}%`)
-    whereSql = `
-      WHERE
+    whereClauses.push(`(
         company_name ILIKE $1
         OR company_name_en ILIKE $1
         OR legal_representative ILIKE $1
@@ -7354,8 +11113,9 @@ app.get('/api/supplier-profiles', authMiddleware, async (req, res) => {
         OR mobile ILIKE $1
         OR email ILIKE $1
         OR website ILIKE $1
-    `
+      )`.replace(/\$1/g, `$${params.length}`))
   }
+  const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : ''
   params.push(limit)
   const limitParam = `$${params.length}`
   try {
@@ -7363,6 +11123,7 @@ app.get('/api/supplier-profiles', authMiddleware, async (req, res) => {
       `
       SELECT
         id,
+        profile_source AS "profileSource",
         related_node_id AS "relatedNodeId",
         related_node_name AS "relatedNodeName",
         related_node_ids AS "relatedNodeIds",
@@ -7402,343 +11163,76 @@ app.get('/api/supplier-profiles', authMiddleware, async (req, res) => {
 
 app.get('/api/supplier-profiles/:id', authMiddleware, async (req, res) => {
   const id = Number(req.params.id)
+  const view = normalizeSupplierProfileView(req.query.view)
   if (!Number.isInteger(id) || id <= 0) {
     return res.status(400).json({ code: 400, message: '无效记录ID', data: null })
   }
   try {
-    const result = await pool.query(
-      `
-      SELECT
-        id,
-        related_node_id AS "relatedNodeId",
-        related_node_name AS "relatedNodeName",
-        related_node_ids AS "relatedNodeIds",
-        related_node_names AS "relatedNodeNames",
-        company_name AS "companyName",
-        company_name_en AS "companyNameEn",
-        legal_representative AS "legalRepresentative",
-        org_code AS "orgCode",
-        registered_capital AS "registeredCapital",
-        established_date AS "establishedDate",
-        employees_count AS "employeesCount",
-        company_type AS "companyType",
-        contact_person AS "contactPerson",
-        contact_title AS "contactTitle",
-        phone,
-        mobile,
-        email,
-        website,
-        postal_code AS "postalCode",
-        address,
-        company_intro AS "companyIntro",
-        fit_situation AS "fitSituation",
-        export_situation AS "exportSituation",
-        certificates,
-        company_news AS "companyNews",
-        products,
-        contacts,
-        fit_oems AS "fitOems",
-        product_fit_details AS "productFitDetails",
-        export_countries AS "exportCountries",
-        certificate_items AS "certificateItems",
-        news_items AS "newsItems",
-        TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') AS "createdAt",
-        TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') AS "updatedAt"
-      FROM ${supplierProfileTable}
-      WHERE id = $1
-      LIMIT 1
-      `,
-      [id],
-    )
-    if (result.rowCount === 0) {
-      return res.status(404).json({ code: 404, message: '记录不存在', data: null })
+    const client = await pool.connect()
+    try {
+      const detail = await fetchSupplierProfileDetailById(client, id)
+      if (!detail || (view && detail.profileSource !== view)) {
+        return res.status(404).json({ code: 404, message: '记录不存在', data: null })
+      }
+      return res.json({ code: 200, message: 'success', data: detail })
+    } finally {
+      client.release()
     }
-    return res.json({
-      code: 200,
-      message: 'success',
-      data: {
-        ...result.rows[0],
-        relatedNodeIds: parseBigintArrayLoose(result.rows[0]?.relatedNodeIds || []),
-        relatedNodeNames: parseStringArray(result.rows[0]?.relatedNodeNames || []),
-        contacts: parseSupplierProfileContacts(result.rows[0]?.contacts || []),
-        products: parseSupplierProfileProducts(result.rows[0]?.products || []),
-        fitOems: parseStringArray(result.rows[0]?.fitOems || []),
-        productFitDetails: parseSupplierProductFitDetails(result.rows[0]?.productFitDetails || []),
-        exportCountries: parseStringArray(result.rows[0]?.exportCountries || []),
-        certificateItems: parseStringArray(result.rows[0]?.certificateItems || []),
-        newsItems: parseSupplierNewsItems(result.rows[0]?.newsItems || []),
-      },
-    })
   } catch (error) {
     return res.status(500).json({ code: 500, message: `查询供应商档案详情失败: ${error.message}`, data: null })
   }
 })
 
 app.post('/api/supplier-profiles', authMiddleware, async (req, res) => {
-  const payload = req.body || {}
-  const companyName = toText(payload.companyName)
-  if (!companyName) {
-    return res.status(400).json({ code: 400, message: '公司名称不能为空', data: null })
-  }
-  const contacts = parseSupplierProfileContacts(payload.contacts)
-  const products = parseSupplierProfileProducts(payload.products)
-  const fitOems = parseStringArray(payload.fitOems)
-  const productFitDetails = parseSupplierProductFitDetails(payload.productFitDetails)
-  const exportCountries = parseStringArray(payload.exportCountries)
-  const certificateItems = parseStringArray(payload.certificateItems)
-  const newsItems = parseSupplierNewsItems(payload.newsItems)
-  const relatedNodeIds = parseBigintArrayLoose(payload.relatedNodeIds)
-  const relatedNodeNames = parseStringArray(payload.relatedNodeNames)
-  const singleNodeId = payload.relatedNodeId ? Number(payload.relatedNodeId) : null
-  if (Number.isInteger(singleNodeId) && singleNodeId > 0 && !relatedNodeIds.includes(singleNodeId)) {
-    relatedNodeIds.unshift(singleNodeId)
-  }
-  const singleNodeName = toText(payload.relatedNodeName)
-  if (singleNodeName && !relatedNodeNames.includes(singleNodeName)) {
-    relatedNodeNames.unshift(singleNodeName)
-  }
-  const primaryContact = contacts[0] || {}
-  const fitSituation = toText(payload.fitSituation) || fitOems.join('，')
-  const exportSituation = toText(payload.exportSituation) || exportCountries.join('，')
-  const certificates = toText(payload.certificates) || certificateItems.join('，')
-  const companyNews = toText(payload.companyNews) || newsItems.map((item) => item.title).filter(Boolean).join('；')
+  const client = await pool.connect()
   try {
-    await upsertSupplierDictItems(pool, supplierOemDictTable, fitOems)
-    await upsertSupplierDictItems(pool, supplierCountryDictTable, exportCountries)
-    await upsertSupplierDictItems(pool, supplierCertDictTable, certificateItems)
-    const inserted = await pool.query(
-      `
-      INSERT INTO ${supplierProfileTable}
-      (
-        related_node_id, related_node_name, related_node_ids, related_node_names,
-        company_name, company_name_en, legal_representative, org_code, registered_capital, established_date, employees_count,
-        company_type, contact_person, contact_title, phone, mobile, email, website, postal_code, address,
-        company_intro, fit_situation, export_situation, certificates, company_news, products,
-        contacts, fit_oems, product_fit_details, export_countries, certificate_items, news_items, updated_at
-      )
-      VALUES
-      ($1,$2,$3::jsonb,$4::jsonb,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26::jsonb,$27::jsonb,$28::jsonb,$29::jsonb,$30::jsonb,$31::jsonb,$32::jsonb,NOW())
-      RETURNING id
-      `,
-      [
-        relatedNodeIds[0] || null,
-        relatedNodeNames.join('，'),
-        JSON.stringify(relatedNodeIds),
-        JSON.stringify(relatedNodeNames),
-        companyName,
-        toText(payload.companyNameEn),
-        toText(payload.legalRepresentative),
-        toText(payload.orgCode),
-        toText(payload.registeredCapital),
-        toText(payload.establishedDate),
-        toText(payload.employeesCount),
-        toText(payload.companyType),
-        toText(primaryContact.contactPerson),
-        toText(primaryContact.contactTitle),
-        toText(primaryContact.phone),
-        toText(primaryContact.mobile),
-        toText(primaryContact.email),
-        toText(payload.website),
-        toText(payload.postalCode),
-        toText(payload.address),
-        toText(payload.companyIntro),
-        fitSituation,
-        exportSituation,
-        certificates,
-        companyNews,
-        JSON.stringify(products),
-        JSON.stringify(contacts),
-        JSON.stringify(fitOems),
-        JSON.stringify(productFitDetails),
-        JSON.stringify(exportCountries),
-        JSON.stringify(certificateItems),
-        JSON.stringify(newsItems),
-      ],
-    )
-    return res.json({ code: 200, message: 'created', data: { id: String(inserted.rows[0].id) } })
+    await client.query('BEGIN')
+    const profileId = await saveSupplierProfileRecord(client, null, {
+      ...(req.body || {}),
+      profileSource: normalizeSupplierProfileView(req.query.view) || req.body?.profileSource,
+    })
+    await client.query('COMMIT')
+    return res.json({ code: 200, message: 'created', data: { id: String(profileId) } })
   } catch (error) {
-    return res.status(500).json({ code: 500, message: `新增供应商档案失败: ${error.message}`, data: null })
+    await client.query('ROLLBACK').catch(() => {})
+    const status = /不能为空/.test(error?.message || '') ? 400 : 500
+    return res.status(status).json({ code: status, message: `新增供应商档案失败: ${error.message}`, data: null })
+  } finally {
+    client.release()
   }
 })
 
 app.put('/api/supplier-profiles/:id', authMiddleware, async (req, res) => {
   const id = Number(req.params.id)
+  const view = normalizeSupplierProfileView(req.query.view)
   if (!Number.isInteger(id) || id <= 0) {
     return res.status(400).json({ code: 400, message: '无效记录ID', data: null })
   }
-  const payload = req.body || {}
-  const setClauses = []
-  const params = []
-  const nextContacts = Object.prototype.hasOwnProperty.call(payload, 'contacts')
-    ? parseSupplierProfileContacts(payload.contacts)
-    : null
-  const nextFitOems = Object.prototype.hasOwnProperty.call(payload, 'fitOems')
-    ? parseStringArray(payload.fitOems)
-    : null
-  const nextProductFitDetails = Object.prototype.hasOwnProperty.call(payload, 'productFitDetails')
-    ? parseSupplierProductFitDetails(payload.productFitDetails)
-    : null
-  const nextExportCountries = Object.prototype.hasOwnProperty.call(payload, 'exportCountries')
-    ? parseStringArray(payload.exportCountries)
-    : null
-  const nextCertificateItems = Object.prototype.hasOwnProperty.call(payload, 'certificateItems')
-    ? parseStringArray(payload.certificateItems)
-    : null
-  const nextNewsItems = Object.prototype.hasOwnProperty.call(payload, 'newsItems')
-    ? parseSupplierNewsItems(payload.newsItems)
-    : null
-  const hasRelatedNodeId = Object.prototype.hasOwnProperty.call(payload, 'relatedNodeId')
-  const hasRelatedNodeIds = Object.prototype.hasOwnProperty.call(payload, 'relatedNodeIds')
-  const hasRelatedNodeName = Object.prototype.hasOwnProperty.call(payload, 'relatedNodeName')
-  const hasRelatedNodeNames = Object.prototype.hasOwnProperty.call(payload, 'relatedNodeNames')
-
-  let normalizedRelatedNodeIds = null
-  if (hasRelatedNodeIds || hasRelatedNodeId) {
-    normalizedRelatedNodeIds = parseBigintArrayLoose(payload.relatedNodeIds)
-    if (hasRelatedNodeId) {
-      const parsed = payload.relatedNodeId ? Number(payload.relatedNodeId) : null
-      if (Number.isInteger(parsed) && parsed > 0 && !normalizedRelatedNodeIds.includes(parsed)) {
-        normalizedRelatedNodeIds.unshift(parsed)
-      }
-    }
-  }
-  let normalizedRelatedNodeNames = null
-  if (hasRelatedNodeNames || hasRelatedNodeName) {
-    normalizedRelatedNodeNames = parseStringArray(payload.relatedNodeNames)
-    const singleName = toText(payload.relatedNodeName)
-    if (singleName && !normalizedRelatedNodeNames.includes(singleName)) {
-      normalizedRelatedNodeNames.unshift(singleName)
-    }
-  }
-
-  const textFieldMap = {
-    companyName: 'company_name',
-    companyNameEn: 'company_name_en',
-    legalRepresentative: 'legal_representative',
-    orgCode: 'org_code',
-    registeredCapital: 'registered_capital',
-    establishedDate: 'established_date',
-    employeesCount: 'employees_count',
-    companyType: 'company_type',
-    contactPerson: 'contact_person',
-    contactTitle: 'contact_title',
-    phone: 'phone',
-    mobile: 'mobile',
-    email: 'email',
-    website: 'website',
-    postalCode: 'postal_code',
-    address: 'address',
-    companyIntro: 'company_intro',
-    fitSituation: 'fit_situation',
-    exportSituation: 'export_situation',
-    certificates: 'certificates',
-    companyNews: 'company_news',
-  }
-  if (normalizedRelatedNodeIds !== null) {
-    params.push(normalizedRelatedNodeIds[0] || null)
-    setClauses.push(`related_node_id = $${params.length}`)
-    params.push(JSON.stringify(normalizedRelatedNodeIds))
-    setClauses.push(`related_node_ids = $${params.length}::jsonb`)
-  }
-  if (normalizedRelatedNodeNames !== null) {
-    params.push(normalizedRelatedNodeNames.join('，'))
-    setClauses.push(`related_node_name = $${params.length}`)
-    params.push(JSON.stringify(normalizedRelatedNodeNames))
-    setClauses.push(`related_node_names = $${params.length}::jsonb`)
-  }
-
-  for (const [key, column] of Object.entries(textFieldMap)) {
-    if (Object.prototype.hasOwnProperty.call(payload, key)) {
-      params.push(toText(payload[key]))
-      setClauses.push(`${column} = $${params.length}`)
-    }
-  }
-  if (Object.prototype.hasOwnProperty.call(payload, 'products')) {
-    const products = parseSupplierProfileProducts(payload.products)
-    params.push(JSON.stringify(products))
-    setClauses.push(`products = $${params.length}::jsonb`)
-  }
-  if (nextContacts !== null) {
-    params.push(JSON.stringify(nextContacts))
-    setClauses.push(`contacts = $${params.length}::jsonb`)
-    const primaryContact = nextContacts[0] || {}
-    params.push(toText(primaryContact.contactPerson))
-    setClauses.push(`contact_person = $${params.length}`)
-    params.push(toText(primaryContact.contactTitle))
-    setClauses.push(`contact_title = $${params.length}`)
-    params.push(toText(primaryContact.phone))
-    setClauses.push(`phone = $${params.length}`)
-    params.push(toText(primaryContact.mobile))
-    setClauses.push(`mobile = $${params.length}`)
-    params.push(toText(primaryContact.email))
-    setClauses.push(`email = $${params.length}`)
-  }
-  if (nextFitOems !== null) {
-    params.push(JSON.stringify(nextFitOems))
-    setClauses.push(`fit_oems = $${params.length}::jsonb`)
-    if (!Object.prototype.hasOwnProperty.call(payload, 'fitSituation')) {
-      params.push(nextFitOems.join('，'))
-      setClauses.push(`fit_situation = $${params.length}`)
-    }
-  }
-  if (nextProductFitDetails !== null) {
-    params.push(JSON.stringify(nextProductFitDetails))
-    setClauses.push(`product_fit_details = $${params.length}::jsonb`)
-  }
-  if (nextExportCountries !== null) {
-    params.push(JSON.stringify(nextExportCountries))
-    setClauses.push(`export_countries = $${params.length}::jsonb`)
-    if (!Object.prototype.hasOwnProperty.call(payload, 'exportSituation')) {
-      params.push(nextExportCountries.join('，'))
-      setClauses.push(`export_situation = $${params.length}`)
-    }
-  }
-  if (nextCertificateItems !== null) {
-    params.push(JSON.stringify(nextCertificateItems))
-    setClauses.push(`certificate_items = $${params.length}::jsonb`)
-    if (!Object.prototype.hasOwnProperty.call(payload, 'certificates')) {
-      params.push(nextCertificateItems.join('，'))
-      setClauses.push(`certificates = $${params.length}`)
-    }
-  }
-  if (nextNewsItems !== null) {
-    params.push(JSON.stringify(nextNewsItems))
-    setClauses.push(`news_items = $${params.length}::jsonb`)
-    if (!Object.prototype.hasOwnProperty.call(payload, 'companyNews')) {
-      params.push(nextNewsItems.map((item) => item.title).filter(Boolean).join('；'))
-      setClauses.push(`company_news = $${params.length}`)
-    }
-  }
-  if (setClauses.length === 0) {
-    return res.status(400).json({ code: 400, message: '没有可更新字段', data: null })
-  }
-  if (Object.prototype.hasOwnProperty.call(payload, 'companyName') && !toText(payload.companyName)) {
-    return res.status(400).json({ code: 400, message: '公司名称不能为空', data: null })
-  }
+  const client = await pool.connect()
   try {
-    if (nextFitOems !== null) await upsertSupplierDictItems(pool, supplierOemDictTable, nextFitOems)
-    if (nextExportCountries !== null) await upsertSupplierDictItems(pool, supplierCountryDictTable, nextExportCountries)
-    if (nextCertificateItems !== null) await upsertSupplierDictItems(pool, supplierCertDictTable, nextCertificateItems)
-  } catch (error) {
-    return res.status(500).json({ code: 500, message: `更新供应商档案失败: ${error.message}`, data: null })
-  }
-  setClauses.push('updated_at = NOW()')
-  params.push(id)
-  try {
-    const updated = await pool.query(
-      `UPDATE ${supplierProfileTable} SET ${setClauses.join(', ')} WHERE id = $${params.length} RETURNING id`,
-      params,
-    )
-    if (updated.rowCount === 0) {
+    await client.query('BEGIN')
+    const existed = await fetchSupplierProfileDetailById(client, id)
+    if (!existed || (view && existed.profileSource !== view)) {
+      await client.query('ROLLBACK')
       return res.status(404).json({ code: 404, message: '记录不存在', data: null })
     }
+    await saveSupplierProfileRecord(client, id, {
+      ...(req.body || {}),
+      profileSource: view || req.body?.profileSource || existed.profileSource,
+    })
+    await client.query('COMMIT')
     return res.json({ code: 200, message: 'updated', data: { id: String(id) } })
   } catch (error) {
-    return res.status(500).json({ code: 500, message: `更新供应商档案失败: ${error.message}`, data: null })
+    await client.query('ROLLBACK').catch(() => {})
+    const status = /不能为空/.test(error?.message || '') ? 400 : 500
+    return res.status(status).json({ code: status, message: `更新供应商档案失败: ${error.message}`, data: null })
+  } finally {
+    client.release()
   }
 })
 
 app.delete('/api/supplier-profiles/batch-delete', authMiddleware, async (req, res) => {
+  const view = normalizeSupplierProfileView(req.query.view || req.body?.view)
   const ids = Array.isArray(req.body?.ids)
     ? req.body.ids.map((item) => parsePositiveBigintId(item)).filter(Boolean)
     : []
@@ -7746,9 +11240,10 @@ app.delete('/api/supplier-profiles/batch-delete', authMiddleware, async (req, re
     return res.status(400).json({ code: 400, message: '请提供有效 ids', data: null })
   }
   try {
+    const whereSourceSql = view ? ' AND profile_source = $2' : ''
     const deleted = await pool.query(
-      `DELETE FROM ${supplierProfileTable} WHERE id = ANY($1::bigint[]) RETURNING id`,
-      [ids],
+      `DELETE FROM ${supplierProfileTable} WHERE id = ANY($1::bigint[])${whereSourceSql} RETURNING id`,
+      view ? [ids, view] : [ids],
     )
     return res.json({
       code: 200,
@@ -7760,9 +11255,13 @@ app.delete('/api/supplier-profiles/batch-delete', authMiddleware, async (req, re
   }
 })
 
-app.delete('/api/supplier-profiles/clear-all', authMiddleware, async (_req, res) => {
+app.delete('/api/supplier-profiles/clear-all', authMiddleware, async (req, res) => {
+  const view = normalizeSupplierProfileView(req.query.view || req.body?.view)
   try {
-    const deleted = await pool.query(`DELETE FROM ${supplierProfileTable} RETURNING id`)
+    const deleted = await pool.query(
+      `DELETE FROM ${supplierProfileTable}${view ? ' WHERE profile_source = $1' : ''} RETURNING id`,
+      view ? [view] : [],
+    )
     return res.json({
       code: 200,
       message: 'cleared',
@@ -7775,11 +11274,15 @@ app.delete('/api/supplier-profiles/clear-all', authMiddleware, async (_req, res)
 
 app.delete('/api/supplier-profiles/:id', authMiddleware, async (req, res) => {
   const id = parsePositiveBigintId(req.params.id)
+  const view = normalizeSupplierProfileView(req.query.view)
   if (!id) {
     return res.status(400).json({ code: 400, message: '无效记录ID', data: null })
   }
   try {
-    const deleted = await pool.query(`DELETE FROM ${supplierProfileTable} WHERE id = $1::bigint RETURNING id`, [id])
+    const deleted = await pool.query(
+      `DELETE FROM ${supplierProfileTable} WHERE id = $1::bigint${view ? ' AND profile_source = $2' : ''} RETURNING id`,
+      view ? [id, view] : [id],
+    )
     if (deleted.rowCount === 0) {
       return res.status(404).json({ code: 404, message: '记录不存在', data: null })
     }
@@ -7874,6 +11377,437 @@ app.get('/api/supply-chain/tree', authMiddleware, async (req, res) => {
   } catch (error) {
     return res.status(500).json({ code: 500, message: `查询供应链树失败: ${error.message}`, data: null })
   }
+})
+
+app.get('/api/gas-supply-chain/tree', authMiddleware, async (_req, res) => {
+  try {
+    const result = await pool.query(
+      `
+      SELECT
+        id,
+        parent_id AS "parentId",
+        node_level AS "nodeLevel",
+        node_title AS "nodeTitle",
+        node_url AS "nodeUrl",
+        source_url AS "sourceUrl",
+        synced_supplier_count AS "syncedSupplierCount",
+        TO_CHAR(synced_at, 'YYYY-MM-DD HH24:MI:SS') AS "syncedAt"
+      FROM ${gasSupplyChainNodeTable}
+      ORDER BY node_level ASC, id ASC
+      LIMIT 20000
+      `,
+    )
+    const nodeMap = new Map()
+    result.rows.forEach((row) => {
+      nodeMap.set(row.id, {
+        key: String(row.id),
+        id: row.id,
+        parentId: row.parentId,
+        title: row.nodeTitle,
+        nodeLevel: row.nodeLevel,
+        nodeUrl: row.nodeUrl,
+        sourceUrl: row.sourceUrl,
+        syncedSupplierCount: Number(row.syncedSupplierCount || 0),
+        syncedAt: row.syncedAt || '',
+        children: [],
+      })
+    })
+    const roots = []
+    for (const node of nodeMap.values()) {
+      if (node.parentId && nodeMap.has(node.parentId)) {
+        nodeMap.get(node.parentId).children.push(node)
+      } else {
+        roots.push(node)
+      }
+    }
+    return res.json({ code: 200, message: 'success', data: { totalNodes: result.rows.length, roots } })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `查询 GAS 供应链树失败: ${error.message}`, data: null })
+  }
+})
+
+app.get('/api/gas-supply-chain/records', authMiddleware, async (req, res) => {
+  const limit = Math.min(Math.max(Number(req.query.limit || 1000), 1), 5000)
+  const keyword = String(req.query.keyword || '').trim()
+  const parentKeyword = String(req.query.parentKeyword || '').trim()
+  const filters = []
+  const params = []
+  if (keyword) {
+    params.push(`%${keyword}%`)
+    filters.push(`(child.node_title ILIKE $${params.length} OR child.node_url ILIKE $${params.length} OR child.source_url ILIKE $${params.length})`)
+  }
+  if (parentKeyword) {
+    params.push(`%${parentKeyword}%`)
+    filters.push(`(CAST(child.parent_id AS TEXT) ILIKE $${params.length} OR COALESCE(parent.node_title, '') ILIKE $${params.length})`)
+  }
+  params.push(limit)
+  const whereSql = filters.length > 0 ? `WHERE ${filters.join(' AND ')}` : ''
+  try {
+    const result = await pool.query(
+      `
+      SELECT
+        child.id,
+        child.parent_id AS "parentId",
+        child.node_title AS "nodeName",
+        child.node_level AS "nodeLevel",
+        COALESCE(NULLIF(child.node_url, ''), child.source_url) AS "sourceUrl",
+        child.source_url AS "sourceSiteUrl",
+        child.node_url AS "nodeUrl",
+        child.synced_supplier_count AS "syncedSupplierCount",
+        TO_CHAR(child.synced_at, 'YYYY-MM-DD HH24:MI:SS') AS "syncedAt",
+        parent.node_title AS "parentName",
+        TO_CHAR(child.updated_at, 'YYYY-MM-DD HH24:MI:SS') AS "updatedAt"
+      FROM ${gasSupplyChainNodeTable} child
+      LEFT JOIN ${gasSupplyChainNodeTable} parent ON parent.id = child.parent_id
+      ${whereSql}
+      ORDER BY child.node_level ASC, child.id ASC
+      LIMIT $${params.length}
+      `,
+      params,
+    )
+    return res.json({ code: 200, message: 'success', data: result.rows })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `查询 GAS 供应链记录失败: ${error.message}`, data: null })
+  }
+})
+
+app.get('/api/gas-supply-chain/records/:id', authMiddleware, async (req, res) => {
+  const id = Number(req.params.id)
+  if (!Number.isInteger(id) || id <= 0) {
+    return res.status(400).json({ code: 400, message: '无效记录ID', data: null })
+  }
+  try {
+    const result = await pool.query(
+      `
+      SELECT
+        child.id,
+        child.parent_id AS "parentId",
+        child.node_title AS "nodeName",
+        child.node_level AS "nodeLevel",
+        COALESCE(NULLIF(child.node_url, ''), child.source_url) AS "sourceUrl",
+        child.source_url AS "sourceSiteUrl",
+        child.node_url AS "nodeUrl",
+        child.synced_supplier_count AS "syncedSupplierCount",
+        TO_CHAR(child.synced_at, 'YYYY-MM-DD HH24:MI:SS') AS "syncedAt",
+        parent.node_title AS "parentName",
+        TO_CHAR(child.created_at, 'YYYY-MM-DD HH24:MI:SS') AS "createdAt",
+        TO_CHAR(child.updated_at, 'YYYY-MM-DD HH24:MI:SS') AS "updatedAt"
+      FROM ${gasSupplyChainNodeTable} child
+      LEFT JOIN ${gasSupplyChainNodeTable} parent ON parent.id = child.parent_id
+      WHERE child.id = $1
+      LIMIT 1
+      `,
+      [id],
+    )
+    if (result.rowCount === 0) {
+      return res.status(404).json({ code: 404, message: '记录不存在', data: null })
+    }
+    return res.json({ code: 200, message: 'success', data: result.rows[0] })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `查询 GAS 供应链详情失败: ${error.message}`, data: null })
+  }
+})
+
+app.post('/api/gas-supply-chain/records', authMiddleware, async (req, res) => {
+  const nodeName = toText(req.body?.nodeName)
+  const parentIdRaw = req.body?.parentId
+  const parentId = parentIdRaw === null || parentIdRaw === '' || typeof parentIdRaw === 'undefined' ? null : Number(parentIdRaw)
+  const nodeLevel = Number(req.body?.nodeLevel || 1)
+  const sourceUrl = toText(req.body?.sourceUrl)
+  const syncedSupplierCount = Math.max(0, Number(req.body?.syncedSupplierCount || 0))
+  if (!nodeName) {
+    return res.status(400).json({ code: 400, message: '节点名称不能为空', data: null })
+  }
+  if (parentId !== null && (!Number.isInteger(parentId) || parentId <= 0)) {
+    return res.status(400).json({ code: 400, message: 'parentId 必须为空或正整数', data: null })
+  }
+  if (!Number.isInteger(nodeLevel) || nodeLevel < 1 || nodeLevel > 5) {
+    return res.status(400).json({ code: 400, message: '节点层级仅支持 1-5 级', data: null })
+  }
+  try {
+    const created = await pool.query(
+      `
+      INSERT INTO ${gasSupplyChainNodeTable}
+      (parent_id, node_level, node_title, source_url, node_url, synced_supplier_count, synced_at, updated_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+      RETURNING id
+      `,
+      [parentId, nodeLevel, nodeName, sourceUrl, sourceUrl, syncedSupplierCount, syncedSupplierCount > 0 ? new Date().toISOString() : null],
+    )
+    return res.json({ code: 200, message: 'created', data: { id: String(created.rows[0].id) } })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `新增 GAS 供应链失败: ${error.message}`, data: null })
+  }
+})
+
+app.put('/api/gas-supply-chain/records/:id', authMiddleware, async (req, res) => {
+  const id = Number(req.params.id)
+  if (!Number.isInteger(id) || id <= 0) {
+    return res.status(400).json({ code: 400, message: '无效记录ID', data: null })
+  }
+  const payload = req.body || {}
+  const setClauses = []
+  const params = []
+  if (Object.prototype.hasOwnProperty.call(payload, 'nodeName')) {
+    params.push(toText(payload.nodeName))
+    setClauses.push(`node_title = $${params.length}`)
+  }
+  if (Object.prototype.hasOwnProperty.call(payload, 'parentId')) {
+    const parentIdRaw = payload.parentId
+    const parentId = parentIdRaw === null || parentIdRaw === '' || typeof parentIdRaw === 'undefined' ? null : Number(parentIdRaw)
+    if (parentId !== null && (!Number.isInteger(parentId) || parentId <= 0)) {
+      return res.status(400).json({ code: 400, message: 'parentId 必须为空或正整数', data: null })
+    }
+    params.push(parentId)
+    setClauses.push(`parent_id = $${params.length}`)
+  }
+  if (Object.prototype.hasOwnProperty.call(payload, 'nodeLevel')) {
+    const nodeLevel = Number(payload.nodeLevel)
+    if (!Number.isInteger(nodeLevel) || nodeLevel < 1 || nodeLevel > 5) {
+      return res.status(400).json({ code: 400, message: '节点层级仅支持 1-5 级', data: null })
+    }
+    params.push(nodeLevel)
+    setClauses.push(`node_level = $${params.length}`)
+  }
+  if (Object.prototype.hasOwnProperty.call(payload, 'sourceUrl')) {
+    params.push(toText(payload.sourceUrl))
+    setClauses.push(`source_url = $${params.length}`)
+    params.push(toText(payload.sourceUrl))
+    setClauses.push(`node_url = $${params.length}`)
+  }
+  if (Object.prototype.hasOwnProperty.call(payload, 'syncedSupplierCount')) {
+    const count = Math.max(0, Number(payload.syncedSupplierCount || 0))
+    params.push(count)
+    setClauses.push(`synced_supplier_count = $${params.length}`)
+    params.push(count > 0 ? new Date().toISOString() : null)
+    setClauses.push(`synced_at = $${params.length}`)
+  }
+  if (setClauses.length === 0) {
+    return res.status(400).json({ code: 400, message: '没有可更新字段', data: null })
+  }
+  setClauses.push('updated_at = NOW()')
+  params.push(id)
+  try {
+    const updated = await pool.query(
+      `UPDATE ${gasSupplyChainNodeTable} SET ${setClauses.join(', ')} WHERE id = $${params.length} RETURNING id`,
+      params,
+    )
+    if (updated.rowCount === 0) {
+      return res.status(404).json({ code: 404, message: '记录不存在', data: null })
+    }
+    return res.json({ code: 200, message: 'updated', data: { id: String(id) } })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `更新 GAS 供应链失败: ${error.message}`, data: null })
+  }
+})
+
+app.delete('/api/gas-supply-chain/records/item/:id', authMiddleware, async (req, res) => {
+  const id = Number(req.params.id)
+  if (!Number.isInteger(id) || id <= 0) {
+    return res.status(400).json({ code: 400, message: '无效记录ID', data: null })
+  }
+  try {
+    const deleted = await pool.query(`DELETE FROM ${gasSupplyChainNodeTable} WHERE id = $1 RETURNING id`, [id])
+    if (deleted.rowCount === 0) {
+      return res.status(404).json({ code: 404, message: '记录不存在', data: null })
+    }
+    return res.json({ code: 200, message: 'deleted', data: { id: String(id) } })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `删除 GAS 供应链失败: ${error.message}`, data: null })
+  }
+})
+
+app.delete('/api/gas-supply-chain/records/batch-delete', authMiddleware, async (req, res) => {
+  const ids = Array.isArray(req.body?.ids)
+    ? req.body.ids.map((item) => Number(item)).filter((item) => Number.isInteger(item) && item > 0)
+    : []
+  if (ids.length === 0) {
+    return res.status(400).json({ code: 400, message: '请提供有效 ids', data: null })
+  }
+  try {
+    const deleted = await pool.query(
+      `DELETE FROM ${gasSupplyChainNodeTable} WHERE id = ANY($1::bigint[]) RETURNING id`,
+      [ids],
+    )
+    return res.json({ code: 200, message: 'batch_deleted', data: { deletedCount: deleted.rowCount || 0 } })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `批量删除 GAS 供应链失败: ${error.message}`, data: null })
+  }
+})
+
+app.delete('/api/gas-supply-chain/clear-all', authMiddleware, async (_req, res) => {
+  try {
+    const deleted = await pool.query(`DELETE FROM ${gasSupplyChainNodeTable} RETURNING id`)
+    return res.json({ code: 200, message: 'cleared', data: { deletedCount: deleted.rowCount || 0 } })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `清空 GAS 供应链失败: ${error.message}`, data: null })
+  }
+})
+
+app.post('/api/gas-supply-chain/sync-tasks', authMiddleware, async (req, res) => {
+  try {
+    const urlsText = toText(req.body?.urlsText)
+    const urls = parseUrlText(urlsText).filter((item) => {
+      try {
+        const parsed = new URL(item)
+        return parsed.hostname.toLowerCase() === 'i.gasgoo.com'
+      } catch {
+        return false
+      }
+    })
+    const normalizedUrls = urls.length > 0 ? [...new Set(urls)] : ['https://i.gasgoo.com/']
+    const sourceUrl = normalizedUrls[0]
+    const model = toText(req.body?.model) || codexModelOptions[0]
+    const skill = 'web-access'
+    const requestedMode = toText(req.body?.mode || 'full').toLowerCase()
+    const mode = requestedMode === 'incremental' ? 'incremental' : 'full'
+    const localExtractorCommand = ''
+    const localExtractorArgs = []
+    const localExtractorCwd = ''
+    const localExtractorTimeoutMs = Math.max(5000, Number(gasSyncLocalExtractTimeoutMsDefault || 180000))
+    const taskId = createGasSupplyChainTaskId()
+    const task = {
+      taskId,
+      sourceUrl,
+      model,
+      skill,
+      mode,
+      urls: normalizedUrls,
+      localExtractorCommand,
+      localExtractorArgs,
+      localExtractorCwd,
+      localExtractorTimeoutMs,
+      status: 'pending',
+      progress: 0,
+      totalUrls: normalizedUrls.length,
+      processedUrls: 0,
+      totalRows: 0,
+      estimatedTotalRows: 0,
+      successRows: 0,
+      failedRows: 0,
+      runLogs: [],
+      errorMessage: '',
+      fileName: '',
+      filePath: '',
+      downloadUrl: '',
+      records: [],
+      imported: false,
+      importSummary: null,
+      cancelRequested: false,
+      createdAt: new Date().toISOString(),
+      startedAt: null,
+      endedAt: null,
+    }
+    gasSupplyChainTaskStore.set(taskId, task)
+    schedulePersistGasSupplyChainTaskStore()
+    void runGasSupplyChainSyncTask(task).catch((error) => {
+      task.status = 'failed'
+      task.errorMessage = error.message || '任务执行失败'
+      task.progress = 100
+      task.endedAt = new Date().toISOString()
+      const nowText = () => new Date().toLocaleString('zh-CN', { hour12: false })
+      task.runLogs.push(`${nowText()} | 执行失败：${task.errorMessage}`)
+      schedulePersistGasSupplyChainTaskStore()
+    })
+    return res.json({
+      code: 200,
+      message: 'created',
+      data: {
+        ...normalizeGasSupplyChainTask(task),
+        resolvedUrls: normalizedUrls,
+        resolvedUrlCount: normalizedUrls.length,
+      },
+    })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `创建 GAS 同步任务失败: ${error.message}`, data: null })
+  }
+})
+
+app.get('/api/gas-supply-chain/sync-tasks/:taskId', authMiddleware, (req, res) => {
+  const taskId = String(req.params.taskId || '').trim()
+  const task = gasSupplyChainTaskStore.get(taskId)
+  if (!task) {
+    return res.status(404).json({ code: 404, message: '任务不存在', data: null })
+  }
+  return res.json({ code: 200, message: 'success', data: normalizeGasSupplyChainTask(task) })
+})
+
+app.post('/api/gas-supply-chain/sync-tasks/:taskId/cancel', authMiddleware, (req, res) => {
+  const taskId = String(req.params.taskId || '').trim()
+  const task = gasSupplyChainTaskStore.get(taskId)
+  if (!task) {
+    return res.status(404).json({ code: 404, message: '任务不存在', data: null })
+  }
+  if (task.status === 'done' || task.status === 'failed' || task.status === 'cancelled') {
+    return res.json({ code: 200, message: 'already_finished', data: normalizeGasSupplyChainTask(task) })
+  }
+  task.cancelRequested = true
+  task.status = 'cancelling'
+  const nowText = () => new Date().toLocaleString('zh-CN', { hour12: false })
+  task.runLogs.push(`${nowText()} | 收到取消指令，正在结束任务...`)
+  schedulePersistGasSupplyChainTaskStore()
+  return res.json({ code: 200, message: 'cancel_requested', data: normalizeGasSupplyChainTask(task) })
+})
+
+app.post('/api/gas-supply-chain/sync-tasks/:taskId/import', authMiddleware, async (req, res) => {
+  const taskId = String(req.params.taskId || '').trim()
+  const task = gasSupplyChainTaskStore.get(taskId)
+  if (!task) {
+    return res.status(404).json({ code: 404, message: '任务不存在', data: null })
+  }
+  if (task.status !== 'done') {
+    return res.status(400).json({ code: 400, message: '任务尚未完成，不能入库', data: null })
+  }
+  try {
+    let records = Array.isArray(task.records) ? task.records : []
+    if (records.length === 0 && task.fileName) {
+      const csvPath = path.join(crawlExportDir, path.basename(task.fileName))
+      const csvText = await fs.readFile(csvPath, 'utf8')
+      records = parseCsvObjects(csvText).map((item) => ({
+        sourceUrl: toText(item.source_url),
+        pageUrl: toText(item.page_url),
+        model: toText(item.model) || task.model,
+        skill: toText(item.skill) || task.skill,
+        mode: toText(item.mode) || task.mode,
+        nodeLevel: Number(item.node_level || 0),
+        nodeCode: toText(item.node_code),
+        nodeTitle: toText(item.node_title),
+        nodeUrl: toText(item.node_url),
+        parentCode: toText(item.parent_code),
+        parentTitle: toText(item.parent_title),
+        parentUrl: toText(item.parent_url),
+        level1Code: toText(item.level1_code),
+        level1Title: toText(item.level1_title),
+        level1Url: toText(item.level1_url),
+        level2Code: toText(item.level2_code),
+        level2Title: toText(item.level2_title),
+        level2Url: toText(item.level2_url),
+        level3Code: toText(item.level3_code),
+        level3Title: toText(item.level3_title),
+        level3Url: toText(item.level3_url),
+        lineage: toText(item.lineage),
+        status: toText(item.status),
+        errorMessage: toText(item.error_message),
+      }))
+    }
+    const validRecords = records.filter((item) => Number(item.nodeLevel) >= 1 && Number(item.nodeLevel) <= 3 && toText(item.nodeTitle))
+    const importSummary = await importGasSupplyChainTaskRows(validRecords, task.mode || 'full')
+    task.imported = true
+    task.importSummary = importSummary
+    schedulePersistGasSupplyChainTaskStore()
+    return res.json({ code: 200, message: 'imported', data: importSummary })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `GAS 供应链入库失败: ${error.message}`, data: null })
+  }
+})
+
+app.post('/api/gas-supply-chain/sync-import', authMiddleware, async (req, res) => {
+  const taskId = toText(req.body?.taskId)
+  if (!taskId) {
+    return res.status(400).json({ code: 400, message: '缺少 taskId', data: null })
+  }
+  req.params.taskId = taskId
+  return app._router.handle(req, res, () => {})
 })
 
 app.get('/api/stocks/overview', authMiddleware, async (req, res) => {

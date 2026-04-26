@@ -87,6 +87,14 @@ body {
   background: linear-gradient(145deg, #3b82f6, #2563eb);
 }
 
+.brand-block .ant-space {
+  align-items: flex-start;
+}
+
+.brand-block .ant-typography {
+  line-height: 1.35;
+}
+
 .muted {
   color: var(--text-subtle) !important;
 }
@@ -107,6 +115,10 @@ body {
   gap: 12px;
 }
 
+.app-header-row .ant-space {
+  row-gap: 8px;
+}
+
 .app-header-title-wrap .ant-typography {
   color: var(--text-main) !important;
 }
@@ -122,6 +134,10 @@ body {
 
 .app-content {
   margin: 18px;
+}
+
+.ant-modal .ant-checkbox-wrapper {
+  width: 100%;
 }
 
 .app-content-session {
@@ -209,6 +225,57 @@ body {
 
 .app-data-table .ant-table-tbody > tr:hover > td {
   background: rgba(59, 130, 246, 0.08) !important;
+}
+
+.app-data-table .ant-table-cell {
+  white-space: normal;
+  word-break: break-word;
+}
+
+.gas-supply-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.gas-supply-table .ant-table-cell {
+  padding-inline: 8px;
+}
+
+.gas-supply-table .ant-table-tbody > tr > td {
+  vertical-align: top;
+}
+
+.gas-supply-table .ant-table-thead > tr > th.resizable-table-header {
+  position: relative;
+  user-select: none;
+}
+
+.resizable-table-header-inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+}
+
+.resizable-table-handle {
+  width: 10px;
+  min-width: 10px;
+  align-self: stretch;
+  cursor: col-resize;
+  position: relative;
+}
+
+.resizable-table-handle::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  left: 4px;
+  width: 2px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.8);
 }
 
 .ant-input,
