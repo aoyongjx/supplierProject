@@ -125,3 +125,24 @@ export async function clearAllGasSupplierProfiles() {
   const result = await parseJson(response)
   return result.data
 }
+
+export async function fetchGasSupplierPortraitSettings() {
+  const response = await requestWithFallback('/api/gas-supplier-portrait-settings', {
+    headers: buildAuthHeaders(),
+  })
+  const result = await parseJson(response)
+  return result.data ?? {}
+}
+
+export async function saveGasSupplierPortraitSettings(payload) {
+  const response = await requestWithFallback('/api/gas-supplier-portrait-settings', {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      ...buildAuthHeaders(),
+    },
+    body: JSON.stringify(payload || {}),
+  })
+  const result = await parseJson(response)
+  return result.data ?? {}
+}

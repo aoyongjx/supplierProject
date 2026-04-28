@@ -57,6 +57,8 @@ export const GAS_PORTRAIT_PRESETS = {
       salesYi: { good: 20, mid: 5 },
       certCount: { good: 3, mid: 1 },
       oemCount: { good: 4, mid: 1 },
+      productCaseCount: { good: 10, mid: 3 },
+      equipmentCount: { good: 12, mid: 4 },
       exportYi: { good: 10, mid: 2 },
       exportCountries: { good: 8, mid: 3 },
       patentCount: { good: 50, mid: 10 },
@@ -65,6 +67,8 @@ export const GAS_PORTRAIT_PRESETS = {
       tradeCreditCount: { good: 8, mid: 2 },
       licenseCount: { good: 6, mid: 2 },
       gsLicenseCount: { good: 5, mid: 2 },
+      insuredCount: { good: 500, mid: 100 },
+      registeredCapitalYi: { good: 10, mid: 2 },
       courtCount: { high: 5, mid: 2 },
       industrialFilledRatio: { good: 0.8, mid: 0.5 },
     },
@@ -79,6 +83,8 @@ export const GAS_PORTRAIT_PRESETS = {
       salesYi: { good: 15, mid: 3 },
       certCount: { good: 4, mid: 2 },
       oemCount: { good: 3, mid: 1 },
+      productCaseCount: { good: 10, mid: 3 },
+      equipmentCount: { good: 12, mid: 4 },
       exportYi: { good: 8, mid: 1.5 },
       exportCountries: { good: 6, mid: 2 },
       patentCount: { good: 35, mid: 8 },
@@ -87,6 +93,8 @@ export const GAS_PORTRAIT_PRESETS = {
       tradeCreditCount: { good: 6, mid: 2 },
       licenseCount: { good: 8, mid: 3 },
       gsLicenseCount: { good: 6, mid: 2 },
+      insuredCount: { good: 500, mid: 100 },
+      registeredCapitalYi: { good: 10, mid: 2 },
       courtCount: { high: 3, mid: 1 },
       industrialFilledRatio: { good: 0.85, mid: 0.6 },
     },
@@ -101,6 +109,8 @@ export const GAS_PORTRAIT_PRESETS = {
       salesYi: { good: 10, mid: 2 },
       certCount: { good: 2, mid: 1 },
       oemCount: { good: 5, mid: 2 },
+      productCaseCount: { good: 10, mid: 3 },
+      equipmentCount: { good: 12, mid: 4 },
       exportYi: { good: 6, mid: 1 },
       exportCountries: { good: 10, mid: 4 },
       patentCount: { good: 70, mid: 15 },
@@ -109,6 +119,8 @@ export const GAS_PORTRAIT_PRESETS = {
       tradeCreditCount: { good: 10, mid: 3 },
       licenseCount: { good: 5, mid: 2 },
       gsLicenseCount: { good: 4, mid: 1 },
+      insuredCount: { good: 500, mid: 100 },
+      registeredCapitalYi: { good: 10, mid: 2 },
       courtCount: { high: 6, mid: 2 },
       industrialFilledRatio: { good: 0.75, mid: 0.45 },
     },
@@ -143,12 +155,30 @@ export function readPortraitSettings() {
       patentCount: { ...preset.threshold.patentCount, ...(saved?.threshold?.patentCount || {}) },
       financingCount: { ...preset.threshold.financingCount, ...(saved?.threshold?.financingCount || {}) },
       softCount: { ...preset.threshold.softCount, ...(saved?.threshold?.softCount || {}) },
+      productCaseCount: { ...preset.threshold.productCaseCount, ...(saved?.threshold?.productCaseCount || {}) },
+      equipmentCount: { ...preset.threshold.equipmentCount, ...(saved?.threshold?.equipmentCount || {}) },
+      insuredCount: { ...preset.threshold.insuredCount, ...(saved?.threshold?.insuredCount || {}) },
+      registeredCapitalYi: { ...preset.threshold.registeredCapitalYi, ...(saved?.threshold?.registeredCapitalYi || {}) },
       courtCount: { ...preset.threshold.courtCount, ...(saved?.threshold?.courtCount || {}) },
     }
-    return { presetKey, weights, dimensionWeights, threshold }
+    return {
+      presetKey,
+      weights,
+      dimensionWeights,
+      threshold,
+      thresholdByPreset: saved?.thresholdByPreset || {},
+      fieldWeightsByPreset: saved?.fieldWeightsByPreset || {},
+    }
   } catch {
     const preset = GAS_PORTRAIT_PRESETS.balanced
-    return { presetKey: 'balanced', weights: preset.weights, dimensionWeights: preset.dimensionWeights, threshold: preset.threshold }
+    return {
+      presetKey: 'balanced',
+      weights: preset.weights,
+      dimensionWeights: preset.dimensionWeights,
+      threshold: preset.threshold,
+      thresholdByPreset: {},
+      fieldWeightsByPreset: {},
+    }
   }
 }
 
@@ -161,9 +191,18 @@ export function savePortraitSettings(input = {}) {
     weights,
     dimensionWeights: input?.dimensionWeights || preset.dimensionWeights,
     threshold: input?.threshold || preset.threshold,
+    thresholdByPreset: input?.thresholdByPreset || {},
+    fieldWeightsByPreset: input?.fieldWeightsByPreset || {},
   }
   localStorage.setItem(GAS_PORTRAIT_SETTING_STORAGE_KEY, JSON.stringify(saved))
-  return { presetKey, weights, dimensionWeights: saved.dimensionWeights, threshold: saved.threshold }
+  return {
+    presetKey,
+    weights,
+    dimensionWeights: saved.dimensionWeights,
+    threshold: saved.threshold,
+    thresholdByPreset: saved.thresholdByPreset,
+    fieldWeightsByPreset: saved.fieldWeightsByPreset,
+  }
 }
 
 export function buildGasSupplierPortrait(profile = {}, settings = {}) {
@@ -210,16 +249,16 @@ export function buildGasSupplierPortrait(profile = {}, settings = {}) {
     {
       key: 'c',
       code: '配套匹配',
-      quality: clampScore((scoreByThreshold(productCases.length, { good: 6, mid: 2 }) + scoreByThreshold(certificates.length, t.certCount) + scoreByThreshold(equipments.length, { good: 10, mid: 3 })) / 3),
-      risk: clampScore((scoreByThreshold(certificates.length, t.certCount) + scoreByThreshold(equipments.length, { good: 8, mid: 2 })) / 2),
-      activity: clampScore((scoreByThreshold(productCases.length, { good: 10, mid: 3 }) + scoreByThreshold(equipments.length, { good: 12, mid: 4 })) / 2),
+      quality: clampScore((scoreByThreshold(productCases.length, t.productCaseCount) + scoreByThreshold(certificates.length, t.certCount) + scoreByThreshold(equipments.length, t.equipmentCount)) / 3),
+      risk: clampScore((scoreByThreshold(certificates.length, t.certCount) + scoreByThreshold(equipments.length, t.equipmentCount)) / 2),
+      activity: clampScore((scoreByThreshold(productCases.length, t.productCaseCount) + scoreByThreshold(equipments.length, t.equipmentCount)) / 2),
     },
     {
       key: 'd',
       code: '经营基本盘',
       quality: clampScore(scoreByThreshold(industrialFilledRatio, t.industrialFilledRatio)),
       risk: clampScore((industrial['经营状态'] === '存续' ? 95 : 55) + (asText(industrial['统一社会信用代码']) ? 5 : -20)),
-      activity: clampScore((scoreByThreshold(extractNumber(industrial['参保人数']), { good: 500, mid: 100 }) + scoreByThreshold(parseMoneyYi(industrial['注册资本']), { good: 10, mid: 2 })) / 2),
+      activity: clampScore((scoreByThreshold(extractNumber(industrial['参保人数']), t.insuredCount) + scoreByThreshold(parseMoneyYi(industrial['注册资本']), t.registeredCapitalYi)) / 2),
     },
     {
       key: 'e',

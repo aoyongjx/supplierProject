@@ -499,6 +499,7 @@ const supplierProfileEquipmentTable = `"${schemaName}"."supplier_profile_equipme
 const supplierOemDictTable = `"${schemaName}"."supplier_oem_dict"`
 const supplierCountryDictTable = `"${schemaName}"."supplier_country_dict"`
 const supplierCertDictTable = `"${schemaName}"."supplier_certification_dict"`
+const gasSupplierPortraitSettingTable = `"${schemaName}"."gas_supplier_portrait_setting"`
 const chatSessionTable = `"${schemaName}"."chat_session"`
 const chatMessageTable = `"${schemaName}"."chat_message"`
 const crawlExportDir = path.join(process.cwd(), 'crawl_exports')
@@ -1030,6 +1031,12 @@ async function initDatabase() {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
+    CREATE TABLE IF NOT EXISTS ${gasSupplierPortraitSettingTable} (
+      setting_key VARCHAR(64) PRIMARY KEY,
+      settings_json JSONB NOT NULL DEFAULT '{}',
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
     CREATE INDEX IF NOT EXISTS idx_crawl_info_source_file ON ${crawlInfoTable}(source_file, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_crawl_info_business_entity ON ${crawlInfoTable}(business_entity);
     CREATE INDEX IF NOT EXISTS idx_supply_chain_node_parent ON ${supplyChainNodeTable}(parent_id, node_level);
@@ -1062,6 +1069,7 @@ async function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_supplier_oem_dict_sort ON ${supplierOemDictTable}(sort_order ASC, id ASC);
     CREATE INDEX IF NOT EXISTS idx_supplier_country_dict_sort ON ${supplierCountryDictTable}(sort_order ASC, id ASC);
     CREATE INDEX IF NOT EXISTS idx_supplier_cert_dict_sort ON ${supplierCertDictTable}(sort_order ASC, id ASC);
+    CREATE INDEX IF NOT EXISTS idx_gas_supplier_portrait_setting_updated_at ON ${gasSupplierPortraitSettingTable}(updated_at DESC);
     DROP INDEX IF EXISTS idx_supply_chain_node_unique;
     CREATE UNIQUE INDEX IF NOT EXISTS idx_supply_chain_node_unique
       ON ${supplyChainNodeTable}(COALESCE(parent_id, 0), node_level, node_title, source_url);
@@ -13716,6 +13724,37 @@ app.post('/api/gas-supply-chain/sync-import', authMiddleware, async (req, res) =
   }
   req.params.taskId = taskId
   return app._router.handle(req, res, () => {})
+})
+
+app.get('/api/gas-supplier-portrait-settings', authMiddleware, async (_req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT settings_json AS "settingsJson" FROM ${gasSupplierPortraitSettingTable} WHERE setting_key = $1 LIMIT 1`,
+      ['default'],
+    )
+    const settings = result.rows[0]?.settingsJson || {}
+    return res.json({ code: 200, message: 'success', data: settings })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `读取评分设置失败: ${error.message}`, data: null })
+  }
+})
+
+app.put('/api/gas-supplier-portrait-settings', authMiddleware, async (req, res) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {}
+    await pool.query(
+      `
+      INSERT INTO ${gasSupplierPortraitSettingTable} (setting_key, settings_json, updated_at)
+      VALUES ($1, $2::jsonb, NOW())
+      ON CONFLICT (setting_key)
+      DO UPDATE SET settings_json = EXCLUDED.settings_json, updated_at = NOW()
+      `,
+      ['default', JSON.stringify(body || {})],
+    )
+    return res.json({ code: 200, message: 'success', data: body })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `保存评分设置失败: ${error.message}`, data: null })
+  }
 })
 
 app.get('/api/stocks/overview', authMiddleware, async (req, res) => {

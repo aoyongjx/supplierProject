@@ -17,3 +17,12 @@ CREATE INDEX IF NOT EXISTS idx_asset_inventory_updated_at
 
 CREATE INDEX IF NOT EXISTS idx_asset_inventory_status
   ON "aoyong"."asset_inventory"(status);
+
+CREATE TABLE IF NOT EXISTS "aoyong"."gas_supplier_portrait_setting" (
+  setting_key VARCHAR(64) PRIMARY KEY,
+  settings_json JSONB NOT NULL DEFAULT '{}',
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_gas_supplier_portrait_setting_updated_at
+  ON "aoyong"."gas_supplier_portrait_setting"(updated_at DESC);

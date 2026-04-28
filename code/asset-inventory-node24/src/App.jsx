@@ -44,6 +44,7 @@ import SupplierProfileFormPage from './pages/SupplierProfileFormPage'
 import SupplierProfileListPage from './pages/SupplierProfileListPage'
 import SupplyChainPage from './pages/SupplyChainPage'
 import SupplyChainFormPage from './pages/SupplyChainFormPage'
+import GasSupplierPortraitWorkspacePage from './pages/GasSupplierPortraitWorkspacePage'
 import { fetchRecentSessions } from './api/sessionApi'
 
 const { Header, Sider, Content } = Layout
@@ -89,7 +90,7 @@ const baseMenuGroups = [
       { id: 'gas-supply-chain', key: '/gas-supply-chain', label: 'GAS供应链' },
       { id: 'gas-suppliers-list', key: '/gas-suppliers', label: 'GAS供应商' },
       { id: 'gas-supplier-profiles', key: '/gas-supplier-profiles', label: 'GAS供应商档案' },
-      { id: 'gas-supplier-portrait', key: '/gas-supplier-portrait', label: 'GAS供应商画像' },
+      { id: 'gas-supplier-portrait', key: '/users', label: 'GAS供应商画像' },
       { id: 'gas-oems', key: '/gas-oems', label: 'GAS整车厂' },
       { id: 'gas-industry-map', key: '/gas-industry-map', label: 'GAS产业图谱' },
     ],
@@ -194,7 +195,7 @@ function getOpenMenuKeys(pathname) {
   if (pathname.startsWith('/supply-chain') || pathname.startsWith('/suppliers') || pathname.startsWith('/supplier-profiles')) {
     return ['gys-suppliers-menu']
   }
-  if (pathname.startsWith('/gas-supply-chain') || pathname.startsWith('/gas-suppliers') || pathname.startsWith('/gas-supplier-profiles') || pathname.startsWith('/gas-supplier-portrait') || pathname.startsWith('/gas-oems') || pathname.startsWith('/gas-industry-map')) {
+  if (pathname.startsWith('/gas-supply-chain') || pathname.startsWith('/gas-suppliers') || pathname.startsWith('/gas-supplier-profiles') || pathname.startsWith('/gas-supplier-portrait') || pathname.startsWith('/users') || pathname.startsWith('/gas-oems') || pathname.startsWith('/gas-industry-map')) {
     return ['gas-suppliers-menu']
   }
   if (pathname.startsWith('/sessions')) return ['sessions-menu']
@@ -248,6 +249,7 @@ function App() {
     if (location.pathname === '/gas-supplier-profiles/new' || /^\/gas-supplier-profiles\/\d+\/edit$/.test(location.pathname)) return '/gas-supplier-profiles'
     if (/^\/gas-supplier-profiles\/\d+$/.test(location.pathname)) return '/gas-supplier-profiles'
     if (location.pathname.startsWith('/gas-supplier-profiles')) return '/gas-supplier-profiles'
+    if (location.pathname.startsWith('/users')) return '/users'
     if (location.pathname.startsWith('/gas-suppliers')) return '/gas-suppliers'
     if (location.pathname.startsWith('/gas-supplier-portrait')) return '/gas-supplier-portrait'
     if (location.pathname.startsWith('/gas-oems')) return '/gas-oems'
@@ -292,6 +294,7 @@ function App() {
     if (/^\/gas-supplier-profiles\/\d+\/edit$/.test(location.pathname)) return { title: 'GAS供应商档案修改', breadcrumb: ['GAS供应商管理', 'GAS供应商档案', '修改'] }
     if (/^\/gas-supplier-profiles\/\d+$/.test(location.pathname)) return { title: 'GAS供应商档案查看', breadcrumb: ['GAS供应商管理', 'GAS供应商档案', '查看'] }
     if (location.pathname.startsWith('/gas-supplier-profiles')) return { title: 'GAS供应商档案', breadcrumb: ['GAS供应商管理', 'GAS供应商档案'] }
+    if (location.pathname.startsWith('/users')) return { title: 'GAS供应商画像', breadcrumb: ['GAS供应商管理', 'GAS供应商画像'] }
     if (location.pathname.startsWith('/gas-supplier-portrait')) return { title: 'GAS供应商画像', breadcrumb: ['GAS供应商管理', 'GAS供应商画像'] }
     if (location.pathname.startsWith('/gas-suppliers')) return { title: 'GAS供应商', breadcrumb: ['GAS供应商管理', 'GAS供应商'] }
     if (location.pathname.startsWith('/gas-oems')) return { title: 'GAS整车厂', breadcrumb: ['GAS供应商管理', 'GAS整车厂'] }
@@ -413,6 +416,7 @@ function App() {
               <Route path="/gas-supplier-profiles/new" element={<GasSupplierProfileFormPage />} />
               <Route path="/gas-supplier-profiles/:id" element={<GasSupplierProfileFormPage />} />
               <Route path="/gas-supplier-profiles/:id/edit" element={<GasSupplierProfileFormPage />} />
+              <Route path="/users" element={<GasSupplierPortraitWorkspacePage />} />
               <Route path="/gas-supplier-portrait" element={<GasSupplierPortraitPage />} />
               <Route path="/gas-oems" element={<GasOemListPage />} />
               <Route path="/gas-industry-map" element={<GASIndustryMapPage />} />
