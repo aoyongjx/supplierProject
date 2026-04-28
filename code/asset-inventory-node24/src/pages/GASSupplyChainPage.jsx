@@ -27,6 +27,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   cancelSupplierCrawlTask,
+  executeCrawlEnvActions,
   fetchSupplierCrawlTask,
   importSupplierCrawlTask,
   precheckCrawlEnvironment,
@@ -55,10 +56,14 @@ const MODE_OPTIONS = [
   { label: '全量', value: 'full' },
 ]
 const WEB_ACCESS_OPTION = [{ label: 'web-access', value: 'web-access' }]
-const DEFAULT_ENV_PRECHECK_STEPS = [
-  '确认后端服务已重启到最新版本，并可访问 /api/health。',
-  '确认 web-access 服务已启动，且 CDP 连接可用。',
-  '使用 Chrome 打开目标列表页并完成加载，再点击“检测环境”。',
+const DEFAULT_ENV_PRECHECK_STEPS = []
+const WEB_ACCESS_BOOTSTRAP_STEPS = [
+  'web-access 启动：',
+  'node "C:\\Users\\aoyon\\.codex\\skills\\web-access\\scripts\\check-deps.mjs"',
+  'curl.exe --noproxy "*" http://localhost:3456/targets',
+  'Chrome 保持打开 https://i.gasgoo.com/supplier/oem.html（不要关）。',
+  'Edge 打开系统页 http://localhost:5173/gas-oems。',
+  '点 同步 -> 01提交抓取。',
 ]
 const MIN_COLUMN_WIDTHS = {
   id: 64,
@@ -117,7 +122,7 @@ function normalizeEnvPrecheckPayload(payload = {}, fallbackError = '') {
       }))
       .filter((item) => item.message)
     : []
-  const steps = Array.isArray(payload?.steps) && payload.steps.length > 0
+  const steps = Array.isArray(payload?.steps)
     ? payload.steps.map((item) => String(item || '').trim()).filter(Boolean)
     : DEFAULT_ENV_PRECHECK_STEPS
   const ready = payload?.ready === true
@@ -155,6 +160,7 @@ function GASSupplyChainPage() {
   const [supplierTaskLoading, setSupplierTaskLoading] = useState(false)
   const [supplierImporting, setSupplierImporting] = useState(false)
   const [envPrecheckLoading, setEnvPrecheckLoading] = useState(false)
+  const [envExecuteLoading, setEnvExecuteLoading] = useState(false)
   const [envPrecheckResult, setEnvPrecheckResult] = useState(null)
   const [tablePage, setTablePage] = useState(1)
   const [tablePageSize, setTablePageSize] = useState(10)
@@ -312,10 +318,21 @@ function GASSupplyChainPage() {
     setSyncModalOpen(true)
   }
 
+  const resolveSupplierNodeUrl = (node) => {
+    return [node?.nodeUrl, node?.sourceUrl].find((item) => isMeaningfulUrl(item)) || ''
+  }
+
+  const resolveSupplierTargetUrl = (node, urlsText) => {
+    const nodeUrl = resolveSupplierNodeUrl(node)
+    if (nodeUrl) return nodeUrl
+    const typedUrls = parseUrlsText(urlsText)
+    return typedUrls[0] || ''
+  }
+
   const openSupplierModalByNode = (node) => {
-    const resolvedUrl = [node?.nodeUrl, node?.sourceUrl, GASGOO_DEFAULT_URL].find((item) => isMeaningfulUrl(item)) || GASGOO_DEFAULT_URL
+    const resolvedUrl = resolveSupplierNodeUrl(node)
     setSupplierNode(node || null)
-    setSupplierUrlsText(`${resolvedUrl}`)
+    setSupplierUrlsText(resolvedUrl ? `${resolvedUrl}` : '')
     setSupplierTask(null)
     setSupplierTaskLoading(false)
     setSupplierImporting(false)
@@ -475,9 +492,10 @@ function GASSupplyChainPage() {
   }
 
   const runSupplierEnvPrecheck = async ({ silentSuccess = false } = {}) => {
+    const targetUrl = resolveSupplierTargetUrl(supplierNode, supplierUrlsText)
     setEnvPrecheckLoading(true)
     try {
-      const raw = await precheckCrawlEnvironment({ skill: selectedSkill })
+      const raw = await precheckCrawlEnvironment({ skill: selectedSkill, targetUrl })
       const normalized = normalizeEnvPrecheckPayload(raw)
       setEnvPrecheckResult(normalized)
       if (normalized.ready) {
@@ -503,6 +521,46 @@ function GASSupplyChainPage() {
     }
   }
 
+  const runSupplierEnvExecute = async () => {
+    const targetUrl = resolveSupplierTargetUrl(supplierNode, supplierUrlsText)
+    if (!targetUrl) {
+      message.warning('当前节点未配置有效 URL，请先选择节点或填写 URL')
+      return
+    }
+    setEnvExecuteLoading(true)
+    try {
+      const result = await executeCrawlEnvActions({ skill: selectedSkill, targetUrl })
+      const actionLines = Array.isArray(result?.actions) ? result.actions : []
+      for (const action of actionLines) {
+        if (action?.success) {
+          message.success(String(action?.message || '执行成功'))
+        } else {
+          message.warning(String(action?.message || '执行失败'))
+        }
+      }
+      const normalized = normalizeEnvPrecheckPayload(result?.precheck || {})
+      setEnvPrecheckResult(normalized)
+      if (normalized.ready) {
+        message.success('执行完成，环境已就绪')
+      } else {
+        message.warning('执行完成，但环境仍未就绪，请继续按步骤处理')
+      }
+    } catch (error) {
+      const normalized = normalizeEnvPrecheckPayload(
+        {
+          ready: false,
+          checks: [{ name: 'execute-error', ready: false, message: `环境执行失败：${error.message || 'unknown error'}` }],
+          steps: DEFAULT_ENV_PRECHECK_STEPS,
+        },
+        '自动执行失败，请先按步骤处理后再抓取。',
+      )
+      setEnvPrecheckResult(normalized)
+      message.error(error.message || '执行失败')
+    } finally {
+      setEnvExecuteLoading(false)
+    }
+  }
+
   const submitSupplierCrawl = async () => {
     if (!supplierNode?.id) {
       message.warning('请先选择供应链节点')
@@ -512,33 +570,6 @@ function GASSupplyChainPage() {
     if (urls.length === 0) {
       message.warning('请填写至少一个有效 URL')
       return
-    }
-    const confirmContinueWhenEnvNotReady = (payload = {}) => new Promise((resolve) => {
-      const normalized = normalizeEnvPrecheckPayload(payload)
-      Modal.confirm({
-        title: '抓取环境未就绪',
-        content: (
-          <Space direction="vertical" size={6}>
-            <Text>{normalized.summary}</Text>
-            {normalized.checks.map((item, idx) => (
-              <Text key={`${item.name || 'check'}-${idx}`}>检查项：{item.message}</Text>
-            ))}
-            {normalized.steps.map((step, idx) => (
-              <Text key={`step-${idx}`}>{idx + 1}. {step}</Text>
-            ))}
-            <Text type="secondary">若你已完成环境准备，可点击“继续抓取”；否则请先处理再抓取。</Text>
-          </Space>
-        ),
-        okText: '继续抓取',
-        cancelText: '先去准备环境',
-        onOk: () => resolve(true),
-        onCancel: () => resolve(false),
-      })
-    })
-    const precheck = await runSupplierEnvPrecheck({ silentSuccess: true })
-    if (precheck && precheck.ready === false) {
-      const confirmed = await confirmContinueWhenEnvNotReady(precheck)
-      if (!confirmed) return
     }
     setSupplierTaskLoading(true)
     try {
@@ -576,10 +607,14 @@ function GASSupplyChainPage() {
     }
     setSupplierImporting(true)
     try {
-      const result = await importSupplierCrawlTask(supplierTask.taskId, { includeProfile: true, profileSource: 'gas' })
+      const result = await importSupplierCrawlTask(supplierTask.taskId, {
+        includeProfile: false,
+        profileSource: 'gas',
+        importTarget: 'gas-supplier',
+      })
       setSupplierTask((prev) => (prev ? { ...prev, imported: true, importSummary: result } : prev))
       message.success(
-        `入库完成：来源新建 ${result.inserted || 0} 条，来源覆盖 ${result.updated || 0} 条，档案新建 ${result.profileInserted || 0} 条，档案覆盖 ${result.profileUpdated || 0} 条，回写节点 ${result.gasSyncedNodeCount || 0} 个`,
+        `入库完成：新建 ${result.inserted || 0} 条，覆盖 ${result.updated || 0} 条，回写节点 ${result.gasSyncedNodeCount || 0} 个`,
       )
       await loadData()
     } catch (error) {
@@ -897,15 +932,15 @@ function GASSupplyChainPage() {
                   pageSize: tablePageSize,
                   total: filteredRecords.length,
                   showSizeChanger: true,
-                  pageSizeOptions: [10, 20, 50, 100],
+                  pageSizeOptions: ['10', '20', '50', '100'],
                   showTotal: (total, range) => `第 ${range[0]}-${range[1]} 条 / 共 ${total} 条`,
                   onChange: (page, pageSize) => {
-                    setTablePage(page)
-                    if (pageSize !== tablePageSize) setTablePageSize(pageSize)
+                    setTablePage(Number(page) || 1)
+                    setTablePageSize(Math.max(1, Number(pageSize) || 10))
                   },
                   onShowSizeChange: (_current, size) => {
                     setTablePage(1)
-                    setTablePageSize(size)
+                    setTablePageSize(Math.max(1, Number(size) || 10))
                   },
                   position: ['bottomRight'],
                 }}
@@ -962,6 +997,9 @@ function GASSupplyChainPage() {
             <Button loading={envPrecheckLoading} onClick={() => runSupplierEnvPrecheck()}>
               检测环境
             </Button>
+            <Button loading={envExecuteLoading} onClick={runSupplierEnvExecute}>
+              执行
+            </Button>
             {envPrecheckResult ? (
               <Tag color={envPrecheckResult.ready ? 'success' : 'warning'}>
                 {envPrecheckResult.ready ? '环境就绪' : '环境未就绪'}
@@ -977,12 +1015,16 @@ function GASSupplyChainPage() {
                 {envPrecheckResult.checks.map((item, idx) => (
                   <Text key={`${item.name || 'line'}-${idx}`}>检查项：{item.message}</Text>
                 ))}
-                {envPrecheckResult.steps.map((step, idx) => (
-                  <Text key={`env-step-${idx}`}>{idx + 1}. {step}</Text>
-                ))}
               </Space>
             </Card>
           ) : null}
+          <Card size="small">
+            <Space direction="vertical" size={4} style={{ width: '100%' }}>
+              {WEB_ACCESS_BOOTSTRAP_STEPS.map((line, idx) => (
+                <Text key={`bootstrap-${idx}`}>{line}</Text>
+              ))}
+            </Space>
+          </Card>
           <div>
             <Text className="muted">URL 信息（多行）</Text>
             <Input.TextArea rows={5} value={supplierUrlsText} onChange={(e) => setSupplierUrlsText(e.target.value)} placeholder="请输入 URL 列表" />
@@ -1008,7 +1050,7 @@ function GASSupplyChainPage() {
                 ) : null}
                 {supplierTask.importSummary ? (
                   <Text type="success">
-                    入库结果：来源新建 {supplierTask.importSummary.inserted || 0} 条，来源覆盖 {supplierTask.importSummary.updated || 0} 条，档案新建 {supplierTask.importSummary.profileInserted || 0} 条，档案覆盖 {supplierTask.importSummary.profileUpdated || 0} 条，回写节点 {supplierTask.importSummary.gasSyncedNodeCount || 0} 个
+                    入库结果：新建 {supplierTask.importSummary.inserted || 0} 条，覆盖 {supplierTask.importSummary.updated || 0} 条，回写节点 {supplierTask.importSummary.gasSyncedNodeCount || 0} 个
                   </Text>
                 ) : null}
                 <List

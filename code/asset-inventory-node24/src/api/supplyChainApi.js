@@ -190,6 +190,7 @@ export async function fetchCrawlSkills() {
 export async function precheckCrawlEnvironment(options = {}) {
   const query = new URLSearchParams()
   if (options?.skill) query.set('skill', String(options.skill))
+  if (options?.targetUrl) query.set('targetUrl', String(options.targetUrl))
   const response = await requestWithFallback(`/api/crawl/precheck?${query.toString()}`, {
     headers: buildAuthHeaders(),
   })
@@ -221,6 +222,59 @@ export async function precheckCrawlEnvironment(options = {}) {
   return payload.data || { ready: true, checks: [] }
 }
 
+export async function executeCrawlEnvActions(options = {}) {
+  const response = await requestWithFallback('/api/crawl/precheck/execute', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...buildAuthHeaders(),
+    },
+    body: JSON.stringify({
+      skill: options?.skill || '',
+      targetUrl: options?.targetUrl || '',
+    }),
+  })
+  const payload = await response.json().catch(() => ({}))
+  if (response.status === 404) {
+    return {
+      actions: [
+        {
+          name: 'execute-endpoint',
+          success: false,
+          message: '后端未提供 /api/crawl/precheck/execute（请重启后端到最新代码）',
+        },
+      ],
+      precheck: {
+        ready: false,
+        checks: [
+          {
+            name: 'execute-endpoint',
+            ready: false,
+            message: '环境执行接口不存在，无法自动启动服务',
+          },
+        ],
+        steps: [
+          '重启后端服务（Node）到最新版本。',
+          '确认 web-access 服务已启动，并保持可连接。',
+          '使用 Chrome 打开目标网页并完成加载后，点击“检测环境”。',
+        ],
+        hint: '自动执行接口不存在，当前无法自动修复环境。',
+      },
+    }
+  }
+  if (response.status === 401) {
+    clearTokens()
+    if (window.location.pathname !== '/login') {
+      window.location.replace('/login')
+    }
+    throw new Error(payload.message || '登录已失效，请重新登录')
+  }
+  if (!response.ok) {
+    throw new Error(payload.message || `请求失败（HTTP ${response.status}）`)
+  }
+  return payload.data || { actions: [], precheck: { ready: false, checks: [] } }
+}
+
 export async function createSupplierCrawlTask(nodeId, payload) {
   const response = await requestTaskWithDual(`/api/supply-chain/nodes/${encodeURIComponent(String(nodeId))}/supplier-crawl-tasks`, {
     method: 'POST',
@@ -245,6 +299,7 @@ export async function fetchSupplierCrawlTask(taskId) {
 export async function importSupplierCrawlTask(taskId, options = {}) {
   const includeProfile = options?.includeProfile === true
   const profileSource = typeof options?.profileSource === 'string' ? options.profileSource : ''
+  const importTarget = typeof options?.importTarget === 'string' ? options.importTarget : ''
   const response = await requestTaskWithDual(`/api/supplier-crawl-tasks/${encodeURIComponent(String(taskId))}/import`, {
     method: 'POST',
     headers: {
@@ -254,6 +309,7 @@ export async function importSupplierCrawlTask(taskId, options = {}) {
     body: JSON.stringify({
       includeProfile,
       profileSource,
+      importTarget,
     }),
   })
   const result = await parseJson(response)

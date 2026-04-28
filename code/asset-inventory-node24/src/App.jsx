@@ -24,8 +24,13 @@ import AnalyticsPage from './pages/AnalyticsPage'
 import AuthCallbackPage from './pages/AuthCallbackPage'
 import CrawlManagementPage from './pages/CrawlManagementPage'
 import GasOemListPage from './pages/GasOemListPage'
+import GasSupplierProfileFormPage from './pages/GasSupplierProfileFormPage'
+import GasSupplierProfileListPage from './pages/GasSupplierProfileListPage'
+import GasSupplierListPage from './pages/GasSupplierListPage'
 import GASSupplyChainPage from './pages/GASSupplyChainPage'
 import GASSupplyChainFormPage from './pages/GASSupplyChainFormPage'
+import GASIndustryMapPage from './pages/GASIndustryMapPage'
+import GasSupplierPortraitPage from './pages/GasSupplierPortraitPage'
 import HomePage from './pages/HomePage'
 import InventoryFormPage from './pages/InventoryFormPage'
 import InventoryListPage from './pages/InventoryListPage'
@@ -83,7 +88,10 @@ const baseMenuGroups = [
     children: [
       { id: 'gas-supply-chain', key: '/gas-supply-chain', label: 'GAS供应链' },
       { id: 'gas-suppliers-list', key: '/gas-suppliers', label: 'GAS供应商' },
+      { id: 'gas-supplier-profiles', key: '/gas-supplier-profiles', label: 'GAS供应商档案' },
+      { id: 'gas-supplier-portrait', key: '/gas-supplier-portrait', label: 'GAS供应商画像' },
       { id: 'gas-oems', key: '/gas-oems', label: 'GAS整车厂' },
+      { id: 'gas-industry-map', key: '/gas-industry-map', label: 'GAS产业图谱' },
     ],
   },
 ]
@@ -115,7 +123,10 @@ const menuPermissionSections = [
       { id: 'gas-suppliers', label: '显示一级菜单' },
       { id: 'gas-supply-chain', label: 'GAS供应链' },
       { id: 'gas-suppliers-list', label: 'GAS供应商' },
+      { id: 'gas-supplier-profiles', label: 'GAS供应商档案' },
+      { id: 'gas-supplier-portrait', label: 'GAS供应商画像' },
       { id: 'gas-oems', label: 'GAS整车厂' },
+      { id: 'gas-industry-map', label: 'GAS产业图谱' },
     ],
   },
 ]
@@ -130,6 +141,15 @@ function readVisibleMenuIds() {
     // Backward-compat migration: when new menu items are introduced, old local settings may hide them unintentionally.
     if (!next.has('gas-oems') && next.has('gas-suppliers')) {
       next.add('gas-oems')
+    }
+    if (!next.has('gas-supplier-profiles') && next.has('gas-suppliers')) {
+      next.add('gas-supplier-profiles')
+    }
+    if (!next.has('gas-industry-map') && next.has('gas-suppliers')) {
+      next.add('gas-industry-map')
+    }
+    if (!next.has('gas-supplier-portrait') && next.has('gas-suppliers')) {
+      next.add('gas-supplier-portrait')
     }
     return defaultVisibleMenuIds.filter((id) => next.has(id))
   } catch {
@@ -174,7 +194,7 @@ function getOpenMenuKeys(pathname) {
   if (pathname.startsWith('/supply-chain') || pathname.startsWith('/suppliers') || pathname.startsWith('/supplier-profiles')) {
     return ['gys-suppliers-menu']
   }
-  if (pathname.startsWith('/gas-supply-chain') || pathname.startsWith('/gas-suppliers') || pathname.startsWith('/gas-oems')) {
+  if (pathname.startsWith('/gas-supply-chain') || pathname.startsWith('/gas-suppliers') || pathname.startsWith('/gas-supplier-profiles') || pathname.startsWith('/gas-supplier-portrait') || pathname.startsWith('/gas-oems') || pathname.startsWith('/gas-industry-map')) {
     return ['gas-suppliers-menu']
   }
   if (pathname.startsWith('/sessions')) return ['sessions-menu']
@@ -225,8 +245,13 @@ function App() {
     if (/^\/supplier-profiles\/\d+$/.test(location.pathname)) return '/supplier-profiles'
     if (location.pathname.startsWith('/supplier-profiles')) return '/supplier-profiles'
     if (location.pathname.startsWith('/gas-supply-chain')) return '/gas-supply-chain'
+    if (location.pathname === '/gas-supplier-profiles/new' || /^\/gas-supplier-profiles\/\d+\/edit$/.test(location.pathname)) return '/gas-supplier-profiles'
+    if (/^\/gas-supplier-profiles\/\d+$/.test(location.pathname)) return '/gas-supplier-profiles'
+    if (location.pathname.startsWith('/gas-supplier-profiles')) return '/gas-supplier-profiles'
     if (location.pathname.startsWith('/gas-suppliers')) return '/gas-suppliers'
+    if (location.pathname.startsWith('/gas-supplier-portrait')) return '/gas-supplier-portrait'
     if (location.pathname.startsWith('/gas-oems')) return '/gas-oems'
+    if (location.pathname.startsWith('/gas-industry-map')) return '/gas-industry-map'
     if (location.pathname.startsWith('/sessions/new')) return '/sessions/new'
     if (/^\/sessions\/\d+$/.test(location.pathname)) return location.pathname
     if (location.pathname.startsWith('/sessions')) return '/sessions'
@@ -263,8 +288,14 @@ function App() {
     if (location.pathname === '/gas-supply-chain/new') return { title: 'GAS供应链新增', breadcrumb: ['GAS供应商管理', 'GAS供应链', '新增'] }
     if (/^\/gas-supply-chain\/\d+\/edit$/.test(location.pathname)) return { title: 'GAS供应链修改', breadcrumb: ['GAS供应商管理', 'GAS供应链', '修改'] }
     if (location.pathname.startsWith('/gas-supply-chain')) return { title: 'GAS供应链', breadcrumb: ['GAS供应商管理', 'GAS供应链'] }
+    if (location.pathname === '/gas-supplier-profiles/new') return { title: 'GAS供应商档案新增', breadcrumb: ['GAS供应商管理', 'GAS供应商档案', '新增'] }
+    if (/^\/gas-supplier-profiles\/\d+\/edit$/.test(location.pathname)) return { title: 'GAS供应商档案修改', breadcrumb: ['GAS供应商管理', 'GAS供应商档案', '修改'] }
+    if (/^\/gas-supplier-profiles\/\d+$/.test(location.pathname)) return { title: 'GAS供应商档案查看', breadcrumb: ['GAS供应商管理', 'GAS供应商档案', '查看'] }
+    if (location.pathname.startsWith('/gas-supplier-profiles')) return { title: 'GAS供应商档案', breadcrumb: ['GAS供应商管理', 'GAS供应商档案'] }
+    if (location.pathname.startsWith('/gas-supplier-portrait')) return { title: 'GAS供应商画像', breadcrumb: ['GAS供应商管理', 'GAS供应商画像'] }
     if (location.pathname.startsWith('/gas-suppliers')) return { title: 'GAS供应商', breadcrumb: ['GAS供应商管理', 'GAS供应商'] }
     if (location.pathname.startsWith('/gas-oems')) return { title: 'GAS整车厂', breadcrumb: ['GAS供应商管理', 'GAS整车厂'] }
+    if (location.pathname.startsWith('/gas-industry-map')) return { title: 'GAS产业图谱', breadcrumb: ['GAS供应商管理', 'GAS产业图谱'] }
     if (location.pathname === '/sessions') return { title: '会话历史', breadcrumb: ['会话', '历史会话'] }
     if (location.pathname === '/sessions/new') return { title: '新会话', breadcrumb: ['会话', '开启一个会话'] }
     if (/^\/sessions\/\d+$/.test(location.pathname)) return { title: '历史会话', breadcrumb: ['会话', '历史会话'] }
@@ -374,11 +405,17 @@ function App() {
               <Route path="/gas-supply-chain" element={<GASSupplyChainPage />} />
               <Route path="/gas-supply-chain/new" element={<GASSupplyChainFormPage />} />
               <Route path="/gas-supply-chain/:id/edit" element={<GASSupplyChainFormPage />} />
-              <Route path="/gas-suppliers" element={<SupplierProfileListPage />} />
-              <Route path="/gas-suppliers/new" element={<SupplierProfileFormPage />} />
-              <Route path="/gas-suppliers/:id" element={<SupplierProfileFormPage />} />
-              <Route path="/gas-suppliers/:id/edit" element={<SupplierProfileFormPage />} />
+              <Route path="/gas-suppliers" element={<GasSupplierListPage />} />
+              <Route path="/gas-suppliers/new" element={<GasSupplierListPage />} />
+              <Route path="/gas-suppliers/:id" element={<GasSupplierListPage />} />
+              <Route path="/gas-suppliers/:id/edit" element={<GasSupplierListPage />} />
+              <Route path="/gas-supplier-profiles" element={<GasSupplierProfileListPage />} />
+              <Route path="/gas-supplier-profiles/new" element={<GasSupplierProfileFormPage />} />
+              <Route path="/gas-supplier-profiles/:id" element={<GasSupplierProfileFormPage />} />
+              <Route path="/gas-supplier-profiles/:id/edit" element={<GasSupplierProfileFormPage />} />
+              <Route path="/gas-supplier-portrait" element={<GasSupplierPortraitPage />} />
               <Route path="/gas-oems" element={<GasOemListPage />} />
+              <Route path="/gas-industry-map" element={<GASIndustryMapPage />} />
               <Route path="/sessions" element={<SessionHistoryPage />} />
               <Route path="/sessions/new" element={<SessionChatPage />} />
               <Route path="/sessions/:id" element={<SessionChatPage />} />
@@ -415,7 +452,7 @@ function App() {
                             if (item.id === 'supply-chain' || item.id === 'suppliers' || item.id === 'supplier-profiles') {
                               set.add('gys-suppliers')
                             }
-                            if (item.id === 'gas-supply-chain' || item.id === 'gas-suppliers-list' || item.id === 'gas-oems') {
+                            if (item.id === 'gas-supply-chain' || item.id === 'gas-suppliers-list' || item.id === 'gas-supplier-profiles' || item.id === 'gas-supplier-portrait' || item.id === 'gas-oems' || item.id === 'gas-industry-map') {
                               set.add('gas-suppliers')
                             }
                           } else {
@@ -428,7 +465,10 @@ function App() {
                             if (item.id === 'gas-suppliers') {
                               set.delete('gas-supply-chain')
                               set.delete('gas-suppliers-list')
+                              set.delete('gas-supplier-profiles')
+                              set.delete('gas-supplier-portrait')
                               set.delete('gas-oems')
+                              set.delete('gas-industry-map')
                             }
                           }
                           return defaultVisibleMenuIds.filter((id) => set.has(id))

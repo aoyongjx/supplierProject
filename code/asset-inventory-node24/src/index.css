@@ -273,9 +273,14 @@ body {
   top: 2px;
   bottom: 2px;
   left: 4px;
-  width: 2px;
+  width: 1px;
   border-radius: 999px;
-  background: rgba(148, 163, 184, 0.8);
+  background: rgba(148, 163, 184, 0);
+  transition: background 0.2s ease;
+}
+
+.gas-supply-table .ant-table-thead > tr > th.resizable-table-header:hover .resizable-table-handle::after {
+  background: rgba(148, 163, 184, 0.85);
 }
 
 .ant-input,

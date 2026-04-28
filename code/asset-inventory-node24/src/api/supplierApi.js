@@ -196,14 +196,21 @@ export async function fetchSupplierCrawlTask(taskId) {
   return result.data
 }
 
-export async function importSupplierCrawlTask(taskId) {
+export async function importSupplierCrawlTask(taskId, options = {}) {
+  const includeProfile = options?.includeProfile !== false
+  const profileSource = String(options?.profileSource || '').trim()
+  const importTarget = String(options?.importTarget || '').trim()
   const response = await requestTaskWithDual(`/api/supplier-crawl-tasks/${encodeURIComponent(String(taskId))}/import`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       ...buildAuthHeaders(),
     },
-    body: JSON.stringify({ includeProfile: true }),
+    body: JSON.stringify({
+      includeProfile,
+      profileSource,
+      importTarget,
+    }),
   })
   const result = await parseJson(response)
   return result.data

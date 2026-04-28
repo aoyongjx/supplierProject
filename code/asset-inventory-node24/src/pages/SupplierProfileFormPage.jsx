@@ -305,16 +305,18 @@ function SupplierProfileFormPage() {
       label: 'Tab1 公司简介',
       children: (
         <Space direction="vertical" size={16} style={{ width: '100%' }}>
-          <ListCard title="顶部标签">
-            <Form.Item name="companyTags" style={{ marginBottom: 0 }}>
-              <Select
-                mode="tags"
-                disabled={disabled}
-                placeholder="输入如 A股 / 高新技术企业 / 民营企业"
-                tokenSeparators={[',', '，', ';', '；']}
-              />
-            </Form.Item>
-          </ListCard>
+          {!isGasView ? (
+            <ListCard title="顶部标签">
+              <Form.Item name="companyTags" style={{ marginBottom: 0 }}>
+                <Select
+                  mode="tags"
+                  disabled={disabled}
+                  placeholder="输入如 A股 / 高新技术企业 / 民营企业"
+                  tokenSeparators={[',', '，', ';', '；']}
+                />
+              </Form.Item>
+            </ListCard>
+          ) : null}
           <ListCard title="公司简介">
             <Form.Item name="companyIntro" style={{ marginBottom: 0 }}>
               <Input.TextArea disabled={disabled} rows={12} placeholder="公司简介" />
@@ -615,6 +617,36 @@ function SupplierProfileFormPage() {
       ),
     },
   ]
+  const gasTabLabelMap = {
+    intro: 'A 基本信息',
+    business: 'B 业务信息',
+    product: 'C 产品案例/体系认证/企业设备',
+    industrial: 'D 工商信息',
+    patent: 'E 专利信息',
+    license: 'F 行政许可（信用中国）',
+    trade: 'G 进出口信用',
+    financing: 'H 融资信息',
+    news: 'I 软件著作权',
+    court: 'J 开庭公告',
+    base: 'K 行政许可（工商局）',
+  }
+  const gasTabOrder = ['intro', 'business', 'product', 'industrial', 'patent', 'license', 'trade', 'financing', 'news', 'court', 'base']
+  const visibleTabItems = isGasView
+    ? gasTabOrder
+      .map((key) => tabItems.find((item) => item.key === key))
+      .filter(Boolean)
+      .map((item) => ({ ...item, label: gasTabLabelMap[item.key] || item.label }))
+    : tabItems
+  const visibleGasTabItemsWithK = isGasView
+    ? [
+      ...visibleTabItems.filter((item) => item.key !== 'base'),
+      {
+        ...(visibleTabItems.find((item) => item.key === 'license') || {}),
+        key: 'k_gs',
+        label: 'K 行政许可（工商局）',
+      },
+    ]
+    : visibleTabItems
 
   return (
     <Card className="app-elevated-card">
@@ -675,7 +707,7 @@ function SupplierProfileFormPage() {
             </Row>
           </Card>
 
-          <Tabs items={tabItems} />
+          <Tabs items={visibleGasTabItemsWithK} />
 
           {isViewMode && (
             <Space wrap>
