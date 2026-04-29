@@ -500,3 +500,23 @@ body {
   border-radius: 99px;
   background: var(--border-color);
 }
+
+.capability-card {
+  min-height: 172px;
+  border-radius: 12px !important;
+}
+
+.capability-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.capability-plus-btn {
+  color: var(--text-subtle) !important;
+}
+
+.capability-desc {
+  min-height: 44px;
+}

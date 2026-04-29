@@ -45,6 +45,8 @@ import SupplierProfileListPage from './pages/SupplierProfileListPage'
 import SupplyChainPage from './pages/SupplyChainPage'
 import SupplyChainFormPage from './pages/SupplyChainFormPage'
 import GasSupplierPortraitWorkspacePage from './pages/GasSupplierPortraitWorkspacePage'
+import McpServicesPage from './pages/McpServicesPage'
+import SkillManagementPage from './pages/SkillManagementPage'
 import { fetchRecentSessions } from './api/sessionApi'
 
 const { Header, Sider, Content } = Layout
@@ -95,6 +97,29 @@ const baseMenuGroups = [
       { id: 'gas-industry-map', key: '/gas-industry-map', label: 'GAS产业图谱' },
     ],
   },
+  {
+    id: 'agents',
+    key: 'agents-menu',
+    icon: <TeamOutlined />,
+    label: '智能体',
+    children: [
+      { id: 'agent-precise-sourcing', key: '/agents/precise-sourcing', label: '精准寻源智能体' },
+      { id: 'agent-admission-screening', key: '/agents/admission-screening', label: '准入排查智能体' },
+      { id: 'agent-realtime-monitoring', key: '/agents/realtime-monitoring', label: '实时监控智能体' },
+      { id: 'agent-supplier-dd', key: '/agents/supplier-dd', label: '供应商尽调智能体' },
+    ],
+  },
+  {
+    id: 'capability-center',
+    key: 'capability-center-menu',
+    icon: <SettingOutlined />,
+    label: '能力中心',
+    children: [
+      { id: 'capability-mcp-services', key: '/capability-center/mcp-services', label: 'MCP服务' },
+      { id: 'capability-skill-management', key: '/capability-center/skills', label: 'Skill管理' },
+      { id: 'capability-knowledge-base', key: '/capability-center/knowledge-base', label: '知识库管理' },
+    ],
+  },
 ]
 
 const menuPermissionSections = [
@@ -128,6 +153,25 @@ const menuPermissionSections = [
       { id: 'gas-supplier-portrait', label: 'GAS供应商画像' },
       { id: 'gas-oems', label: 'GAS整车厂' },
       { id: 'gas-industry-map', label: 'GAS产业图谱' },
+    ],
+  },
+  {
+    title: '智能体',
+    items: [
+      { id: 'agents', label: '显示一级菜单' },
+      { id: 'agent-precise-sourcing', label: '精准寻源智能体' },
+      { id: 'agent-admission-screening', label: '准入排查智能体' },
+      { id: 'agent-realtime-monitoring', label: '实时监控智能体' },
+      { id: 'agent-supplier-dd', label: '供应商尽调智能体' },
+    ],
+  },
+  {
+    title: '能力中心',
+    items: [
+      { id: 'capability-center', label: '显示一级菜单' },
+      { id: 'capability-mcp-services', label: 'MCP服务' },
+      { id: 'capability-skill-management', label: 'Skill管理' },
+      { id: 'capability-knowledge-base', label: '知识库管理' },
     ],
   },
 ]
@@ -198,6 +242,8 @@ function getOpenMenuKeys(pathname) {
   if (pathname.startsWith('/gas-supply-chain') || pathname.startsWith('/gas-suppliers') || pathname.startsWith('/gas-supplier-profiles') || pathname.startsWith('/gas-supplier-portrait') || pathname.startsWith('/users') || pathname.startsWith('/gas-oems') || pathname.startsWith('/gas-industry-map')) {
     return ['gas-suppliers-menu']
   }
+  if (pathname.startsWith('/agents')) return ['agents-menu']
+  if (pathname.startsWith('/capability-center')) return ['capability-center-menu']
   if (pathname.startsWith('/sessions')) return ['sessions-menu']
   return []
 }
@@ -254,6 +300,13 @@ function App() {
     if (location.pathname.startsWith('/gas-supplier-portrait')) return '/gas-supplier-portrait'
     if (location.pathname.startsWith('/gas-oems')) return '/gas-oems'
     if (location.pathname.startsWith('/gas-industry-map')) return '/gas-industry-map'
+    if (location.pathname.startsWith('/agents/precise-sourcing')) return '/agents/precise-sourcing'
+    if (location.pathname.startsWith('/agents/admission-screening')) return '/agents/admission-screening'
+    if (location.pathname.startsWith('/agents/realtime-monitoring')) return '/agents/realtime-monitoring'
+    if (location.pathname.startsWith('/agents/supplier-dd')) return '/agents/supplier-dd'
+    if (location.pathname.startsWith('/capability-center/mcp-services')) return '/capability-center/mcp-services'
+    if (location.pathname.startsWith('/capability-center/skills')) return '/capability-center/skills'
+    if (location.pathname.startsWith('/capability-center/knowledge-base')) return '/capability-center/knowledge-base'
     if (location.pathname.startsWith('/sessions/new')) return '/sessions/new'
     if (/^\/sessions\/\d+$/.test(location.pathname)) return location.pathname
     if (location.pathname.startsWith('/sessions')) return '/sessions'
@@ -299,6 +352,13 @@ function App() {
     if (location.pathname.startsWith('/gas-suppliers')) return { title: 'GAS供应商', breadcrumb: ['GAS供应商管理', 'GAS供应商'] }
     if (location.pathname.startsWith('/gas-oems')) return { title: 'GAS整车厂', breadcrumb: ['GAS供应商管理', 'GAS整车厂'] }
     if (location.pathname.startsWith('/gas-industry-map')) return { title: 'GAS产业图谱', breadcrumb: ['GAS供应商管理', 'GAS产业图谱'] }
+    if (location.pathname.startsWith('/agents/precise-sourcing')) return { title: '精准寻源智能体', breadcrumb: ['智能体', '精准寻源智能体'] }
+    if (location.pathname.startsWith('/agents/admission-screening')) return { title: '准入排查智能体', breadcrumb: ['智能体', '准入排查智能体'] }
+    if (location.pathname.startsWith('/agents/realtime-monitoring')) return { title: '实时监控智能体', breadcrumb: ['智能体', '实时监控智能体'] }
+    if (location.pathname.startsWith('/agents/supplier-dd')) return { title: '供应商尽调智能体', breadcrumb: ['智能体', '供应商尽调智能体'] }
+    if (location.pathname.startsWith('/capability-center/mcp-services')) return { title: 'MCP服务', breadcrumb: ['能力中心', 'MCP服务'] }
+    if (location.pathname.startsWith('/capability-center/skills')) return { title: 'Skill管理', breadcrumb: ['能力中心', 'Skill管理'] }
+    if (location.pathname.startsWith('/capability-center/knowledge-base')) return { title: '知识库管理', breadcrumb: ['能力中心', '知识库管理'] }
     if (location.pathname === '/sessions') return { title: '会话历史', breadcrumb: ['会话', '历史会话'] }
     if (location.pathname === '/sessions/new') return { title: '新会话', breadcrumb: ['会话', '开启一个会话'] }
     if (/^\/sessions\/\d+$/.test(location.pathname)) return { title: '历史会话', breadcrumb: ['会话', '历史会话'] }
@@ -420,6 +480,13 @@ function App() {
               <Route path="/gas-supplier-portrait" element={<GasSupplierPortraitPage />} />
               <Route path="/gas-oems" element={<GasOemListPage />} />
               <Route path="/gas-industry-map" element={<GASIndustryMapPage />} />
+              <Route path="/agents/precise-sourcing" element={<PlaceholderPage title="精准寻源智能体" />} />
+              <Route path="/agents/admission-screening" element={<PlaceholderPage title="准入排查智能体" />} />
+              <Route path="/agents/realtime-monitoring" element={<PlaceholderPage title="实时监控智能体" />} />
+              <Route path="/agents/supplier-dd" element={<PlaceholderPage title="供应商尽调智能体" />} />
+              <Route path="/capability-center/mcp-services" element={<McpServicesPage />} />
+              <Route path="/capability-center/skills" element={<SkillManagementPage />} />
+              <Route path="/capability-center/knowledge-base" element={<PlaceholderPage title="知识库管理" />} />
               <Route path="/sessions" element={<SessionHistoryPage />} />
               <Route path="/sessions/new" element={<SessionChatPage />} />
               <Route path="/sessions/:id" element={<SessionChatPage />} />
@@ -459,6 +526,12 @@ function App() {
                             if (item.id === 'gas-supply-chain' || item.id === 'gas-suppliers-list' || item.id === 'gas-supplier-profiles' || item.id === 'gas-supplier-portrait' || item.id === 'gas-oems' || item.id === 'gas-industry-map') {
                               set.add('gas-suppliers')
                             }
+                            if (item.id === 'agent-precise-sourcing' || item.id === 'agent-admission-screening' || item.id === 'agent-realtime-monitoring' || item.id === 'agent-supplier-dd') {
+                              set.add('agents')
+                            }
+                            if (item.id === 'capability-mcp-services' || item.id === 'capability-skill-management' || item.id === 'capability-knowledge-base') {
+                              set.add('capability-center')
+                            }
                           } else {
                             set.delete(item.id)
                             if (item.id === 'gys-suppliers') {
@@ -473,6 +546,17 @@ function App() {
                               set.delete('gas-supplier-portrait')
                               set.delete('gas-oems')
                               set.delete('gas-industry-map')
+                            }
+                            if (item.id === 'agents') {
+                              set.delete('agent-precise-sourcing')
+                              set.delete('agent-admission-screening')
+                              set.delete('agent-realtime-monitoring')
+                              set.delete('agent-supplier-dd')
+                            }
+                            if (item.id === 'capability-center') {
+                              set.delete('capability-mcp-services')
+                              set.delete('capability-skill-management')
+                              set.delete('capability-knowledge-base')
                             }
                           }
                           return defaultVisibleMenuIds.filter((id) => set.has(id))

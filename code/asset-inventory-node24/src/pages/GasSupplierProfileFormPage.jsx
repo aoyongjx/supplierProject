@@ -21,6 +21,18 @@ const BOOL_OPTIONS = [
   { label: '否', value: '否' },
 ]
 
+const BUSINESS_LABEL_VALUES = new Set([
+  '人员规模', '研发人数', '年销售额', '体系认证', '公司网址', '配套客户', '直接配套客户', '间接配套客户',
+  '直接出口经验', '年出口额', '出口市场', '出口国家', '主营产品', '主要产品',
+])
+
+function sanitizeBusinessScalar(value, ownKey) {
+  const text = String(value || '').trim()
+  if (!text) return ''
+  if (BUSINESS_LABEL_VALUES.has(text) && text !== ownKey) return ''
+  return text
+}
+
 function normalizeNodeTree(nodes = []) {
   return (nodes || []).map((item) => ({
     value: Number(item.value || item.id),
@@ -177,9 +189,9 @@ function GasSupplierProfileFormPage() {
           companyIntro: detail?.companyIntro || '',
           supplierProfileUrl: detail?.supplierProfileUrl || detail?.website || '',
           businessInfo: {
-            人员规模: business['人员规模'] || detail?.employeesCount || '',
-            研发人数: business['研发人数'] || '',
-            年销售额: business['年销售额'] || '',
+            人员规模: sanitizeBusinessScalar(business['人员规模'], '人员规模') || sanitizeBusinessScalar(detail?.employeesCount, '人员规模') || '',
+            研发人数: sanitizeBusinessScalar(business['研发人数'], '研发人数') || '',
+            年销售额: sanitizeBusinessScalar(business['年销售额'], '年销售额') || '',
             体系认证: Array.isArray(business['体系认证']) ? business['体系认证'] : certifications,
             公司网址: business['公司网址'] || detail?.website || '',
             配套客户: Array.isArray(detail?.fitOems) ? detail.fitOems : [],

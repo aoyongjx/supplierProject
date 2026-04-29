@@ -138,6 +138,57 @@ function buildPlaywrightLaunchArgs(targetUrl = '') {
 }
 
 const cdpProxyBaseUrl = (process.env.WEB_ACCESS_CDP_BASE_URL || 'http://localhost:3456').replace(/\/+$/, '')
+
+const skillRootDirs = [
+  'C:\\Users\\aoyon\\.codex\\skills',
+  'E:\\workspaceCodeing\\.agents\\skills',
+  'C:\\Users\\aoyon\\.agents\\skills',
+]
+
+function resolveSafePath(input = '') {
+  return path.resolve(String(input || '').trim())
+}
+
+function isPathInsideRoot(targetPath = '', rootPath = '') {
+  const resolvedTarget = resolveSafePath(targetPath).toLowerCase()
+  const resolvedRoot = resolveSafePath(rootPath).toLowerCase()
+  return resolvedTarget === resolvedRoot || resolvedTarget.startsWith(`${resolvedRoot}${path.sep}`)
+}
+
+async function readInstalledSkillsFromDisk() {
+  const items = []
+  for (const root of skillRootDirs) {
+    const rootPath = resolveSafePath(root)
+    let entries = []
+    try {
+      entries = await fs.readdir(rootPath, { withFileTypes: true })
+    } catch {
+      continue
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue
+      const dirPath = path.join(rootPath, entry.name)
+      const skillFile = path.join(dirPath, 'SKILL.md')
+      try {
+        await fs.access(skillFile)
+      } catch {
+        continue
+      }
+      items.push({
+        name: entry.name,
+        source: dirPath,
+        installPath: dirPath,
+        description: '技能说明',
+      })
+    }
+  }
+  const deduped = new Map()
+  for (const item of items) {
+    if (!deduped.has(item.name)) deduped.set(item.name, item)
+  }
+  return [...deduped.values()].sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'))
+}
+
 const chromeCdpBaseUrl = (process.env.WEB_ACCESS_CHROME_CDP_BASE_URL || 'http://127.0.0.1:9222').replace(/\/+$/, '')
 
 function mapChromeTarget(item = {}) {
@@ -1900,6 +1951,10 @@ function normalizeSupplierAllowPlaywrightDetail(input = false) {
 function parseSupplierBusinessInfo(input) {
   const data = input && typeof input === 'object' && !Array.isArray(input) ? input : {}
   const result = {}
+  const businessFieldLabels = new Set([
+    '人员规模', '研发人数', '年销售额', '体系认证', '公司网址', '配套客户', '直接配套客户', '间接配套客户',
+    '直接出口经验', '年出口额', '出口市场', '出口国家', '主营产品', '主要产品',
+  ])
   for (const [key, value] of Object.entries(data)) {
     const nextKey = cleanSupplierFieldText(key)
     if (!nextKey) continue
@@ -1913,9 +1968,20 @@ function parseSupplierBusinessInfo(input) {
     if (!nextValue) continue
     // Guard against parser noise like "实缴资本: 实缴资本"
     if (nextValue === nextKey) continue
+    // Guard against shifted-cell noise like "人员规模: 年销售额"
+    if (businessFieldLabels.has(nextValue) && nextValue !== nextKey) continue
     result[nextKey] = nextValue
   }
   return result
+}
+
+function sanitizeSupplierBusinessMetric(value = '', ownLabels = []) {
+  const labels = Array.isArray(ownLabels) ? ownLabels : []
+  const text = trimSupplierTextAtNextLabel(
+    stripSupplierFieldLabel(value, labels),
+    labels,
+  )
+  return cleanSupplierFieldText(text)
 }
 
 function parseSupplierCustomerItems(input) {
@@ -2674,13 +2740,32 @@ function extractKeyValuePairsFromTableHtml(html = '') {
   const source = String(html || '')
   const pairs = {}
   for (const row of source.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)) {
-    const cells = [...String(row?.[1] || '').matchAll(/<(?:td|th)\b[^>]*>([\s\S]*?)<\/(?:td|th)>/gi)]
-      .map((cell) => cleanSupplierHtmlBlockText(cell?.[1] || ''))
-      .filter(Boolean)
-    if (cells.length < 2) continue
+    const cellNodes = [...String(row?.[1] || '').matchAll(/<(td|th)\b([^>]*)>([\s\S]*?)<\/\1>/gi)]
+    if (cellNodes.length < 2) continue
+    const cells = cellNodes.map((cell) => {
+      const tag = String(cell?.[1] || '').toLowerCase()
+      const attrs = String(cell?.[2] || '')
+      const text = cleanSupplierHtmlBlockText(cell?.[3] || '')
+      const classText = toText((attrs.match(/\bclass\s*=\s*["']([^"']+)["']/i)?.[1] || '')).toLowerCase()
+      const isLabel = tag === 'th' || /\btdbg\b/.test(classText)
+      return { text, isLabel }
+    })
+
+    // Prefer explicit label cells (<th> or class="tdbg"), which is the common GAS detail table pattern.
+    for (let idx = 0; idx + 1 < cells.length; idx += 1) {
+      if (!cells[idx].isLabel) continue
+      const key = cleanSupplierFieldText(cells[idx].text || '')
+      const value = cleanSupplierFieldText(cells[idx + 1].text || '')
+      if (!key || !value) continue
+      if (!pairs[key] || value.length > pairs[key].length) {
+        pairs[key] = value
+      }
+    }
+
+    // Fallback: generic pair-by-position for tables without explicit label class.
     for (let idx = 0; idx + 1 < cells.length; idx += 2) {
-      const key = cleanSupplierFieldText(cells[idx] || '')
-      const value = cleanSupplierFieldText(cells[idx + 1] || '')
+      const key = cleanSupplierFieldText(cells[idx].text || '')
+      const value = cleanSupplierFieldText(cells[idx + 1].text || '')
       if (!key || !value) continue
       if (!pairs[key] || value.length > pairs[key].length) {
         pairs[key] = value
@@ -2786,13 +2871,30 @@ function extractGasgooKeyValueSectionByTitle(html = '', title = '') {
   if (!body) return {}
   const pairs = {}
   for (const row of body.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)) {
-    const cells = [...String(row?.[1] || '').matchAll(/<(?:td|th)\b[^>]*>([\s\S]*?)<\/(?:td|th)>/gi)]
-      .map((cell) => cleanSupplierHtmlBlockText(cell?.[1] || ''))
-      .filter(Boolean)
-    if (cells.length < 2) continue
+    const cellNodes = [...String(row?.[1] || '').matchAll(/<(td|th)\b([^>]*)>([\s\S]*?)<\/\1>/gi)]
+    if (cellNodes.length < 2) continue
+    const cells = cellNodes.map((cell) => {
+      const tag = String(cell?.[1] || '').toLowerCase()
+      const attrs = String(cell?.[2] || '')
+      const text = cleanSupplierHtmlBlockText(cell?.[3] || '')
+      const classText = toText((attrs.match(/\bclass\s*=\s*["']([^"']+)["']/i)?.[1] || '')).toLowerCase()
+      const isLabel = tag === 'th' || /\btdbg\b/.test(classText)
+      return { text, isLabel }
+    })
+
+    for (let idx = 0; idx + 1 < cells.length; idx += 1) {
+      if (!cells[idx].isLabel) continue
+      const key = cleanSupplierFieldText(cells[idx].text || '')
+      const value = cleanSupplierFieldText(cells[idx + 1].text || '')
+      if (!key || !value || key === value) continue
+      if (!pairs[key] || value.length > pairs[key].length) {
+        pairs[key] = value
+      }
+    }
+
     for (let idx = 0; idx + 1 < cells.length; idx += 2) {
-      const key = cleanSupplierFieldText(cells[idx] || '')
-      const value = cleanSupplierFieldText(cells[idx + 1] || '')
+      const key = cleanSupplierFieldText(cells[idx].text || '')
+      const value = cleanSupplierFieldText(cells[idx + 1].text || '')
       if (!key || !value || key === value) continue
       if (!pairs[key] || value.length > pairs[key].length) {
         pairs[key] = value
@@ -3042,18 +3144,30 @@ function extractGasgooSupplierOverviewFromHtml(html = '', detailUrl = '') {
     || tablePairs['年出口额']
     || textByRegex(plain, /年出口额[:：]?\s*([^]{0,120}?)(?:出口市场|出口国家|主营产品|$)/i),
   )
+  const businessInfoEmployeesScale = sanitizeSupplierBusinessMetric(
+    businessInfo['人员规模'],
+    ['人员规模', '员工人数'],
+  )
+  const businessInfoRdHeadcount = sanitizeSupplierBusinessMetric(
+    businessInfo['研发人数'],
+    ['研发人数'],
+  )
+  const businessInfoAnnualSales = sanitizeSupplierBusinessMetric(
+    businessInfo['年销售额'],
+    ['年销售额'],
+  )
   const rdHeadcount = cleanSupplierFieldText(
-    businessInfo['研发人数']
+    businessInfoRdHeadcount
     || tablePairs['研发人数']
     || textByRegex(plain, /研发人数[:：]?\s*([^]{0,120}?)(?:年销售额|人员规模|体系认证|$)/i),
   )
   const annualSales = cleanSupplierFieldText(
-    businessInfo['年销售额']
+    businessInfoAnnualSales
     || tablePairs['年销售额']
     || textByRegex(plain, /年销售额[:：]?\s*([^]{0,120}?)(?:研发人数|人员规模|体系认证|$)/i),
   )
   const employeesScale = cleanSupplierFieldText(
-    businessInfo['人员规模']
+    businessInfoEmployeesScale
     || tablePairs['人员规模']
     || tablePairs['员工人数']
     || textByRegex(plain, /(?:人员规模|员工人数)[:：]?\s*([^]{0,120}?)(?:研发人数|年销售额|体系认证|$)/i),
@@ -3066,9 +3180,9 @@ function extractGasgooSupplierOverviewFromHtml(html = '', detailUrl = '') {
   )
   const normalizedBusinessInfo = parseSupplierBusinessInfo({
     ...businessInfo,
-    人员规模: businessInfo['人员规模'] || employeesScale,
-    研发人数: businessInfo['研发人数'] || rdHeadcount,
-    年销售额: businessInfo['年销售额'] || annualSales,
+    人员规模: businessInfoEmployeesScale || employeesScale,
+    研发人数: businessInfoRdHeadcount || rdHeadcount,
+    年销售额: businessInfoAnnualSales || annualSales,
     体系认证: businessInfo['体系认证'] || qualitySystem,
     公司网址: businessInfo['公司网址'] || tablePairs['公司网址'] || '',
     配套客户: pairedCustomers,
@@ -3104,7 +3218,7 @@ function extractGasgooSupplierOverviewFromHtml(html = '', detailUrl = '') {
     legalRepresentative: tablePairs['法定代表人'] || tablePairs['法人代表'] || '',
     registeredCapital: tablePairs['注册资本'] || tablePairs['注册资本(金)'] || '',
     establishedDate: tablePairs['成立日期'] || tablePairs['成立时间'] || '',
-    employeesCount: tablePairs['员工人数'] || tablePairs['人员规模'] || '',
+    employeesCount: employeesScale || tablePairs['员工人数'] || tablePairs['人员规模'] || '',
     companyType: tablePairs['企业类型'] || tablePairs['公司类型'] || tablePairs['企业性质'] || '',
     orgCode: tablePairs['统一社会信用代码'] || tablePairs['组织机构代码'] || '',
     address: tablePairs['地址'] || '',
@@ -10341,6 +10455,93 @@ app.get('/api/codex/models', authMiddleware, (_req, res) => {
 
 app.get('/api/crawl/skills', authMiddleware, (_req, res) => {
   return res.json({ code: 200, message: 'success', data: supplierSkillOptions })
+})
+
+app.get('/api/skills', authMiddleware, async (_req, res) => {
+  try {
+    const items = await readInstalledSkillsFromDisk()
+    return res.json({ code: 200, message: 'success', data: items })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `读取技能列表失败: ${error.message}`, data: [] })
+  }
+})
+
+app.post('/api/skills/uninstall', authMiddleware, async (req, res) => {
+  const source = toText(req.body?.source)
+  const name = toText(req.body?.name)
+  if (!source || !name) {
+    return res.status(400).json({ code: 400, message: '缺少必要参数（name/source）', data: null })
+  }
+  const targetPath = resolveSafePath(source)
+  const allowed = skillRootDirs.some((root) => isPathInsideRoot(targetPath, root))
+  if (!allowed) {
+    return res.status(403).json({ code: 403, message: '不允许卸载该路径下的技能', data: null })
+  }
+  const expectedName = path.basename(targetPath)
+  if (expectedName !== name) {
+    return res.status(400).json({ code: 400, message: '技能名称与路径不匹配', data: null })
+  }
+  try {
+    await fs.rm(targetPath, { recursive: true, force: false })
+    return res.json({ code: 200, message: 'success', data: { name, source: targetPath } })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `卸载失败: ${error.message}`, data: null })
+  }
+})
+
+app.post('/api/skills/install', authMiddleware, async (req, res) => {
+  const name = toText(req.body?.name)
+  const installBasePath = toText(req.body?.installPath)
+  const description = toText(req.body?.description) || '技能说明'
+  const origin = toText(req.body?.source)
+  if (!name || !installBasePath) {
+    return res.status(400).json({ code: 400, message: '缺少必要参数（name/installPath）', data: null })
+  }
+  if (!/^[a-zA-Z0-9_.-]+$/.test(name)) {
+    return res.status(400).json({ code: 400, message: '技能名称仅允许字母、数字、下划线、点和中划线', data: null })
+  }
+
+  const basePath = resolveSafePath(installBasePath)
+  const targetPath = path.basename(basePath).toLowerCase() === name.toLowerCase()
+    ? basePath
+    : path.join(basePath, name)
+  const skillFile = path.join(targetPath, 'SKILL.md')
+
+  try {
+    await fs.mkdir(targetPath, { recursive: true })
+    try {
+      await fs.access(skillFile)
+      return res.status(409).json({ code: 409, message: `安装失败：目标已存在 ${skillFile}`, data: null })
+    } catch {
+      // file not exists
+    }
+    const content = [
+      '# Skill',
+      '',
+      `- 名称：${name}`,
+      `- 来源：${origin || '本地安装'}`,
+      '',
+      '## 说明',
+      description,
+      '',
+      '## 用法',
+      '按项目需要调用该技能。',
+      '',
+    ].join('\n')
+    await fs.writeFile(skillFile, content, 'utf8')
+    return res.json({
+      code: 200,
+      message: 'success',
+      data: {
+        name,
+        source: targetPath,
+        installPath: targetPath,
+        description,
+      },
+    })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `安装失败: ${error.message}`, data: null })
+  }
 })
 
 const crawlEnvGuideSteps = [
