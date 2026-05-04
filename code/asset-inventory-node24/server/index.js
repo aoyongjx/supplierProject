@@ -45,6 +45,8 @@ const allowStartWithoutDb = (
 ) === 'true'
 const dbReconnectIntervalMs = Math.max(1000, Number(process.env.DB_RECONNECT_INTERVAL_MS || 10000))
 const dbReconnectCooldownMs = Math.max(1000, Number(process.env.DB_RECONNECT_COOLDOWN_MS || 4000))
+const embeddingApiKey = toText(process.env.OPENAI_API_KEY || process.env.EMBEDDING_API_KEY)
+const embeddingBaseUrl = toText(process.env.OPENAI_BASE_URL || process.env.EMBEDDING_BASE_URL || 'https://api.openai.com')
 
 function safeHostFromUrl(input) {
   try {
@@ -187,6 +189,128 @@ async function readInstalledSkillsFromDisk() {
     if (!deduped.has(item.name)) deduped.set(item.name, item)
   }
   return [...deduped.values()].sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'))
+}
+
+const codexConfigPath = 'C:\\Users\\aoyon\\.codex\\config.toml'
+const mcpShadowStatePath = 'C:\\Users\\aoyon\\.codex\\mcp-services.shadow.json'
+const agentReachConfigPath = 'C:\\Users\\aoyon\\.agent-reach\\config.yaml'
+
+function toMcpServiceName(input = '') {
+  return String(input || '').trim()
+}
+
+function parseMcpServerNamesFromToml(text = '') {
+  const names = []
+  for (const matched of String(text || '').matchAll(/^\s*\[mcp_servers\.([^\]\r\n]+)\]\s*$/gim)) {
+    const raw = toText(matched?.[1])
+    if (!raw) continue
+    names.push(raw.replace(/^["']|["']$/g, ''))
+  }
+  return [...new Set(names)]
+}
+
+async function readMcpShadowState() {
+  try {
+    const raw = await fs.readFile(mcpShadowStatePath, 'utf8')
+    const json = JSON.parse(raw)
+    return json && typeof json === 'object' ? json : { disabled: {} }
+  } catch {
+    return { disabled: {} }
+  }
+}
+
+async function writeMcpShadowState(state) {
+  const next = state && typeof state === 'object' ? state : { disabled: {} }
+  await fs.writeFile(mcpShadowStatePath, JSON.stringify(next, null, 2), 'utf8')
+}
+
+async function loadConfiguredMcpServices() {
+  let configText = ''
+  try {
+    configText = await fs.readFile(codexConfigPath, 'utf8')
+  } catch {
+    configText = ''
+  }
+  const names = parseMcpServerNamesFromToml(configText)
+  const rows = []
+  for (const name of names) {
+    try {
+      const { stdout } = await execFileAsync('codex', ['mcp', 'get', name, '--json'], { timeout: 20000 })
+      const parsed = JSON.parse(String(stdout || '{}'))
+      rows.push({
+        name,
+        source: 'codex-config',
+        installPath: codexConfigPath,
+        description: toText(parsed?.description || ''),
+        type: parsed?.url ? 'http' : 'stdio',
+        url: toText(parsed?.url || ''),
+        command: Array.isArray(parsed?.command) ? parsed.command.join(' ') : toText(parsed?.command || ''),
+        env: parsed?.env && typeof parsed.env === 'object' ? parsed.env : {},
+        enabled: true,
+      })
+    } catch {
+      rows.push({
+        name,
+        source: 'codex-config',
+        installPath: codexConfigPath,
+        description: '',
+        type: 'stdio',
+        url: '',
+        command: '',
+        env: {},
+        enabled: true,
+      })
+    }
+  }
+  return rows
+}
+
+function parseAgentReachConfigValue(text = '', key = '') {
+  const keyToken = String(key || '').trim()
+  if (!keyToken) return ''
+  const matched = String(text || '').match(new RegExp(`^\\s*${keyToken}\\s*:\\s*(.+?)\\s*$`, 'm'))
+  if (!matched?.[1]) return ''
+  return String(matched[1]).trim().replace(/^['"]|['"]$/g, '')
+}
+
+async function loadConfiguredAgentReachServices() {
+  let configText = ''
+  try {
+    configText = await fs.readFile(agentReachConfigPath, 'utf8')
+  } catch {
+    configText = ''
+  }
+  const xueqiuCookie = parseAgentReachConfigValue(configText, 'xueqiu_cookie')
+  const rows = [
+    {
+      name: 'wechat',
+      source: 'agent-reach',
+      installPath: 'C:\\Users\\aoyon\\.agent-reach\\tools\\wechat-article-for-ai',
+      description: '微信公众号搜索与文章读取（Agent Reach）',
+      type: 'stdio',
+      url: '',
+      command: 'python mcp_server.py',
+      env: {},
+      enabled: true,
+    },
+    {
+      name: 'xueqiu',
+      source: 'agent-reach',
+      installPath: agentReachConfigPath,
+      description: '雪球股票行情与社区动态（Agent Reach）',
+      type: 'stdio',
+      url: '',
+      command: 'agent-reach channel xueqiu',
+      env: {},
+      enabled: Boolean(xueqiuCookie),
+    },
+  ]
+  return rows
+}
+
+function isAgentReachVirtualMcp(name = '') {
+  const token = toMcpServiceName(name)
+  return token === 'wechat' || token === 'xueqiu'
 }
 
 const chromeCdpBaseUrl = (process.env.WEB_ACCESS_CHROME_CDP_BASE_URL || 'http://127.0.0.1:9222').replace(/\/+$/, '')
@@ -553,6 +677,10 @@ const supplierCertDictTable = `"${schemaName}"."supplier_certification_dict"`
 const gasSupplierPortraitSettingTable = `"${schemaName}"."gas_supplier_portrait_setting"`
 const chatSessionTable = `"${schemaName}"."chat_session"`
 const chatMessageTable = `"${schemaName}"."chat_message"`
+const knowledgeBaseTable = `"${schemaName}"."knowledge_base"`
+const knowledgeBaseDocumentTable = `"${schemaName}"."knowledge_base_document"`
+const knowledgeBaseVectorTable = `"${schemaName}"."knowledge_base_vector"`
+const supplierOpinionVectorTable = `"${schemaName}"."supplier_opinion_vector"`
 const crawlExportDir = path.join(process.cwd(), 'crawl_exports')
 const supplyChainRootTitle = '新能源汽车制造供应链'
 const supplierCrawlTaskStore = new Map()
@@ -609,6 +737,328 @@ let dbReady = false
 let dbInitErrorMessage = ''
 let dbReconnectInFlight = null
 let lastDbReconnectAttemptAt = 0
+const knowledgeBaseAssetDir = path.join(process.cwd(), 'logs', 'knowledge-base-assets')
+const knowledgeBaseStore = new Map()
+let knowledgeBasePersistPromise = Promise.resolve()
+let knowledgeBasePersistPending = false
+
+function generateKbId(prefix = 'kb') {
+  return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`
+}
+
+function defaultEmbeddingDimension(model = '') {
+  return 1536
+}
+
+function stripHtmlTags(input = '') {
+  return String(input || '')
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function splitIntoChunks(text = '', chunkSize = 800, overlap = 120) {
+  const normalized = String(text || '').trim()
+  if (!normalized) return []
+  const chunks = []
+  let cursor = 0
+  const safeSize = Math.max(200, Number(chunkSize || 800))
+  const safeOverlap = Math.max(0, Math.min(safeSize - 1, Number(overlap || 120)))
+  while (cursor < normalized.length) {
+    const end = Math.min(normalized.length, cursor + safeSize)
+    const piece = normalized.slice(cursor, end).trim()
+    if (piece) chunks.push(piece)
+    if (end >= normalized.length) break
+    cursor = Math.max(cursor + 1, end - safeOverlap)
+  }
+  return chunks
+}
+
+function embedTextDeterministic(text = '', dimension = 1536) {
+  const dim = Math.max(64, Math.min(4096, Number(dimension || 1536)))
+  const vector = new Array(dim).fill(0)
+  const src = String(text || '')
+  for (let i = 0; i < src.length; i += 1) {
+    const code = src.charCodeAt(i)
+    const idx = (i * 131 + code) % dim
+    vector[idx] = Number((vector[idx] + (code % 97) / 97).toFixed(6))
+  }
+  return vector
+}
+
+async function embedTextByProvider(text = '', model = 'text-embedding-3-small', dimension = 1536) {
+  const content = String(text || '').trim()
+  if (!content) return new Array(dimension).fill(0)
+  if (!embeddingApiKey) return embedTextDeterministic(content, dimension)
+  const base = embeddingBaseUrl.replace(/\/+$/, '')
+  const response = await fetch(`${base}/v1/embeddings`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${embeddingApiKey}`,
+    },
+    body: JSON.stringify({
+      model: model || 'text-embedding-3-small',
+      input: content,
+    }),
+  })
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => '')
+    console.warn(`embedding fallback: HTTP ${response.status}${errorText ? ` ${errorText.slice(0, 200)}` : ''}`)
+    return embedTextDeterministic(content, dimension)
+  }
+  const payload = await response.json().catch(() => ({}))
+  const embedding = Array.isArray(payload?.data) && Array.isArray(payload.data[0]?.embedding)
+    ? payload.data[0].embedding.map((item) => Number(item))
+    : []
+  if (embedding.length === 0) return embedTextDeterministic(content, dimension)
+  return normalizeVectorForStorage(embedding, dimension)
+}
+
+function isPlainTextLikeFile(name = '', mime = '') {
+  const ext = path.extname(String(name || '')).toLowerCase()
+  const mimeToken = String(mime || '').toLowerCase()
+  if (mimeToken.startsWith('text/')) return true
+  return ['.txt', '.md', '.markdown', '.html', '.htm', '.csv', '.json', '.xml'].includes(ext)
+}
+
+function isPdfFile(name = '', mime = '') {
+  const ext = path.extname(String(name || '')).toLowerCase()
+  const mimeToken = String(mime || '').toLowerCase()
+  return ext === '.pdf' || mimeToken === 'application/pdf'
+}
+
+async function extractPdfTextFromBuffer(buffer) {
+  const { PDFParse } = await import('pdf-parse')
+  const parser = new PDFParse({ data: buffer })
+  try {
+    const parsed = await parser.getText()
+    return String(parsed?.text || '').trim()
+  } finally {
+    await parser.destroy().catch(() => {})
+  }
+}
+
+const knowledgeVectorStoreDim = 1536
+
+function normalizeVectorForStorage(vector = [], targetDim = knowledgeVectorStoreDim) {
+  const normalized = new Array(targetDim).fill(0)
+  const source = Array.isArray(vector) ? vector : []
+  const usable = Math.min(source.length, targetDim)
+  for (let i = 0; i < usable; i += 1) {
+    const value = Number(source[i])
+    normalized[i] = Number.isFinite(value) ? value : 0
+  }
+  return normalized
+}
+
+function toPgVectorLiteral(vector = []) {
+  return `[${vector.map((item) => Number(item || 0).toFixed(6)).join(',')}]`
+}
+
+async function persistKnowledgeBaseStore() {
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    for (const item of knowledgeBaseStore.values()) {
+      await client.query(
+        `
+        INSERT INTO ${knowledgeBaseTable} (id, name, config_json, created_at, updated_at)
+        VALUES ($1, $2, $3::jsonb, $4::timestamptz, $5::timestamptz)
+        ON CONFLICT (id)
+        DO UPDATE SET name = EXCLUDED.name, config_json = EXCLUDED.config_json, updated_at = EXCLUDED.updated_at
+        `,
+        [
+          item.id,
+          item.name,
+          JSON.stringify(item.config || {}),
+          item.createdAt || new Date().toISOString(),
+          item.updatedAt || new Date().toISOString(),
+        ],
+      )
+      await client.query(`DELETE FROM ${knowledgeBaseDocumentTable} WHERE kb_id = $1`, [item.id])
+      for (const doc of Array.isArray(item.documents) ? item.documents : []) {
+        await client.query(
+          `
+          INSERT INTO ${knowledgeBaseDocumentTable}
+          (id, kb_id, source_type, name, url, mime_type, size_bytes, status, chunk_count, vector_count, retry_count, error_message, vector_path, content_base64, created_at, updated_at, completed_at)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::timestamptz,$16::timestamptz,$17::timestamptz)
+          `,
+          [
+            doc.id,
+            item.id,
+            toText(doc.sourceType),
+            toText(doc.name),
+            toText(doc.url),
+            toText(doc.mimeType),
+            Number(doc.size || 0),
+            toText(doc.status || 'queued'),
+            Number(doc.chunkCount || 0),
+            Number(doc.vectorCount || 0),
+            Number(doc.retryCount || 0),
+            toText(doc.errorMessage),
+            toText(doc.vectorPath),
+            toText(doc.contentBase64),
+            doc.createdAt || new Date().toISOString(),
+            doc.updatedAt || new Date().toISOString(),
+            doc.completedAt || null,
+          ],
+        )
+      }
+    }
+    await client.query('COMMIT')
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {})
+    throw error
+  } finally {
+    client.release()
+  }
+}
+
+function schedulePersistKnowledgeBaseStore() {
+  if (knowledgeBasePersistPending) return
+  knowledgeBasePersistPending = true
+  knowledgeBasePersistPromise = knowledgeBasePersistPromise
+    .then(() => persistKnowledgeBaseStore())
+    .catch(() => {})
+    .finally(() => {
+      knowledgeBasePersistPending = false
+    })
+}
+
+async function loadKnowledgeBaseStore() {
+  try {
+    const [kbRes, docRes] = await Promise.all([
+      pool.query(`SELECT id, name, config_json AS config, created_at AS "createdAt", updated_at AS "updatedAt" FROM ${knowledgeBaseTable} ORDER BY updated_at DESC`),
+      pool.query(`SELECT id, kb_id AS "kbId", source_type AS "sourceType", name, url, mime_type AS "mimeType", size_bytes AS size, status, chunk_count AS "chunkCount", vector_count AS "vectorCount", retry_count AS "retryCount", error_message AS "errorMessage", vector_path AS "vectorPath", content_base64 AS "contentBase64", created_at AS "createdAt", updated_at AS "updatedAt", completed_at AS "completedAt" FROM ${knowledgeBaseDocumentTable} ORDER BY updated_at DESC`),
+    ])
+    const rows = kbRes.rows || []
+    const docs = docRes.rows || []
+    const docMap = new Map()
+    for (const doc of docs) {
+      const key = toText(doc.kbId)
+      if (!docMap.has(key)) docMap.set(key, [])
+      docMap.get(key).push(doc)
+    }
+    knowledgeBaseStore.clear()
+    for (const row of Array.isArray(rows) ? rows : []) {
+      const id = toText(row?.id)
+      if (!id) continue
+      knowledgeBaseStore.set(id, {
+        id,
+        name: toText(row?.name) || id,
+        config: row?.config && typeof row.config === 'object' ? row.config : {},
+        createdAt: toText(row?.createdAt) || new Date().toISOString(),
+        updatedAt: toText(row?.updatedAt) || new Date().toISOString(),
+        documents: docMap.get(id) || [],
+      })
+    }
+  } catch {
+    knowledgeBaseStore.clear()
+  }
+}
+
+async function runKnowledgeDocumentPipeline(kbId = '', docId = '') {
+  const kb = knowledgeBaseStore.get(kbId)
+  if (!kb) return
+  const doc = (kb.documents || []).find((item) => item.id === docId)
+  if (!doc) return
+  try {
+    doc.status = 'parsing'
+    doc.errorMessage = ''
+    doc.updatedAt = new Date().toISOString()
+    schedulePersistKnowledgeBaseStore()
+    let text = ''
+    if (doc.sourceType === 'file') {
+      const payload = toText(doc.contentBase64)
+      if (!payload) throw new Error('文件内容为空')
+      const fileBuffer = Buffer.from(payload, 'base64')
+      if (isPdfFile(doc.name, doc.mimeType)) {
+        text = await extractPdfTextFromBuffer(fileBuffer)
+      } else {
+        if (!isPlainTextLikeFile(doc.name, doc.mimeType)) {
+          throw new Error('当前仅支持文本类文件自动解析（TXT/MD/HTML/CSV/JSON/XML/PDF）')
+        }
+        const decoded = fileBuffer.toString('utf8')
+        text = /\.html?$/i.test(doc.name) || String(doc.mimeType || '').toLowerCase().includes('html')
+          ? stripHtmlTags(decoded)
+          : decoded
+      }
+    } else if (doc.sourceType === 'web') {
+      const targetUrl = toText(doc.url)
+      if (!/^https?:\/\//i.test(targetUrl)) throw new Error('网页 URL 无效')
+      const response = await fetchByNetworkPolicy(targetUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } })
+      if (!response.ok) throw new Error(`网页抓取失败（HTTP ${response.status}）`)
+      const raw = await response.text()
+      text = stripHtmlTags(raw)
+    } else {
+      throw new Error('未知的数据源类型')
+    }
+    doc.status = 'chunking'
+    doc.updatedAt = new Date().toISOString()
+    schedulePersistKnowledgeBaseStore()
+    const chunks = splitIntoChunks(text, 800, 120)
+    if (chunks.length === 0) throw new Error('文本为空，无法分段')
+    doc.status = 'embedding'
+    doc.updatedAt = new Date().toISOString()
+    schedulePersistKnowledgeBaseStore()
+    const dimension = Number(kb.config?.embeddingDimension) || defaultEmbeddingDimension(kb.config?.embeddingModel)
+    const embeddingModel = toText(kb.config?.embeddingModel) || 'text-embedding-3-small'
+    const vectors = []
+    for (const chunk of chunks) {
+      // sequential requests to avoid provider rate burst
+      // and keep failure location deterministic
+      // eslint-disable-next-line no-await-in-loop
+      const vec = await embedTextByProvider(chunk, embeddingModel, knowledgeVectorStoreDim)
+      vectors.push(vec)
+    }
+    await pool.query(`DELETE FROM ${knowledgeBaseVectorTable} WHERE doc_id = $1`, [doc.id])
+    for (let i = 0; i < chunks.length; i += 1) {
+      const storeVector = normalizeVectorForStorage(vectors[i], knowledgeVectorStoreDim)
+      await pool.query(
+        `
+        INSERT INTO ${knowledgeBaseVectorTable}
+        (kb_id, doc_id, chunk_index, chunk_text, embedding_model, embedding_dim, embedding)
+        VALUES ($1, $2, $3, $4, $5, $6, $7::vector)
+        `,
+        [
+          kbId,
+          doc.id,
+          i,
+          chunks[i],
+          embeddingModel,
+          Number(dimension || 1536),
+          toPgVectorLiteral(storeVector),
+        ],
+      )
+    }
+    await fs.mkdir(knowledgeBaseAssetDir, { recursive: true })
+    const vectorPath = path.join(knowledgeBaseAssetDir, `${kbId}_${docId}.json`)
+    await fs.writeFile(vectorPath, JSON.stringify({
+      kbId,
+      docId,
+      embeddingModel,
+      embeddingDimension: dimension,
+      chunks,
+      vectors,
+      generatedAt: new Date().toISOString(),
+    }), 'utf8')
+    doc.chunkCount = chunks.length
+    doc.vectorCount = vectors.length
+    doc.vectorPath = vectorPath
+    doc.status = 'success'
+    doc.updatedAt = new Date().toISOString()
+    doc.completedAt = new Date().toISOString()
+    schedulePersistKnowledgeBaseStore()
+  } catch (error) {
+    doc.status = 'failed'
+    doc.errorMessage = toText(error?.message || 'unknown error')
+    doc.updatedAt = new Date().toISOString()
+    schedulePersistKnowledgeBaseStore()
+  }
+}
 
 console.log(
   `[network-policy] HTTP_PROXY=${process.env.HTTP_PROXY || ''} HTTPS_PROXY=${process.env.HTTPS_PROXY || ''}`,
@@ -735,6 +1185,74 @@ async function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_crawl_task_status ON ${crawlTaskTable}(status);
     CREATE INDEX IF NOT EXISTS idx_crawl_task_updated_at ON ${crawlTaskTable}(updated_at DESC);
     CREATE INDEX IF NOT EXISTS idx_crawl_log_task_id ON ${crawlLogTable}(task_id, created_at DESC);
+
+    CREATE EXTENSION IF NOT EXISTS vector;
+
+    CREATE TABLE IF NOT EXISTS ${knowledgeBaseTable} (
+      id VARCHAR(64) PRIMARY KEY,
+      name VARCHAR(200) NOT NULL,
+      config_json JSONB NOT NULL DEFAULT '{}',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS ${knowledgeBaseDocumentTable} (
+      id VARCHAR(64) PRIMARY KEY,
+      kb_id VARCHAR(64) NOT NULL REFERENCES ${knowledgeBaseTable}(id) ON DELETE CASCADE,
+      source_type VARCHAR(16) NOT NULL,
+      name VARCHAR(600) NOT NULL,
+      url TEXT DEFAULT '',
+      mime_type VARCHAR(200) DEFAULT '',
+      size_bytes BIGINT NOT NULL DEFAULT 0,
+      status VARCHAR(32) NOT NULL DEFAULT 'queued',
+      chunk_count INT NOT NULL DEFAULT 0,
+      vector_count INT NOT NULL DEFAULT 0,
+      retry_count INT NOT NULL DEFAULT 0,
+      error_message TEXT DEFAULT '',
+      vector_path TEXT DEFAULT '',
+      content_base64 TEXT DEFAULT '',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      completed_at TIMESTAMPTZ
+    );
+    CREATE INDEX IF NOT EXISTS idx_kb_doc_kb_id ON ${knowledgeBaseDocumentTable}(kb_id, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_kb_doc_status ON ${knowledgeBaseDocumentTable}(status);
+
+    CREATE TABLE IF NOT EXISTS ${knowledgeBaseVectorTable} (
+      id BIGSERIAL PRIMARY KEY,
+      kb_id VARCHAR(64) NOT NULL REFERENCES ${knowledgeBaseTable}(id) ON DELETE CASCADE,
+      doc_id VARCHAR(64) NOT NULL REFERENCES ${knowledgeBaseDocumentTable}(id) ON DELETE CASCADE,
+      chunk_index INT NOT NULL DEFAULT 0,
+      chunk_text TEXT NOT NULL DEFAULT '',
+      embedding_model VARCHAR(120) NOT NULL DEFAULT 'text-embedding-3-small',
+      embedding_dim INT NOT NULL DEFAULT 1536,
+      embedding vector(1536),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_kb_vector_doc_id ON ${knowledgeBaseVectorTable}(doc_id, chunk_index);
+    CREATE INDEX IF NOT EXISTS idx_kb_vector_kb_id ON ${knowledgeBaseVectorTable}(kb_id, updated_at DESC);
+    CREATE TABLE IF NOT EXISTS ${supplierOpinionVectorTable} (
+      id BIGSERIAL PRIMARY KEY,
+      supplier_name VARCHAR(255) NOT NULL DEFAULT '',
+      source_url TEXT NOT NULL DEFAULT '',
+      title VARCHAR(500) NOT NULL DEFAULT '',
+      content TEXT NOT NULL DEFAULT '',
+      sentiment VARCHAR(32) NOT NULL DEFAULT 'neutral',
+      embedding_model VARCHAR(120) NOT NULL DEFAULT 'text-embedding-3-small',
+      embedding_dim INT NOT NULL DEFAULT 1536,
+      embedding vector(1536),
+      chunk_index INT NOT NULL DEFAULT 0,
+      published_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_supplier_opinion_supplier_name ON ${supplierOpinionVectorTable}(supplier_name);
+    CREATE INDEX IF NOT EXISTS idx_supplier_opinion_published_at ON ${supplierOpinionVectorTable}(published_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_supplier_opinion_embedding_ivfflat
+      ON ${supplierOpinionVectorTable}
+      USING ivfflat (embedding vector_cosine_ops)
+      WITH (lists = 100);
 
     CREATE TABLE IF NOT EXISTS ${crawlInfoTable} (
       id BIGSERIAL PRIMARY KEY,
@@ -10489,6 +11007,495 @@ app.post('/api/skills/uninstall', authMiddleware, async (req, res) => {
   }
 })
 
+app.get('/api/mcp-services', authMiddleware, async (_req, res) => {
+  try {
+    const enabled = [...await loadConfiguredMcpServices(), ...await loadConfiguredAgentReachServices()]
+    const shadow = await readMcpShadowState()
+    const disabledMap = shadow?.disabled && typeof shadow.disabled === 'object' ? shadow.disabled : {}
+    const disabledNameSet = new Set(Object.keys(disabledMap).map((name) => toMcpServiceName(name)))
+    const disabled = Object.entries(disabledMap).map(([name, item]) => ({
+      name,
+      source: toText(item?.source || 'codex-config'),
+      installPath: toText(item?.installPath || codexConfigPath),
+      description: toText(item?.description || ''),
+      type: toText(item?.type || 'stdio') || 'stdio',
+      url: toText(item?.url || ''),
+      command: toText(item?.command || ''),
+      env: item?.env && typeof item.env === 'object' ? item.env : {},
+      enabled: false,
+    }))
+    const activeEnabled = enabled.filter((row) => !disabledNameSet.has(toMcpServiceName(row.name)))
+    const merged = [...activeEnabled, ...disabled]
+      .sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'))
+    return res.json({ code: 200, message: 'success', data: merged })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `读取MCP服务失败: ${error.message}`, data: [] })
+  }
+})
+
+app.post('/api/mcp-services/install', authMiddleware, async (req, res) => {
+  const name = toMcpServiceName(req.body?.name)
+  const type = toText(req.body?.type || 'stdio').toLowerCase() === 'http' ? 'http' : 'stdio'
+  const description = toText(req.body?.description)
+  const url = toText(req.body?.url)
+  const command = toText(req.body?.command)
+  const envInput = req.body?.env && typeof req.body.env === 'object' ? req.body.env : {}
+  const envPairs = Object.entries(envInput).filter(([k]) => toText(k))
+  if (!name) return res.status(400).json({ code: 400, message: '缺少参数：name', data: null })
+  if (type === 'http' && !url) return res.status(400).json({ code: 400, message: 'HTTP类型缺少参数：url', data: null })
+  if (type === 'stdio' && !command) return res.status(400).json({ code: 400, message: 'stdio类型缺少参数：command', data: null })
+  try {
+    const args = ['mcp', 'add', name]
+    if (type === 'http') {
+      args.push('--url', url)
+    } else {
+      for (const [k, v] of envPairs) args.push('--env', `${k}=${toText(v)}`)
+      args.push('--', ...command.split(/\s+/g).filter(Boolean))
+    }
+    await execFileAsync('codex', args, { timeout: 40000 })
+    const shadow = await readMcpShadowState()
+    if (!shadow.disabled) shadow.disabled = {}
+    delete shadow.disabled[name]
+    await writeMcpShadowState(shadow)
+    return res.json({
+      code: 200,
+      message: 'success',
+      data: {
+        name,
+        source: 'codex-config',
+        installPath: codexConfigPath,
+        description,
+        type,
+        url,
+        command,
+        env: Object.fromEntries(envPairs.map(([k, v]) => [k, toText(v)])),
+        enabled: true,
+      },
+    })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `安装MCP服务失败: ${error.message}`, data: null })
+  }
+})
+
+app.put('/api/mcp-services/:name', authMiddleware, async (req, res) => {
+  const oldName = toMcpServiceName(req.params?.name)
+  const nextName = toMcpServiceName(req.body?.name || oldName)
+  const type = toText(req.body?.type || 'stdio').toLowerCase() === 'http' ? 'http' : 'stdio'
+  const description = toText(req.body?.description)
+  const url = toText(req.body?.url)
+  const command = toText(req.body?.command)
+  const envInput = req.body?.env && typeof req.body.env === 'object' ? req.body.env : {}
+  const envPairs = Object.entries(envInput).filter(([k]) => toText(k))
+  if (!oldName || !nextName) return res.status(400).json({ code: 400, message: '缺少参数：name', data: null })
+  try {
+    await execFileAsync('codex', ['mcp', 'remove', oldName], { timeout: 20000 }).catch(() => null)
+    const addArgs = ['mcp', 'add', nextName]
+    if (type === 'http') {
+      addArgs.push('--url', url)
+    } else {
+      for (const [k, v] of envPairs) addArgs.push('--env', `${k}=${toText(v)}`)
+      addArgs.push('--', ...command.split(/\s+/g).filter(Boolean))
+    }
+    await execFileAsync('codex', addArgs, { timeout: 40000 })
+    const shadow = await readMcpShadowState()
+    if (!shadow.disabled) shadow.disabled = {}
+    delete shadow.disabled[oldName]
+    delete shadow.disabled[nextName]
+    await writeMcpShadowState(shadow)
+    return res.json({ code: 200, message: 'success', data: { name: nextName, description, type, url, command, env: Object.fromEntries(envPairs), enabled: true } })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `修改MCP服务失败: ${error.message}`, data: null })
+  }
+})
+
+app.post('/api/mcp-services/:name/toggle', authMiddleware, async (req, res) => {
+  const name = toMcpServiceName(req.params?.name)
+  const enabled = req.body?.enabled === true
+  if (!name) return res.status(400).json({ code: 400, message: '缺少参数：name', data: null })
+  try {
+    const shadow = await readMcpShadowState()
+    if (!shadow.disabled) shadow.disabled = {}
+    if (isAgentReachVirtualMcp(name)) {
+      if (enabled) {
+        delete shadow.disabled[name]
+      } else {
+        const rows = await loadConfiguredAgentReachServices()
+        const found = rows.find((row) => row.name === name)
+        shadow.disabled[name] = {
+          source: 'agent-reach',
+          installPath: found?.installPath || '',
+          type: found?.type || 'stdio',
+          url: found?.url || '',
+          command: found?.command || '',
+          env: found?.env && typeof found.env === 'object' ? found.env : {},
+          description: found?.description || toText(req.body?.description || ''),
+        }
+      }
+      await writeMcpShadowState(shadow)
+      return res.json({ code: 200, message: 'success', data: { name, enabled } })
+    }
+    if (enabled) {
+      const cached = shadow.disabled[name]
+      if (!cached) return res.status(400).json({ code: 400, message: '缺少已缓存配置，无法启用', data: null })
+      const addArgs = ['mcp', 'add', name]
+      if ((cached.type || 'stdio') === 'http') addArgs.push('--url', toText(cached.url))
+      else {
+        const envObj = cached.env && typeof cached.env === 'object' ? cached.env : {}
+        for (const [k, v] of Object.entries(envObj)) addArgs.push('--env', `${k}=${toText(v)}`)
+        addArgs.push('--', ...toText(cached.command).split(/\s+/g).filter(Boolean))
+      }
+      await execFileAsync('codex', addArgs, { timeout: 40000 })
+      delete shadow.disabled[name]
+      await writeMcpShadowState(shadow)
+    } else {
+      let detail = null
+      try {
+        const { stdout } = await execFileAsync('codex', ['mcp', 'get', name, '--json'], { timeout: 20000 })
+        detail = JSON.parse(String(stdout || '{}'))
+      } catch {
+        detail = {}
+      }
+      shadow.disabled[name] = {
+        type: detail?.url ? 'http' : 'stdio',
+        url: toText(detail?.url || ''),
+        command: Array.isArray(detail?.command) ? detail.command.join(' ') : toText(detail?.command || ''),
+        env: detail?.env && typeof detail.env === 'object' ? detail.env : {},
+        description: toText(req.body?.description || ''),
+      }
+      await execFileAsync('codex', ['mcp', 'remove', name], { timeout: 20000 })
+      await writeMcpShadowState(shadow)
+    }
+    return res.json({ code: 200, message: 'success', data: { name, enabled } })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `切换MCP服务状态失败: ${error.message}`, data: null })
+  }
+})
+
+app.delete('/api/mcp-services/:name', authMiddleware, async (req, res) => {
+  const name = toMcpServiceName(req.params?.name)
+  if (!name) return res.status(400).json({ code: 400, message: '缺少参数：name', data: null })
+  try {
+    if (isAgentReachVirtualMcp(name)) {
+      const shadow = await readMcpShadowState()
+      if (!shadow.disabled) shadow.disabled = {}
+      shadow.disabled[name] = {
+        source: 'agent-reach',
+        installPath: '',
+        type: 'stdio',
+        url: '',
+        command: '',
+        env: {},
+        description: '已卸载',
+      }
+      await writeMcpShadowState(shadow)
+      return res.json({ code: 200, message: 'success', data: { name } })
+    }
+    await execFileAsync('codex', ['mcp', 'remove', name], { timeout: 20000 }).catch(() => null)
+    const shadow = await readMcpShadowState()
+    if (!shadow.disabled) shadow.disabled = {}
+    delete shadow.disabled[name]
+    await writeMcpShadowState(shadow)
+    return res.json({ code: 200, message: 'success', data: { name } })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `卸载MCP服务失败: ${error.message}`, data: null })
+  }
+})
+
+app.get('/api/knowledge-bases', authMiddleware, async (_req, res) => {
+  const rows = [...knowledgeBaseStore.values()]
+    .map((item) => ({
+      id: item.id,
+      name: item.name,
+      config: item.config || {},
+      createdAt: item.createdAt,
+      updatedAt: item.updatedAt,
+      documents: Array.isArray(item.documents) ? item.documents.map((doc) => ({
+        id: doc.id,
+        sourceType: doc.sourceType,
+        name: doc.name,
+        url: doc.url,
+        size: doc.size || 0,
+        mimeType: doc.mimeType || '',
+        status: doc.status || 'queued',
+        chunkCount: Number(doc.chunkCount || 0),
+        vectorCount: Number(doc.vectorCount || 0),
+        retryCount: Number(doc.retryCount || 0),
+        errorMessage: toText(doc.errorMessage || ''),
+        createdAt: doc.createdAt || '',
+        updatedAt: doc.updatedAt || '',
+      })) : [],
+    }))
+    .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))
+  return res.json({ code: 200, message: 'success', data: rows })
+})
+
+app.post('/api/knowledge-bases', authMiddleware, async (req, res) => {
+  const name = toText(req.body?.name)
+  if (!name) return res.status(400).json({ code: 400, message: '缺少参数：name', data: null })
+  const id = generateKbId('kb')
+  const now = new Date().toISOString()
+  const embeddingModel = toText(req.body?.embeddingModel)
+  const config = {
+    embeddingModel,
+    embeddingDimension: 1536,
+    topK: Number(req.body?.topK || 10) || 10,
+  }
+  const row = { id, name, config, createdAt: now, updatedAt: now, documents: [] }
+  knowledgeBaseStore.set(id, row)
+  schedulePersistKnowledgeBaseStore()
+  return res.status(201).json({ code: 201, message: 'created', data: row })
+})
+
+app.put('/api/knowledge-bases/:id', authMiddleware, async (req, res) => {
+  const kbId = toText(req.params?.id)
+  const kb = knowledgeBaseStore.get(kbId)
+  if (!kb) return res.status(404).json({ code: 404, message: '知识库不存在', data: null })
+  const name = toText(req.body?.name)
+  if (!name) return res.status(400).json({ code: 400, message: '缺少参数：name', data: null })
+  const embeddingModel = toText(req.body?.embeddingModel)
+  const topK = Number(req.body?.topK || 10) || 10
+  const now = new Date().toISOString()
+  kb.name = name
+  kb.config = {
+    ...kb.config,
+    embeddingModel,
+    embeddingDimension: 1536,
+    topK,
+  }
+  kb.updatedAt = now
+  schedulePersistKnowledgeBaseStore()
+  return res.json({ code: 200, message: 'updated', data: kb })
+})
+
+app.post('/api/knowledge-bases/:id/documents/file', authMiddleware, async (req, res) => {
+  const kbId = toText(req.params?.id)
+  const kb = knowledgeBaseStore.get(kbId)
+  if (!kb) return res.status(404).json({ code: 404, message: '知识库不存在', data: null })
+  const name = toText(req.body?.name)
+  const contentBase64 = toText(req.body?.contentBase64)
+  const mimeType = toText(req.body?.mimeType)
+  const size = Number(req.body?.size || 0)
+  if (!name || !contentBase64) {
+    return res.status(400).json({ code: 400, message: '缺少参数：name/contentBase64', data: null })
+  }
+  const now = new Date().toISOString()
+  const doc = {
+    id: generateKbId('doc'),
+    sourceType: 'file',
+    name,
+    mimeType,
+    size,
+    contentBase64,
+    status: 'queued',
+    retryCount: 0,
+    chunkCount: 0,
+    vectorCount: 0,
+    errorMessage: '',
+    createdAt: now,
+    updatedAt: now,
+  }
+  kb.documents = [doc, ...(kb.documents || [])]
+  kb.updatedAt = now
+  schedulePersistKnowledgeBaseStore()
+  void runKnowledgeDocumentPipeline(kbId, doc.id)
+  return res.status(202).json({ code: 202, message: 'accepted', data: { id: doc.id } })
+})
+
+app.post('/api/knowledge-bases/:id/documents/web', authMiddleware, async (req, res) => {
+  const kbId = toText(req.params?.id)
+  const kb = knowledgeBaseStore.get(kbId)
+  if (!kb) return res.status(404).json({ code: 404, message: '知识库不存在', data: null })
+  const url = toText(req.body?.url)
+  if (!/^https?:\/\//i.test(url)) {
+    return res.status(400).json({ code: 400, message: 'URL 无效', data: null })
+  }
+  const now = new Date().toISOString()
+  const doc = {
+    id: generateKbId('doc'),
+    sourceType: 'web',
+    name: url,
+    url,
+    mimeType: 'text/html',
+    size: 0,
+    status: 'queued',
+    retryCount: 0,
+    chunkCount: 0,
+    vectorCount: 0,
+    errorMessage: '',
+    createdAt: now,
+    updatedAt: now,
+  }
+  kb.documents = [doc, ...(kb.documents || [])]
+  kb.updatedAt = now
+  schedulePersistKnowledgeBaseStore()
+  void runKnowledgeDocumentPipeline(kbId, doc.id)
+  return res.status(202).json({ code: 202, message: 'accepted', data: { id: doc.id } })
+})
+
+app.post('/api/knowledge-bases/:id/documents/:docId/retry', authMiddleware, async (req, res) => {
+  const kbId = toText(req.params?.id)
+  const docId = toText(req.params?.docId)
+  const kb = knowledgeBaseStore.get(kbId)
+  if (!kb) return res.status(404).json({ code: 404, message: '知识库不存在', data: null })
+  const doc = (kb.documents || []).find((item) => item.id === docId)
+  if (!doc) return res.status(404).json({ code: 404, message: '文档不存在', data: null })
+  doc.retryCount = Number(doc.retryCount || 0) + 1
+  doc.status = 'queued'
+  doc.errorMessage = ''
+  doc.updatedAt = new Date().toISOString()
+  kb.updatedAt = doc.updatedAt
+  schedulePersistKnowledgeBaseStore()
+  void runKnowledgeDocumentPipeline(kbId, docId)
+  return res.json({ code: 200, message: 'retry_triggered', data: { id: docId } })
+})
+
+app.delete('/api/knowledge-bases/:id/documents/:docId', authMiddleware, async (req, res) => {
+  const kbId = toText(req.params?.id)
+  const docId = toText(req.params?.docId)
+  const kb = knowledgeBaseStore.get(kbId)
+  if (!kb) return res.status(404).json({ code: 404, message: '知识库不存在', data: null })
+  const docs = Array.isArray(kb.documents) ? kb.documents : []
+  const target = docs.find((item) => item.id === docId)
+  if (!target) return res.status(404).json({ code: 404, message: '文档不存在', data: null })
+  kb.documents = docs.filter((item) => item.id !== docId)
+  kb.updatedAt = new Date().toISOString()
+  schedulePersistKnowledgeBaseStore()
+  try {
+    await pool.query(`DELETE FROM ${knowledgeBaseVectorTable} WHERE doc_id = $1`, [docId])
+  } catch {}
+  return res.json({ code: 200, message: 'deleted', data: { id: docId } })
+})
+
+app.post('/api/knowledge-bases/:id/search', authMiddleware, async (req, res) => {
+  const kbId = toText(req.params?.id)
+  const kb = knowledgeBaseStore.get(kbId)
+  if (!kb) return res.status(404).json({ code: 404, message: '知识库不存在', data: null })
+  const queryText = toText(req.body?.query)
+  if (!queryText) return res.status(400).json({ code: 400, message: '缺少参数：query', data: null })
+  const metricRaw = toText(req.body?.metric).toLowerCase()
+  const metric = metricRaw === 'euclidean' ? 'euclidean' : 'cosine'
+  const topK = Math.min(Math.max(Number(req.body?.topK || kb.config?.topK || 10), 1), 200)
+  const candidateK = Math.min(Math.max(topK * 8, 80), 500)
+  const queryVector = await embedTextByProvider(
+    queryText,
+    toText(kb.config?.embeddingModel) || 'text-embedding-3-small',
+    knowledgeVectorStoreDim,
+  )
+  const queryVectorLiteral = toPgVectorLiteral(queryVector)
+  const orderExpr = metric === 'euclidean' ? 'embedding <-> $3::vector' : 'embedding <=> $3::vector'
+  const queryTokens = (() => {
+    const bySplit = queryText.split(/[\s,，。；;、|]+/g).map((item) => item.trim()).filter(Boolean)
+    if (bySplit.length > 1) return [...new Set(bySplit.filter((item) => item.length >= 2))]
+    const single = bySplit[0] || queryText
+    if (/^[\u4e00-\u9fff]+$/.test(single) && single.length >= 2) {
+      const grams = new Set()
+      for (let i = 0; i < single.length - 1; i += 2) grams.add(single.slice(i, i + 2))
+      if (single.length % 2 === 1 && single.length >= 3) {
+        grams.add(single.slice(single.length - 2))
+      }
+      grams.add(single)
+      return [...grams].filter((item) => item.length >= 2)
+    }
+    return single.length >= 2 ? [single] : []
+  })()
+  const aliasTokenMap = [
+    {
+      test: ['认证体系', '质量体系', '体系认证'],
+      aliases: ['ts16949', 'ts 16949', 'iatf16949', 'iatf 16949', 'iso9001', 'iso 9001', '体系认证', '质量管理体系'],
+    },
+  ]
+  const expandedTokens = new Set(queryTokens)
+  const queryLower = queryText.toLowerCase()
+  for (const item of aliasTokenMap) {
+    if (item.test.some((token) => queryText.includes(token) || queryLower.includes(token.toLowerCase()))) {
+      item.aliases.forEach((alias) => expandedTokens.add(alias))
+    }
+  }
+  const finalTokens = [...expandedTokens].filter((token) => String(token || '').trim().length >= 2)
+  const strictKeyword = req.body?.strictKeyword !== false
+  try {
+    const result = await pool.query(
+      `
+      SELECT
+        id,
+        kb_id AS "kbId",
+        doc_id AS "docId",
+        chunk_index AS "chunkIndex",
+        chunk_text AS "chunkText",
+        embedding_model AS "embeddingModel",
+        embedding_dim AS "embeddingDim",
+        embedding::text AS "embeddingText",
+        (embedding <=> $3::vector) AS "cosineDistance",
+        (embedding <-> $3::vector) AS "euclideanDistance"
+      FROM ${knowledgeBaseVectorTable}
+      WHERE kb_id = $1
+        AND embedding IS NOT NULL
+      ORDER BY ${orderExpr} ASC
+      LIMIT $2
+      `,
+      [kbId, candidateK, queryVectorLiteral],
+    )
+    const rows = (result.rows || []).map((row) => {
+      const vectorText = toText(row.embeddingText).replace(/^\[|\]$/g, '')
+      const embedding = vectorText
+        ? vectorText.split(',').map((item) => Number(item)).filter((item) => Number.isFinite(item))
+        : []
+      const chunkText = toText(row.chunkText)
+      const phraseHit = chunkText.toLowerCase().includes(queryText.toLowerCase()) ? 1 : 0
+      let tokenHits = 0
+      const lowerChunk = chunkText.toLowerCase()
+      for (const token of finalTokens) {
+        if (!token) continue
+        const normalizedToken = token.toLowerCase().replace(/\s+/g, '')
+        if (!normalizedToken) continue
+        const normalizedChunk = lowerChunk.replace(/\s+/g, '')
+        if (normalizedChunk.includes(normalizedToken)) tokenHits += 1
+      }
+      const allTermsHit = finalTokens.length === 0 ? 0 : (tokenHits > 0 ? 1 : 0)
+      const cosineDistance = Number(row.cosineDistance || 0)
+      const euclideanDistance = Number(row.euclideanDistance || 0)
+      const baseDistance = metric === 'euclidean' ? euclideanDistance : cosineDistance
+      const keywordBoost = phraseHit * 0.3 + allTermsHit * 0.25 + tokenHits * 0.05
+      const finalScore = baseDistance - keywordBoost
+      return {
+        id: row.id,
+        kbId: row.kbId,
+        docId: row.docId,
+        chunkIndex: Number(row.chunkIndex || 0),
+        chunkText,
+        embeddingModel: toText(row.embeddingModel),
+        embeddingDim: Number(row.embeddingDim || 1536),
+        embedding,
+        cosineDistance,
+        euclideanDistance,
+        phraseHit,
+        tokenHits,
+        allTermsHit,
+        finalScore,
+      }
+    })
+      .filter((item) => !strictKeyword || item.phraseHit > 0 || item.tokenHits > 0)
+      .sort((a, b) => a.finalScore - b.finalScore)
+      .slice(0, topK)
+    return res.json({
+      code: 200,
+      message: 'success',
+      data: {
+        kbId,
+        metric,
+        topK,
+        query: queryText,
+        queryTokens: finalTokens,
+        strictKeyword,
+        queryVector,
+        results: rows,
+      },
+    })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `向量检索失败: ${error.message}`, data: null })
+  }
+})
+
 app.post('/api/skills/install', authMiddleware, async (req, res) => {
   const name = toText(req.body?.name)
   const installBasePath = toText(req.body?.installPath)
@@ -14054,6 +15061,7 @@ async function bootstrap() {
     await initDatabase()
     dbReady = true
     dbInitErrorMessage = ''
+    await loadKnowledgeBaseStore()
   } catch (error) {
     dbReady = false
     dbInitErrorMessage = error.message || 'unknown_db_error'

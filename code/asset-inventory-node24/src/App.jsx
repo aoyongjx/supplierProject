@@ -17,7 +17,7 @@ import {
   LineChartOutlined,
 } from '@ant-design/icons'
 import { Breadcrumb, Button, Card, Checkbox, ConfigProvider, Divider, Layout, Menu, Modal, Segmented, Space, Typography, theme } from 'antd'
-import { useEffect, useMemo, useState } from 'react'
+import { Component, Suspense, lazy, useEffect, useMemo, useState } from 'react'
 import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import { clearTokens, getAccessToken } from './auth/token'
 import AnalyticsPage from './pages/AnalyticsPage'
@@ -35,6 +35,7 @@ import HomePage from './pages/HomePage'
 import InventoryFormPage from './pages/InventoryFormPage'
 import InventoryListPage from './pages/InventoryListPage'
 import LoginPage from './pages/LoginPage'
+import KnowledgeBaseManagementPage from './pages/KnowledgeBaseManagementPage'
 import SessionChatPage from './pages/SessionChatPage'
 import SessionHistoryPage from './pages/SessionHistoryPage'
 import StockKlinePage from './pages/StockKlinePage'
@@ -48,6 +49,33 @@ import GasSupplierPortraitWorkspacePage from './pages/GasSupplierPortraitWorkspa
 import McpServicesPage from './pages/McpServicesPage'
 import SkillManagementPage from './pages/SkillManagementPage'
 import { fetchRecentSessions } from './api/sessionApi'
+const VectorSearchPage = lazy(() => import('./pages/VectorSearchPage'))
+
+class RouteErrorBoundary extends Component {
+  constructor(props) {
+    super(props)
+    this.state = { hasError: false, message: '' }
+  }
+
+  static getDerivedStateFromError(error) {
+    return { hasError: true, message: error?.message || '页面渲染失败' }
+  }
+
+  componentDidCatch(error) {
+    console.error('Route render error:', error)
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <Card className="app-elevated-card">
+          页面加载失败：{this.state.message}
+        </Card>
+      )
+    }
+    return this.props.children
+  }
+}
 
 const { Header, Sider, Content } = Layout
 const { Title, Text } = Typography
@@ -118,6 +146,7 @@ const baseMenuGroups = [
       { id: 'capability-mcp-services', key: '/capability-center/mcp-services', label: 'MCP服务' },
       { id: 'capability-skill-management', key: '/capability-center/skills', label: 'Skill管理' },
       { id: 'capability-knowledge-base', key: '/capability-center/knowledge-base', label: '知识库管理' },
+      { id: 'capability-vector-search', key: '/capability-center/vector-search', label: '向量检索' },
     ],
   },
 ]
@@ -172,6 +201,7 @@ const menuPermissionSections = [
       { id: 'capability-mcp-services', label: 'MCP服务' },
       { id: 'capability-skill-management', label: 'Skill管理' },
       { id: 'capability-knowledge-base', label: '知识库管理' },
+      { id: 'capability-vector-search', label: '向量检索' },
     ],
   },
 ]
@@ -195,6 +225,9 @@ function readVisibleMenuIds() {
     }
     if (!next.has('gas-supplier-portrait') && next.has('gas-suppliers')) {
       next.add('gas-supplier-portrait')
+    }
+    if (!next.has('capability-vector-search') && next.has('capability-center')) {
+      next.add('capability-vector-search')
     }
     return defaultVisibleMenuIds.filter((id) => next.has(id))
   } catch {
@@ -307,6 +340,7 @@ function App() {
     if (location.pathname.startsWith('/capability-center/mcp-services')) return '/capability-center/mcp-services'
     if (location.pathname.startsWith('/capability-center/skills')) return '/capability-center/skills'
     if (location.pathname.startsWith('/capability-center/knowledge-base')) return '/capability-center/knowledge-base'
+    if (location.pathname.startsWith('/capability-center/vector-search')) return '/capability-center/vector-search'
     if (location.pathname.startsWith('/sessions/new')) return '/sessions/new'
     if (/^\/sessions\/\d+$/.test(location.pathname)) return location.pathname
     if (location.pathname.startsWith('/sessions')) return '/sessions'
@@ -359,6 +393,7 @@ function App() {
     if (location.pathname.startsWith('/capability-center/mcp-services')) return { title: 'MCP服务', breadcrumb: ['能力中心', 'MCP服务'] }
     if (location.pathname.startsWith('/capability-center/skills')) return { title: 'Skill管理', breadcrumb: ['能力中心', 'Skill管理'] }
     if (location.pathname.startsWith('/capability-center/knowledge-base')) return { title: '知识库管理', breadcrumb: ['能力中心', '知识库管理'] }
+    if (location.pathname.startsWith('/capability-center/vector-search')) return { title: '向量检索', breadcrumb: ['能力中心', '向量检索'] }
     if (location.pathname === '/sessions') return { title: '会话历史', breadcrumb: ['会话', '历史会话'] }
     if (location.pathname === '/sessions/new') return { title: '新会话', breadcrumb: ['会话', '开启一个会话'] }
     if (/^\/sessions\/\d+$/.test(location.pathname)) return { title: '历史会话', breadcrumb: ['会话', '历史会话'] }
@@ -447,7 +482,8 @@ function App() {
             </div>
           </Header>
           <Content className={`app-content ${location.pathname.startsWith('/sessions') ? 'app-content-session' : ''}`}>
-            <Routes>
+            <RouteErrorBoundary>
+              <Routes>
               <Route path="/" element={<HomePage />} />
               <Route path="/inventories" element={<InventoryListPage />} />
               <Route path="/inventories/new" element={<InventoryFormPage />} />
@@ -486,12 +522,14 @@ function App() {
               <Route path="/agents/supplier-dd" element={<PlaceholderPage title="供应商尽调智能体" />} />
               <Route path="/capability-center/mcp-services" element={<McpServicesPage />} />
               <Route path="/capability-center/skills" element={<SkillManagementPage />} />
-              <Route path="/capability-center/knowledge-base" element={<PlaceholderPage title="知识库管理" />} />
+              <Route path="/capability-center/knowledge-base" element={<KnowledgeBaseManagementPage />} />
+              <Route path="/capability-center/vector-search" element={<Suspense fallback={<Card className="app-elevated-card">加载中...</Card>}><VectorSearchPage /></Suspense>} />
               <Route path="/sessions" element={<SessionHistoryPage />} />
               <Route path="/sessions/new" element={<SessionChatPage />} />
               <Route path="/sessions/:id" element={<SessionChatPage />} />
               <Route path="*" element={<Navigate replace to="/" />} />
-            </Routes>
+              </Routes>
+            </RouteErrorBoundary>
           </Content>
         </Layout>
       </Layout>
@@ -529,7 +567,7 @@ function App() {
                             if (item.id === 'agent-precise-sourcing' || item.id === 'agent-admission-screening' || item.id === 'agent-realtime-monitoring' || item.id === 'agent-supplier-dd') {
                               set.add('agents')
                             }
-                            if (item.id === 'capability-mcp-services' || item.id === 'capability-skill-management' || item.id === 'capability-knowledge-base') {
+                            if (item.id === 'capability-mcp-services' || item.id === 'capability-skill-management' || item.id === 'capability-knowledge-base' || item.id === 'capability-vector-search') {
                               set.add('capability-center')
                             }
                           } else {
@@ -557,6 +595,7 @@ function App() {
                               set.delete('capability-mcp-services')
                               set.delete('capability-skill-management')
                               set.delete('capability-knowledge-base')
+                              set.delete('capability-vector-search')
                             }
                           }
                           return defaultVisibleMenuIds.filter((id) => set.has(id))

@@ -106,3 +106,16 @@
   - 支持自然语言识别 `全量/增量`、`业务实体`、`URL`，不强制固定模板。
   - 针对站点反爬增加 cookie 二次请求机制。
   - 可从首页“全部产品分类”抽取一级/二级/三级标题并形成 `supply_chain_info`。
+
+## 11. 能力中心与知识库（2026-04-29）
+
+- 新增一级菜单：`智能体`、`能力中心`；新增页面：`MCP服务`、`Skill管理`、`知识库管理`。
+- MCP服务页：接入真实本机配置读取，支持启动/禁用、修改、卸载；并展示 Agent Reach 渠道卡片 `wechat`、`xueqiu`。
+- Skill管理页：支持真实 skill 列表、启用/禁用、修改、卸载、安装路径输入、安装进度与日志提示。
+- 知识库管理页：左侧树形库列表 + 右侧库内容；新增库时保存配置（嵌入模型、维度、TopK），支持文件/网页入库。
+- 知识库入库流水线：`queued -> parsing -> chunking -> embedding -> success/failed`，支持失败重试。
+- 知识库持久化：从本地文件迁移为数据库存储。
+- 新增数据库对象：
+  - `knowledge_base`
+  - `knowledge_base_document`
+  - `supplier_opinion_vector`（`pgvector`，`embedding vector(1536)`，`ivfflat` 索引）
