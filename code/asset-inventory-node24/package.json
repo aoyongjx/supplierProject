@@ -8,8 +8,10 @@
   },
   "scripts": {
     "dev": "concurrently \"npm:dev:server\" \"npm:dev:client\"",
+    "dev:watch": "concurrently \"npm:dev:server:watch\" \"npm:dev:client\"",
     "dev:client": "vite",
-    "dev:server": "node --watch server/index.js",
+    "dev:server": "node server/index.js",
+    "dev:server:watch": "node --watch server/index.js",
     "stable": "concurrently \"npm:stable:server\" \"npm:stable:client\"",
     "stable:client": "vite preview --host 127.0.0.1 --strictPort --port 5173",
     "stable:server": "node server/index.js",
