@@ -5,7 +5,7 @@ function buildAuthHeaders() {
   return token ? { Authorization: `Bearer ${token}` } : {}
 }
 
-const directApiBase = (import.meta.env.VITE_API_DIRECT_BASE || 'http://127.0.0.1:3000').replace(/\/+$/, '')
+const directApiBase = (import.meta.env.VITE_API_DIRECT_BASE || 'http://localhost:3000').replace(/\/+$/, '')
 
 async function requestWithFallback(path, init = {}) {
   const primary = async () => fetch(path, init)
@@ -74,4 +74,3 @@ export async function uninstallMcpService(name) {
   const result = await parseJson(response)
   return result.data
 }
-

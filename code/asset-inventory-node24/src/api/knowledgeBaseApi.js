@@ -5,7 +5,7 @@ function buildAuthHeaders() {
   return token ? { Authorization: `Bearer ${token}` } : {}
 }
 
-const directApiBase = (import.meta.env.VITE_API_DIRECT_BASE || 'http://127.0.0.1:3000').replace(/\/+$/, '')
+const directApiBase = (import.meta.env.VITE_API_DIRECT_BASE || 'http://localhost:3000').replace(/\/+$/, '')
 
 async function requestWithFallback(path, init = {}) {
   const primary = async () => fetch(path, init)
@@ -76,6 +76,26 @@ export async function addKnowledgeBaseWebPage(kbId, url) {
   return result.data
 }
 
+export async function mcpSearch(payload) {
+  const response = await requestWithFallback('/api/mcp-services/search', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...buildAuthHeaders() },
+    body: JSON.stringify(payload || {}),
+  })
+  const result = await parseJson(response)
+  return result.data
+}
+
+export async function addKnowledgeBaseText(kbId, payload) {
+  const response = await requestWithFallback(`/api/knowledge-bases/${encodeURIComponent(String(kbId))}/documents/text`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...buildAuthHeaders() },
+    body: JSON.stringify(payload || {}),
+  })
+  const result = await parseJson(response)
+  return result.data
+}
+
 export async function retryKnowledgeBaseDocument(kbId, docId) {
   const response = await requestWithFallback(`/api/knowledge-bases/${encodeURIComponent(String(kbId))}/documents/${encodeURIComponent(String(docId))}/retry`, {
     method: 'POST',
@@ -88,6 +108,15 @@ export async function retryKnowledgeBaseDocument(kbId, docId) {
 export async function deleteKnowledgeBaseDocument(kbId, docId) {
   const response = await requestWithFallback(`/api/knowledge-bases/${encodeURIComponent(String(kbId))}/documents/${encodeURIComponent(String(docId))}`, {
     method: 'DELETE',
+    headers: buildAuthHeaders(),
+  })
+  const result = await parseJson(response)
+  return result.data
+}
+
+export async function previewKnowledgeBaseDocument(kbId, docId) {
+  const response = await requestWithFallback(`/api/knowledge-bases/${encodeURIComponent(String(kbId))}/documents/${encodeURIComponent(String(docId))}/preview`, {
+    method: 'GET',
     headers: buildAuthHeaders(),
   })
   const result = await parseJson(response)

@@ -1,5 +1,6 @@
 import { Alert, Button, Card, Divider, Input, Select, Space, Table, Tag, Typography, message } from 'antd'
 import { useEffect, useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { fetchKnowledgeBases, searchKnowledgeBase } from '../api/knowledgeBaseApi'
 
 const { Text, Title } = Typography
@@ -8,6 +9,31 @@ function shortText(input = '', limit = 240) {
   const text = String(input || '').trim()
   if (text.length <= limit) return text
   return `${text.slice(0, limit)}...`
+}
+
+function snippetAroundHit(text = '', tokens = [], radius = 140) {
+  const raw = String(text || '')
+  if (!raw) return ''
+  const normalizedTokens = (Array.isArray(tokens) ? tokens : [])
+    .map((token) => String(token || '').trim())
+    .filter(Boolean)
+    .sort((a, b) => b.length - a.length)
+  let hitIndex = -1
+  let hitToken = ''
+  for (const token of normalizedTokens) {
+    const idx = raw.toLowerCase().indexOf(token.toLowerCase())
+    if (idx >= 0) {
+      hitIndex = idx
+      hitToken = token
+      break
+    }
+  }
+  if (hitIndex < 0) return shortText(raw, radius * 2)
+  const start = Math.max(0, hitIndex - radius)
+  const end = Math.min(raw.length, hitIndex + hitToken.length + radius)
+  const prefix = start > 0 ? '...' : ''
+  const suffix = end < raw.length ? '...' : ''
+  return `${prefix}${raw.slice(start, end)}${suffix}`
 }
 
 function escapeRegExp(text = '') {
@@ -54,7 +80,16 @@ function renderHighlightedText(text = '', query = '') {
   })
 }
 
+function sourceTypeLabel(type = '') {
+  const token = String(type || '').toLowerCase()
+  if (token === 'file') return { text: '文件', color: 'blue' }
+  if (token === 'web') return { text: '网页', color: 'geekblue' }
+  if (token === 'search') return { text: '搜索', color: 'purple' }
+  return { text: token || '未知', color: 'default' }
+}
+
 export default function VectorSearchPage() {
+  const navigate = useNavigate()
   const [knowledgeBases, setKnowledgeBases] = useState([])
   const [loadingKb, setLoadingKb] = useState(false)
   const [searching, setSearching] = useState(false)
@@ -99,9 +134,16 @@ export default function VectorSearchPage() {
       ? result.results.map((item, index) => ({
         key: `${item.docId}-${item.chunkIndex}-${index}`,
         rank: index + 1,
+        kbId: item.kbId,
         docId: item.docId,
+        sourceType: item.sourceType,
+        docName: item.docName,
+        docUrl: item.docUrl,
         chunkIndex: item.chunkIndex,
         chunkText: item.chunkText,
+        tokenHits: Number(item.tokenHits || 0),
+        phraseHit: Number(item.phraseHit || 0),
+        hitTokens: Array.isArray(item.hitTokens) ? item.hitTokens : [],
         cosineDistance: item.cosineDistance,
         euclideanDistance: item.euclideanDistance,
       }))
@@ -190,15 +232,61 @@ export default function VectorSearchPage() {
               pagination={{ pageSize: 10 }}
               columns={[
                 { title: '#', dataIndex: 'rank', width: 64 },
-                { title: '文档ID', dataIndex: 'docId', width: 180 },
+                {
+                  title: '来源',
+                  dataIndex: 'docId',
+                  width: 200,
+                  render: (_, row) => (
+                    <Button
+                      size="small"
+                      onClick={() => {
+                        const payload = {
+                          kbId: row.kbId || result?.kbId,
+                          docId: row.docId,
+                          sourceType: row.sourceType,
+                        }
+                        sessionStorage.setItem('kbFocusDoc', JSON.stringify(payload))
+                        navigate('/capability-center/knowledge-base')
+                      }}
+                    >
+                      查看来源
+                    </Button>
+                  ),
+                },
+                {
+                  title: '来源类型',
+                  dataIndex: 'sourceType',
+                  width: 96,
+                  filters: [
+                    { text: '文件', value: 'file' },
+                    { text: '网页', value: 'web' },
+                    { text: '搜索', value: 'search' },
+                  ],
+                  onFilter: (value, record) => String(record.sourceType || '') === String(value || ''),
+                  render: (v) => {
+                    const meta = sourceTypeLabel(v)
+                    return <Tag color={meta.color}>{meta.text}</Tag>
+                  },
+                },
                 { title: '片段序号', dataIndex: 'chunkIndex', width: 90 },
                 { title: '关键词命中数', dataIndex: 'tokenHits', width: 108, render: (_, row) => `${row.tokenHits || 0}` },
+                { title: '整句命中', dataIndex: 'phraseHit', width: 90, render: (_, row) => (row.phraseHit ? '是' : '否') },
+                {
+                  title: '命中词',
+                  dataIndex: 'hitTokens',
+                  width: 180,
+                  render: (_, row) => (
+                    <Space size={[4, 4]} wrap>
+                      {(row.hitTokens || []).slice(0, 4).map((token) => <Tag key={token}>{token}</Tag>)}
+                    </Space>
+                  ),
+                },
                 { title: '余弦距离(越小越相关)', dataIndex: 'cosineDistance', width: 148, render: (v) => Number(v || 0).toFixed(6) },
                 { title: '欧式距离(越小越相关)', dataIndex: 'euclideanDistance', width: 148, render: (v) => Number(v || 0).toFixed(6) },
                 {
                   title: '命中文本',
                   dataIndex: 'chunkText',
-                  render: (v) => (
+                  render: (v, row) => (
                     <div
                       style={{
                         background: 'transparent',
@@ -208,7 +296,7 @@ export default function VectorSearchPage() {
                         lineHeight: 1.6,
                       }}
                     >
-                      <Text>{renderHighlightedText(shortText(v, 280), (result?.queryTokens || []).join(' '))}</Text>
+                      <Text>{renderHighlightedText(snippetAroundHit(v, row.hitTokens, 180), (result?.queryTokens || []).join(' '))}</Text>
                     </div>
                   ),
                 },

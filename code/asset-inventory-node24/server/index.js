@@ -47,6 +47,14 @@ const dbReconnectIntervalMs = Math.max(1000, Number(process.env.DB_RECONNECT_INT
 const dbReconnectCooldownMs = Math.max(1000, Number(process.env.DB_RECONNECT_COOLDOWN_MS || 4000))
 const embeddingApiKey = toText(process.env.OPENAI_API_KEY || process.env.EMBEDDING_API_KEY)
 const embeddingBaseUrl = toText(process.env.OPENAI_BASE_URL || process.env.EMBEDDING_BASE_URL || 'https://api.openai.com')
+const qwenEmbeddingApiKey = toText(process.env.QWEN_EMBEDDING_API_KEY || process.env.EMBEDDING_API_KEY)
+const qwenEmbeddingBaseUrl = toText(process.env.QWEN_EMBEDDING_BASE_URL || 'https://api.siliconflow.cn/v1')
+const qwenEmbeddingModel = 'Qwen/Qwen3-VL-Embedding-8B'
+const defaultKbEmbeddingModel = qwenEmbeddingModel
+
+function resolveKnowledgeBaseEmbeddingModel(kb = null) {
+  return toText(kb?.config?.embeddingModel) || defaultKbEmbeddingModel
+}
 
 function safeHostFromUrl(input) {
   try {
@@ -242,9 +250,13 @@ async function loadConfiguredMcpServices() {
         source: 'codex-config',
         installPath: codexConfigPath,
         description: toText(parsed?.description || ''),
-        type: parsed?.url ? 'http' : 'stdio',
-        url: toText(parsed?.url || ''),
-        command: Array.isArray(parsed?.command) ? parsed.command.join(' ') : toText(parsed?.command || ''),
+        type: toText(parsed?.transport?.type).includes('http') || parsed?.url ? 'http' : 'stdio',
+        url: toText(parsed?.transport?.url || parsed?.url || ''),
+        command: Array.isArray(parsed?.command)
+          ? parsed.command.join(' ')
+          : Array.isArray(parsed?.transport?.command)
+            ? parsed.transport.command.join(' ')
+            : toText(parsed?.command || ''),
         env: parsed?.env && typeof parsed.env === 'object' ? parsed.env : {},
         enabled: true,
       })
@@ -476,6 +488,52 @@ async function pathExists(targetPath = '') {
   } catch {
     return false
   }
+}
+
+async function commandExists(command = '') {
+  const name = toText(command)
+  if (!name) return false
+  try {
+    await execFileAsync('where', [name], { timeout: 8000 })
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function evaluateMcpCallable(item = {}) {
+  const name = toMcpServiceName(item?.name).toLowerCase()
+  if (item?.enabled === false) return { callable: false, reason: '已禁用' }
+  if (name === 'exa') return { callable: false, reason: '已禁用：检索结果质量不稳定' }
+  if (name === 'tavily') return { callable: true, reason: 'HTTP MCP/官方检索可用' }
+  if (name === 'weixin-reader') {
+    const ok = await commandExists('python') && await pathExists('C:\\Users\\aoyon\\.codex\\mcp\\wexin-read-mcp\\src\\server.py')
+    return ok ? { callable: true, reason: '可读取公众号正文' } : { callable: false, reason: 'weixin-reader 未完整安装' }
+  }
+  if (name === 'filesystem') {
+    const ok = await commandExists('npx')
+    return ok ? { callable: true, reason: 'npx 可用' } : { callable: false, reason: '缺少 npx' }
+  }
+  if (name === 'twitter') {
+    const ok = await commandExists('twitter')
+    return ok ? { callable: true, reason: '命令存在（UTF-8 终端下可用）' } : { callable: false, reason: '命令不存在' }
+  }
+  if (name === 'linkedin') {
+    const ok = await commandExists('linkedin-scraper-mcp') || await pathExists('C:\\Users\\aoyon\\AppData\\Roaming\\Python\\Python314\\Scripts\\linkedin-scraper-mcp.exe')
+    return ok ? { callable: true, reason: '命令存在（可能需登录）' } : { callable: false, reason: '命令不存在' }
+  }
+  if (name === 'weibo') {
+    const ok = await commandExists('mcp-server-weibo')
+    return ok ? { callable: true, reason: '命令存在' } : { callable: false, reason: '本机缺少 mcp-server-weibo 命令' }
+  }
+  if (name === 'wechat') {
+    return { callable: false, reason: '仅文章阅读可用；搜索依赖 Exa/未注册独立 MCP 工具' }
+  }
+  if (name === 'xueqiu') {
+    const ok = await commandExists('agent-reach')
+    return ok ? { callable: true, reason: 'agent-reach 可用（需渠道配置）' } : { callable: false, reason: '缺少 agent-reach 命令' }
+  }
+  return { callable: true, reason: '可尝试调用' }
 }
 
 function buildSupplierBrowserProfileCandidates() {
@@ -759,6 +817,500 @@ function stripHtmlTags(input = '') {
     .trim()
 }
 
+function decodeBase64Utf8(input = '') {
+  const payload = toText(input)
+  if (!payload) return ''
+  try {
+    return Buffer.from(payload, 'base64').toString('utf8')
+  } catch {
+    return ''
+  }
+}
+
+function decodeHtmlEntities(input = '') {
+  const basic = String(input || '')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+  return basic
+    .replace(/&#x([0-9a-fA-F]+);/g, (_m, hex) => {
+      const code = Number.parseInt(hex, 16)
+      return Number.isFinite(code) ? String.fromCodePoint(code) : _m
+    })
+    .replace(/&#([0-9]+);/g, (_m, dec) => {
+      const code = Number.parseInt(dec, 10)
+      return Number.isFinite(code) ? String.fromCodePoint(code) : _m
+    })
+}
+
+function stripHtmlBasic(input = '') {
+  return String(input || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+}
+
+function mapSearchQueryByService(service = '', keyword = '') {
+  const token = toMcpServiceName(service).toLowerCase()
+  const q = String(keyword || '').trim()
+  if (!q) return q
+  if (token === 'wechat') return `site:mp.weixin.qq.com ${q}`
+  if (token === 'weibo') return `site:weibo.com ${q}`
+  if (token === 'twitter') return `site:x.com ${q}`
+  if (token === 'linkedin') return `site:linkedin.com ${q}`
+  return q
+}
+
+function toSimpleTokens(text = '') {
+  return String(text || '')
+    .toLowerCase()
+    .split(/[\s,，。；;、|]+/g)
+    .map((x) => x.trim())
+    .filter(Boolean)
+}
+
+function scoreRelevance(title = '', snippet = '', keyword = '') {
+  const t = `${title} ${snippet}`.toLowerCase()
+  const tokens = toSimpleTokens(keyword)
+  let score = 0
+  for (const token of tokens) {
+    if (token && t.includes(token)) score += 2
+  }
+  return score
+}
+
+function parseLinksFromJinaMarkdown(text = '', keyword = '') {
+  const rows = []
+  for (const m of String(text || '').matchAll(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/gim)) {
+    const title = decodeHtmlEntities(toText(m?.[1]))
+    const href = decodeHtmlEntities(toText(m?.[2]))
+    if (!title || !href) continue
+    if (/bing|google|baidu|duckduckgo/i.test(href) && /(search|s\?)/i.test(href)) continue
+    rows.push({ title, href, snippet: '', score: scoreRelevance(title, '', keyword) })
+    if (rows.length >= 20) break
+  }
+  return rows
+}
+
+async function searchWebSnippets(keyword = '', service = '') {
+  const q = mapSearchQueryByService(service, keyword)
+  if (!q) return []
+  const commonHeaders = {
+    'User-Agent': 'Mozilla/5.0',
+    Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+  }
+  const parseDuck = (html = '') => {
+    const blocks = [...String(html || '').matchAll(/<div class="result(?:__body)?[\s\S]*?<\/div>\s*<\/div>/gim)]
+    const rows = []
+    for (const block of blocks) {
+      const raw = String(block?.[0] || '')
+      const titleMatch = raw.match(/<a[^>]*class="result__a"[^>]*>([\s\S]*?)<\/a>/i)
+      const hrefMatch = raw.match(/<a[^>]*class="result__a"[^>]*href="([^"]+)"/i)
+      const snippetMatch = raw.match(/<a[^>]*class="result__snippet"[^>]*>([\s\S]*?)<\/a>|<div[^>]*class="result__snippet"[^>]*>([\s\S]*?)<\/div>/i)
+      const title = decodeHtmlEntities(stripHtmlBasic(titleMatch?.[1] || ''))
+      const href = decodeHtmlEntities(toText(hrefMatch?.[1]))
+      const snippet = decodeHtmlEntities(stripHtmlBasic(snippetMatch?.[1] || snippetMatch?.[2] || ''))
+      if (!title && !snippet) continue
+      rows.push({ title, href, snippet })
+      if (rows.length >= 8) break
+    }
+    return rows
+  }
+  const parseBaidu = (html = '') => {
+    const blocks = [...String(html || '').matchAll(/<div[^>]+class="[^"]*result[^"]*"[\s\S]*?<\/div>\s*<\/div>/gim)]
+    const rows = []
+    for (const block of blocks) {
+      const raw = String(block?.[0] || '')
+      const titleMatch = raw.match(/<h3[^>]*>[\s\S]*?<a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?<\/h3>/i)
+      const snippetMatch = raw.match(/<div[^>]+class="[^"]*(?:c-abstract|content-right_8Zs40)[^"]*"[^>]*>([\s\S]*?)<\/div>/i)
+      const href = decodeHtmlEntities(toText(titleMatch?.[1]))
+      const title = decodeHtmlEntities(stripHtmlBasic(titleMatch?.[2] || ''))
+      const snippet = decodeHtmlEntities(stripHtmlBasic(snippetMatch?.[1] || ''))
+      if (!title && !snippet) continue
+      rows.push({ title, href, snippet })
+      if (rows.length >= 8) break
+    }
+    if (rows.length === 0) {
+      const generic = [...String(html || '').matchAll(/<a[^>]*href="(https?:\/\/[^"]+)"[^>]*>([\s\S]*?)<\/a>/gim)]
+      for (const item of generic) {
+        const href = decodeHtmlEntities(toText(item?.[1]))
+        const title = decodeHtmlEntities(stripHtmlBasic(item?.[2] || ''))
+        if (!href || !title || title.length < 2) continue
+        if (/百度一下|下一页|上一页|更多|登录|注册/i.test(title)) continue
+        rows.push({ title, href, snippet: '' })
+        if (rows.length >= 8) break
+      }
+    }
+    return rows
+  }
+  try {
+    const ddg = await fetchByNetworkPolicy(`https://duckduckgo.com/html/?q=${encodeURIComponent(q)}`, { headers: commonHeaders })
+    if (ddg.ok) {
+      const html = await ddg.text()
+      const rows = parseDuck(html)
+      if (rows.length > 0) return rows
+    }
+  } catch {
+    // fallback below
+  }
+  const baidu = await fetchByNetworkPolicy(`https://www.baidu.com/s?wd=${encodeURIComponent(q)}`, { headers: commonHeaders })
+  if (baidu.ok) {
+    const baiduHtml = await baidu.text()
+    const rows = parseBaidu(baiduHtml)
+    if (rows.length > 0) return rows
+  }
+  const bing = await fetchByNetworkPolicy(`https://www.bing.com/search?q=${encodeURIComponent(q)}`, { headers: commonHeaders })
+  if (!bing.ok) throw new Error(`搜索服务返回 HTTP ${bing.status}`)
+  const bingHtml = await bing.text()
+  const rows = []
+  for (const block of [...String(bingHtml || '').matchAll(/<li class="b_algo"[\s\S]*?<\/li>/gim)]) {
+    const raw = String(block?.[0] || '')
+    const titleMatch = raw.match(/<h2[^>]*><a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a><\/h2>/i)
+    const snippetMatch = raw.match(/<p>([\s\S]*?)<\/p>/i)
+    const href = decodeHtmlEntities(toText(titleMatch?.[1]))
+    const title = decodeHtmlEntities(stripHtmlBasic(titleMatch?.[2] || ''))
+    const snippet = decodeHtmlEntities(stripHtmlBasic(snippetMatch?.[1] || ''))
+    if (!title && !snippet) continue
+    rows.push({ title, href, snippet })
+    if (rows.length >= 8) break
+  }
+  if (rows.length > 0) return rows
+  try {
+    const jina = await fetchByNetworkPolicy(`https://r.jina.ai/http://cn.bing.com/search?q=${encodeURIComponent(q)}`, { headers: commonHeaders })
+    if (jina.ok) {
+      const md = await jina.text()
+      const parsed = parseLinksFromJinaMarkdown(md, keyword)
+      if (parsed.length > 0) {
+        return parsed
+          .sort((a, b) => Number(b.score || 0) - Number(a.score || 0))
+          .slice(0, 8)
+          .map((item) => ({ title: item.title, href: item.href, snippet: item.snippet }))
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return []
+}
+
+function extractKeySentences(text = '', maxCount = 2) {
+  const normalized = String(text || '').replace(/\s+/g, ' ').trim()
+  if (!normalized) return []
+  const parts = normalized.split(/(?<=[。！？!?\.])\s+/g).map((s) => s.trim()).filter(Boolean)
+  return parts.slice(0, Math.max(1, maxCount))
+}
+
+function parseTavilyApiKeyFromUrl(url = '') {
+  try {
+    const parsed = new URL(String(url || ''))
+    return toText(parsed.searchParams.get('tavilyApiKey') || '')
+  } catch {
+    return ''
+  }
+}
+
+const fallbackTavilyApiKey = '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'
+
+async function resolveTavilyApiKey(serviceMeta = {}) {
+  const fromServiceUrl = parseTavilyApiKeyFromUrl(toText(serviceMeta?.url))
+  if (fromServiceUrl) return fromServiceUrl
+  const fromEnv = toText(process.env.TAVILY_API_KEY)
+  if (fromEnv) return fromEnv
+  try {
+    const { stdout } = await execFileAsync('codex', ['mcp', 'get', 'tavily', '--json'], { timeout: 15000 })
+    const parsed = JSON.parse(String(stdout || '{}'))
+    const fromMcp = parseTavilyApiKeyFromUrl(toText(parsed?.transport?.url || parsed?.url))
+    if (fromMcp) return fromMcp
+  } catch {
+    // ignore
+  }
+  return fallbackTavilyApiKey
+}
+
+const TAVILY_PREFERRED_HOST_RULES = [
+  'cls.cn',
+  'eastmoney.com',
+  'stcn.com',
+  'cnstock.com',
+  'caixin.com',
+  'yicai.com',
+  '10jqka.com.cn',
+  'sina.com.cn',
+  'news.qq.com',
+  '36kr.com',
+  'wallstreetcn.com',
+  'jiemian.com',
+  'thepaper.cn',
+  'ifeng.com',
+  'people.com.cn',
+  'xinhuanet.com',
+  'cctv.com',
+  'mp.weixin.qq.com',
+]
+
+const TAVILY_CN_ONLY_HOST_RULES = [
+  'cls.cn',
+  'eastmoney.com',
+  'stcn.com',
+  'cnstock.com',
+  'caixin.com',
+  'yicai.com',
+  '10jqka.com.cn',
+  'sina.com.cn',
+  'news.qq.com',
+  '36kr.com',
+  'wallstreetcn.com',
+  'jiemian.com',
+  'thepaper.cn',
+  'ifeng.com',
+  'people.com.cn',
+  'xinhuanet.com',
+  'cctv.com',
+  'mp.weixin.qq.com',
+]
+
+const TAVILY_NOISE_HOST_RULES = [
+  'music.youtube.com',
+  'open.spotify.com',
+  'apple.com',
+  'fandango.com',
+  'moviefone.com',
+  'showtimes.com',
+  'atomtickets.com',
+]
+
+function hostMatchesRule(host = '', rule = '') {
+  const h = String(host || '').toLowerCase()
+  const r = String(rule || '').toLowerCase()
+  if (!h || !r) return false
+  return h === r || h.endsWith(`.${r}`)
+}
+
+function isLikelyChineseText(text = '') {
+  const src = String(text || '')
+  if (!src) return false
+  const hits = src.match(/[\u4e00-\u9fa5]/g)
+  return Boolean(hits && hits.length >= 2)
+}
+
+function isEnglishLikeUrl(url = '') {
+  const u = String(url || '').toLowerCase()
+  if (!u) return false
+  return /\/en\//.test(u) || /\/english\//.test(u) || /eu\.36kr\.com/.test(u)
+}
+
+function isNoiseHost(url = '') {
+  const host = safeHostFromUrl(url)
+  if (!host) return true
+  return TAVILY_NOISE_HOST_RULES.some((rule) => hostMatchesRule(host, rule))
+}
+
+function scorePreferredSource(item = {}, keyword = '') {
+  const href = toText(item?.href)
+  const title = toText(item?.title)
+  const snippet = toText(item?.snippet)
+  const host = safeHostFromUrl(href)
+  let score = 0
+  if (TAVILY_PREFERRED_HOST_RULES.some((rule) => hostMatchesRule(host, rule))) score += 6
+  if (isLikelyChineseText(`${title} ${snippet}`)) score += 3
+  score += Math.min(6, Math.max(0, scoreRelevance(title, snippet, keyword)))
+  return score
+}
+
+function compactText(input = '', maxLen = 220) {
+  const normalized = String(input || '').replace(/\s+/g, ' ').trim()
+  if (!normalized) return ''
+  return normalized.length > maxLen ? `${normalized.slice(0, maxLen)}...` : normalized
+}
+
+function containsCatlIntent(text = '') {
+  const src = String(text || '').toLowerCase()
+  return ['宁德时代', 'catl', 'contemporary amperex', 'ningde shidai'].some((k) => src.includes(k))
+}
+
+function isBoilerplateLike(text = '') {
+  const src = String(text || '').toLowerCase()
+  if (!src) return true
+  const noiseHits = [
+    'skip to navigation',
+    'all rights reserved',
+    'privacy',
+    'terms',
+    'login',
+    'subscribe',
+    'facebook',
+    'linkedin',
+    'twitter',
+  ].filter((k) => src.includes(k)).length
+  return noiseHits >= 3 || src.length < 20
+}
+
+async function searchViaTavily(keyword = '', apiKey = '') {
+  const key = toText(apiKey)
+  if (!key) throw new Error('Tavily API Key 缺失')
+  const baseQuery = String(keyword || '').trim()
+  const wechatMode = /公众号|微信|wechat/i.test(baseQuery)
+  const queryCandidates = [baseQuery]
+  if (containsCatlIntent(baseQuery)) {
+    queryCandidates.push(`${baseQuery} CATL 300750`)
+    queryCandidates.push(`${baseQuery} Contemporary Amperex`)
+  }
+  if (wechatMode) {
+    queryCandidates.push(`site:mp.weixin.qq.com ${baseQuery.replace(/公众号|微信|wechat/ig, '').trim()}`)
+  }
+  // Always add one WeChat-focused query so public-account articles can be merged in,
+  // even when the user did not explicitly type "公众号/微信".
+  const wechatSupplement = `site:mp.weixin.qq.com ${baseQuery.replace(/公众号|微信|wechat/ig, '').trim()}`
+  if (toText(wechatSupplement).replace(/^site:mp\.weixin\.qq\.com\s*/i, '').trim()) {
+    queryCandidates.push(wechatSupplement)
+  }
+  const merged = []
+  for (const q of [...new Set(queryCandidates)].filter(Boolean)) {
+    // eslint-disable-next-line no-await-in-loop
+    const resp = await fetchByNetworkPolicy('https://api.tavily.com/search', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${key}`,
+      },
+      body: JSON.stringify({
+        query: q,
+        topic: 'news',
+        max_results: 8,
+        include_raw_content: true,
+        include_answer: false,
+        search_depth: 'advanced',
+        include_domains: wechatMode ? ['mp.weixin.qq.com'] : undefined,
+        days: 180,
+      }),
+    })
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => '')
+      throw new Error(`Tavily HTTP ${resp.status}${text ? `: ${text.slice(0, 200)}` : ''}`)
+    }
+    // eslint-disable-next-line no-await-in-loop
+    const json = await resp.json().catch(() => ({}))
+    const rows = Array.isArray(json?.results) ? json.results : []
+    merged.push(...rows)
+  }
+  const normalizedRows = merged.map((item) => ({
+    title: toText(item?.title),
+    href: toText(item?.url),
+    snippet: toText(item?.content),
+    rawContent: toText(item?.raw_content),
+  }))
+    .filter((item) => item.href || item.title)
+    .filter((item) => !isNoiseHost(item.href))
+    .filter((item) => {
+      if (!wechatMode) return true
+      const host = safeHostFromUrl(item.href)
+      return ['mp.weixin.qq.com'].some((rule) => hostMatchesRule(host, rule))
+    })
+    .filter((item) => wechatMode || !isBoilerplateLike(`${item.title} ${item.snippet}`))
+    .map((item) => ({ ...item, preferredScore: scorePreferredSource(item, keyword) }))
+    .filter((item, idx, arr) => arr.findIndex((x) => toText(x.href) === toText(item.href)) === idx)
+
+  const strictRows = normalizedRows
+    .filter((item) => !isEnglishLikeUrl(item.href))
+    .filter((item) => Number(item.preferredScore || 0) >= (wechatMode ? 5 : 4))
+    .sort((a, b) => Number(b.preferredScore || 0) - Number(a.preferredScore || 0))
+
+  if (strictRows.length > 0) return strictRows.slice(0, 5)
+
+  const relaxedRows = normalizedRows
+    .filter((item) => Number(item.preferredScore || 0) >= 1)
+    .sort((a, b) => Number(b.preferredScore || 0) - Number(a.preferredScore || 0))
+
+  return relaxedRows.slice(0, 5)
+}
+
+async function searchViaTavilyRaw(keyword = '', apiKey = '') {
+  const key = toText(apiKey)
+  if (!key) return []
+  const resp = await fetchByNetworkPolicy('https://api.tavily.com/search', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${key}`,
+    },
+    body: JSON.stringify({
+      query: String(keyword || '').trim(),
+      topic: 'general',
+      max_results: 8,
+      include_raw_content: false,
+      include_answer: false,
+      search_depth: 'advanced',
+      days: 365,
+    }),
+  })
+  if (!resp.ok) return []
+  const json = await resp.json().catch(() => ({}))
+  const rows = Array.isArray(json?.results) ? json.results : []
+  return rows.map((item) => ({
+    title: toText(item?.title),
+    href: toText(item?.url),
+    snippet: compactText(toText(item?.content), 220),
+    summary: compactText(toText(item?.content), 220),
+    preferredScore: scorePreferredSource({ title: item?.title, href: item?.url, snippet: item?.content }, keyword),
+  }))
+    .filter((item) => item.href || item.title)
+    .filter((item) => !isNoiseHost(item.href))
+    .filter((item) => {
+      if (!containsCatlIntent(keyword)) return true
+      return containsCatlIntent(`${item.title} ${item.summary} ${item.href}`)
+    })
+    .sort((a, b) => Number(b.preferredScore || 0) - Number(a.preferredScore || 0))
+    .slice(0, 5)
+}
+
+async function readWeixinArticleMarkdown(url = '') {
+  const target = toText(url)
+  if (!/https?:\/\/mp\.weixin\.qq\.com\//i.test(target)) return ''
+  const candidates = [
+    'C:\\Users\\aoyon\\.url-md\\bin\\url-md.exe',
+    'url-md',
+  ]
+  for (const cmd of candidates) {
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      const { stdout } = await execFileAsync(cmd, ['md', target], { timeout: 30000 })
+      const markdown = toText(stdout)
+      if (markdown) return markdown
+    } catch {
+      // try next command
+    }
+  }
+  return ''
+}
+
+async function enrichSearchRows(rows = []) {
+  const enriched = []
+  for (const item of rows.slice(0, 5)) {
+    const href = toText(item.href)
+    let detail = ''
+    if (href) {
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        const resp = await fetchByNetworkPolicy(`https://r.jina.ai/http://${href.replace(/^https?:\/\//i, '')}`, {
+          headers: { 'User-Agent': 'Mozilla/5.0' },
+        })
+        if (resp.ok) {
+          // eslint-disable-next-line no-await-in-loop
+          detail = (await resp.text()).slice(0, 2500)
+        }
+      } catch {
+        detail = ''
+      }
+    }
+    const summary = extractKeySentences(detail || toText(item.snippet), 2).join(' ')
+    enriched.push({
+      ...item,
+      summary: summary || toText(item.snippet),
+    })
+  }
+  return enriched
+}
+
 function splitIntoChunks(text = '', chunkSize = 800, overlap = 120) {
   const normalized = String(text || '').trim()
   if (!normalized) return []
@@ -791,16 +1343,21 @@ function embedTextDeterministic(text = '', dimension = 1536) {
 async function embedTextByProvider(text = '', model = 'text-embedding-3-small', dimension = 1536) {
   const content = String(text || '').trim()
   if (!content) return new Array(dimension).fill(0)
-  if (!embeddingApiKey) return embedTextDeterministic(content, dimension)
-  const base = embeddingBaseUrl.replace(/\/+$/, '')
-  const response = await fetch(`${base}/v1/embeddings`, {
+  const normalizedModel = toText(model || 'text-embedding-3-small')
+  const useQwenEmbedding = normalizedModel === qwenEmbeddingModel
+  const selectedApiKey = useQwenEmbedding ? qwenEmbeddingApiKey : embeddingApiKey
+  const selectedBaseUrl = useQwenEmbedding ? qwenEmbeddingBaseUrl : embeddingBaseUrl
+  if (!selectedApiKey) return embedTextDeterministic(content, dimension)
+  const base = selectedBaseUrl.replace(/\/+$/, '')
+  const endpoint = base.endsWith('/v1') ? `${base}/embeddings` : `${base}/v1/embeddings`
+  const response = await fetch(endpoint, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${embeddingApiKey}`,
+      Authorization: `Bearer ${selectedApiKey}`,
     },
     body: JSON.stringify({
-      model: model || 'text-embedding-3-small',
+      model: normalizedModel || 'text-embedding-3-small',
       input: content,
     }),
   })
@@ -878,13 +1435,33 @@ async function persistKnowledgeBaseStore() {
           item.updatedAt || new Date().toISOString(),
         ],
       )
-      await client.query(`DELETE FROM ${knowledgeBaseDocumentTable} WHERE kb_id = $1`, [item.id])
-      for (const doc of Array.isArray(item.documents) ? item.documents : []) {
+      const docs = Array.isArray(item.documents) ? item.documents : []
+      const docIds = docs
+        .map((doc) => toText(doc?.id))
+        .filter(Boolean)
+      for (const doc of docs) {
         await client.query(
           `
           INSERT INTO ${knowledgeBaseDocumentTable}
           (id, kb_id, source_type, name, url, mime_type, size_bytes, status, chunk_count, vector_count, retry_count, error_message, vector_path, content_base64, created_at, updated_at, completed_at)
           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::timestamptz,$16::timestamptz,$17::timestamptz)
+          ON CONFLICT (id)
+          DO UPDATE SET
+            kb_id = EXCLUDED.kb_id,
+            source_type = EXCLUDED.source_type,
+            name = EXCLUDED.name,
+            url = EXCLUDED.url,
+            mime_type = EXCLUDED.mime_type,
+            size_bytes = EXCLUDED.size_bytes,
+            status = EXCLUDED.status,
+            chunk_count = EXCLUDED.chunk_count,
+            vector_count = EXCLUDED.vector_count,
+            retry_count = EXCLUDED.retry_count,
+            error_message = EXCLUDED.error_message,
+            vector_path = EXCLUDED.vector_path,
+            content_base64 = EXCLUDED.content_base64,
+            updated_at = EXCLUDED.updated_at,
+            completed_at = EXCLUDED.completed_at
           `,
           [
             doc.id,
@@ -906,6 +1483,14 @@ async function persistKnowledgeBaseStore() {
             doc.completedAt || null,
           ],
         )
+      }
+      if (docIds.length > 0) {
+        await client.query(
+          `DELETE FROM ${knowledgeBaseDocumentTable} WHERE kb_id = $1 AND NOT (id = ANY($2::text[]))`,
+          [item.id, docIds],
+        )
+      } else {
+        await client.query(`DELETE FROM ${knowledgeBaseDocumentTable} WHERE kb_id = $1`, [item.id])
       }
     }
     await client.query('COMMIT')
@@ -960,6 +1545,77 @@ async function loadKnowledgeBaseStore() {
   }
 }
 
+async function upsertKnowledgeBaseDocumentRow(kbId = '', doc = {}) {
+  const docId = toText(doc?.id)
+  if (!kbId || !docId) return
+  await pool.query(
+    `
+    INSERT INTO ${knowledgeBaseDocumentTable}
+    (id, kb_id, source_type, name, url, mime_type, size_bytes, status, chunk_count, vector_count, retry_count, error_message, vector_path, content_base64, created_at, updated_at, completed_at)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::timestamptz,$16::timestamptz,$17::timestamptz)
+    ON CONFLICT (id)
+    DO UPDATE SET
+      kb_id = EXCLUDED.kb_id,
+      source_type = EXCLUDED.source_type,
+      name = EXCLUDED.name,
+      url = EXCLUDED.url,
+      mime_type = EXCLUDED.mime_type,
+      size_bytes = EXCLUDED.size_bytes,
+      status = EXCLUDED.status,
+      chunk_count = EXCLUDED.chunk_count,
+      vector_count = EXCLUDED.vector_count,
+      retry_count = EXCLUDED.retry_count,
+      error_message = EXCLUDED.error_message,
+      vector_path = EXCLUDED.vector_path,
+      content_base64 = EXCLUDED.content_base64,
+      updated_at = EXCLUDED.updated_at,
+      completed_at = EXCLUDED.completed_at
+    `,
+    [
+      docId,
+      kbId,
+      toText(doc.sourceType),
+      toText(doc.name),
+      toText(doc.url),
+      toText(doc.mimeType),
+      Number(doc.size || 0),
+      toText(doc.status || 'queued'),
+      Number(doc.chunkCount || 0),
+      Number(doc.vectorCount || 0),
+      Number(doc.retryCount || 0),
+      toText(doc.errorMessage),
+      toText(doc.vectorPath),
+      toText(doc.contentBase64),
+      doc.createdAt || new Date().toISOString(),
+      doc.updatedAt || new Date().toISOString(),
+      doc.completedAt || null,
+    ],
+  )
+}
+
+async function upsertKnowledgeBaseRow(kb = null) {
+  const id = toText(kb?.id)
+  if (!id) return
+  await pool.query(
+    `
+    INSERT INTO ${knowledgeBaseTable} (id, name, config_json, created_at, updated_at)
+    VALUES ($1, $2, $3::jsonb, $4::timestamptz, $5::timestamptz)
+    ON CONFLICT (id)
+    DO UPDATE SET
+      name = EXCLUDED.name,
+      config_json = EXCLUDED.config_json,
+      updated_at = EXCLUDED.updated_at
+    `,
+    [
+      id,
+      toText(kb?.name) || id,
+      JSON.stringify(kb?.config || {}),
+      kb?.createdAt || new Date().toISOString(),
+      kb?.updatedAt || new Date().toISOString(),
+    ],
+  )
+}
+
 async function runKnowledgeDocumentPipeline(kbId = '', docId = '') {
   const kb = knowledgeBaseStore.get(kbId)
   if (!kb) return
@@ -969,16 +1625,18 @@ async function runKnowledgeDocumentPipeline(kbId = '', docId = '') {
     doc.status = 'parsing'
     doc.errorMessage = ''
     doc.updatedAt = new Date().toISOString()
+    await upsertKnowledgeBaseDocumentRow(kbId, doc)
     schedulePersistKnowledgeBaseStore()
     let text = ''
-    if (doc.sourceType === 'file') {
+    const isLegacyMcpTextDoc = toText(doc.sourceType) === 'web' && /^mcp:\/\//i.test(toText(doc.url))
+    if (doc.sourceType === 'file' || doc.sourceType === 'search' || isLegacyMcpTextDoc) {
       const payload = toText(doc.contentBase64)
       if (!payload) throw new Error('文件内容为空')
       const fileBuffer = Buffer.from(payload, 'base64')
-      if (isPdfFile(doc.name, doc.mimeType)) {
+      if (doc.sourceType === 'file' && isPdfFile(doc.name, doc.mimeType)) {
         text = await extractPdfTextFromBuffer(fileBuffer)
       } else {
-        if (!isPlainTextLikeFile(doc.name, doc.mimeType)) {
+        if (doc.sourceType === 'file' && !isPlainTextLikeFile(doc.name, doc.mimeType)) {
           throw new Error('当前仅支持文本类文件自动解析（TXT/MD/HTML/CSV/JSON/XML/PDF）')
         }
         const decoded = fileBuffer.toString('utf8')
@@ -992,20 +1650,26 @@ async function runKnowledgeDocumentPipeline(kbId = '', docId = '') {
       const response = await fetchByNetworkPolicy(targetUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } })
       if (!response.ok) throw new Error(`网页抓取失败（HTTP ${response.status}）`)
       const raw = await response.text()
+      doc.contentBase64 = Buffer.from(String(raw || ''), 'utf8').toString('base64')
+      doc.size = Buffer.byteLength(String(raw || ''), 'utf8')
+      doc.updatedAt = new Date().toISOString()
+      await upsertKnowledgeBaseDocumentRow(kbId, doc)
       text = stripHtmlTags(raw)
     } else {
       throw new Error('未知的数据源类型')
     }
     doc.status = 'chunking'
     doc.updatedAt = new Date().toISOString()
+    await upsertKnowledgeBaseDocumentRow(kbId, doc)
     schedulePersistKnowledgeBaseStore()
     const chunks = splitIntoChunks(text, 800, 120)
     if (chunks.length === 0) throw new Error('文本为空，无法分段')
     doc.status = 'embedding'
     doc.updatedAt = new Date().toISOString()
+    await upsertKnowledgeBaseDocumentRow(kbId, doc)
     schedulePersistKnowledgeBaseStore()
     const dimension = Number(kb.config?.embeddingDimension) || defaultEmbeddingDimension(kb.config?.embeddingModel)
-    const embeddingModel = toText(kb.config?.embeddingModel) || 'text-embedding-3-small'
+    const embeddingModel = resolveKnowledgeBaseEmbeddingModel(kb)
     const vectors = []
     for (const chunk of chunks) {
       // sequential requests to avoid provider rate burst
@@ -1051,11 +1715,13 @@ async function runKnowledgeDocumentPipeline(kbId = '', docId = '') {
     doc.status = 'success'
     doc.updatedAt = new Date().toISOString()
     doc.completedAt = new Date().toISOString()
+    await upsertKnowledgeBaseDocumentRow(kbId, doc)
     schedulePersistKnowledgeBaseStore()
   } catch (error) {
     doc.status = 'failed'
     doc.errorMessage = toText(error?.message || 'unknown error')
     doc.updatedAt = new Date().toISOString()
+    await upsertKnowledgeBaseDocumentRow(kbId, doc).catch(() => {})
     schedulePersistKnowledgeBaseStore()
   }
 }
@@ -1224,7 +1890,7 @@ async function initDatabase() {
       doc_id VARCHAR(64) NOT NULL REFERENCES ${knowledgeBaseDocumentTable}(id) ON DELETE CASCADE,
       chunk_index INT NOT NULL DEFAULT 0,
       chunk_text TEXT NOT NULL DEFAULT '',
-      embedding_model VARCHAR(120) NOT NULL DEFAULT 'text-embedding-3-small',
+      embedding_model VARCHAR(120) NOT NULL DEFAULT 'Qwen/Qwen3-VL-Embedding-8B',
       embedding_dim INT NOT NULL DEFAULT 1536,
       embedding vector(1536),
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -1239,7 +1905,7 @@ async function initDatabase() {
       title VARCHAR(500) NOT NULL DEFAULT '',
       content TEXT NOT NULL DEFAULT '',
       sentiment VARCHAR(32) NOT NULL DEFAULT 'neutral',
-      embedding_model VARCHAR(120) NOT NULL DEFAULT 'text-embedding-3-small',
+      embedding_model VARCHAR(120) NOT NULL DEFAULT 'Qwen/Qwen3-VL-Embedding-8B',
       embedding_dim INT NOT NULL DEFAULT 1536,
       embedding vector(1536),
       chunk_index INT NOT NULL DEFAULT 0,
@@ -11027,9 +11693,136 @@ app.get('/api/mcp-services', authMiddleware, async (_req, res) => {
     const activeEnabled = enabled.filter((row) => !disabledNameSet.has(toMcpServiceName(row.name)))
     const merged = [...activeEnabled, ...disabled]
       .sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'))
-    return res.json({ code: 200, message: 'success', data: merged })
+    const withCallable = []
+    for (const item of merged) {
+      // eslint-disable-next-line no-await-in-loop
+      const check = await evaluateMcpCallable(item)
+      withCallable.push({
+        ...item,
+        callable: check.callable,
+        callableReason: check.reason,
+      })
+    }
+    return res.json({ code: 200, message: 'success', data: withCallable })
   } catch (error) {
     return res.status(500).json({ code: 500, message: `读取MCP服务失败: ${error.message}`, data: [] })
+  }
+})
+
+app.post('/api/mcp-services/search', authMiddleware, async (req, res) => {
+  const service = toMcpServiceName(req.body?.service)
+  const keyword = toText(req.body?.keyword)
+  if (!service) return res.status(400).json({ code: 400, message: '缺少参数：service', data: null })
+  if (!keyword) return res.status(400).json({ code: 400, message: '缺少参数：keyword', data: null })
+  if (service.toLowerCase() === 'exa') {
+    return res.status(400).json({ code: 400, message: 'exa 已禁用，请使用 tavily / weixin-reader / weibo', data: null })
+  }
+  const now = new Date().toISOString()
+  try {
+    let serviceMeta = {}
+    try {
+      const all = [...await loadConfiguredMcpServices(), ...await loadConfiguredAgentReachServices()]
+      const found = all.find((item) => toMcpServiceName(item.name) === service)
+      serviceMeta = found || {}
+    } catch {
+      serviceMeta = {}
+    }
+    let snippets = []
+    if (service.toLowerCase() === 'tavily') {
+      const tavilyKey = await resolveTavilyApiKey(serviceMeta)
+      snippets = await searchViaTavily(keyword, tavilyKey)
+    } else {
+      snippets = await searchWebSnippets(keyword, service)
+    }
+
+    const withWeixinContent = []
+    for (const item of snippets.slice(0, 5)) {
+      const row = { ...item }
+      if (/https?:\/\/mp\.weixin\.qq\.com\//i.test(toText(row.href))) {
+        // eslint-disable-next-line no-await-in-loop
+        const wxMd = await readWeixinArticleMarkdown(row.href)
+        if (wxMd) {
+          row.summary = extractKeySentences(wxMd, 3).join(' ')
+          row.snippet = row.summary || row.snippet
+          row.rawContent = wxMd
+        }
+      }
+      withWeixinContent.push(row)
+    }
+
+    const enriched = service.toLowerCase() === 'tavily'
+      ? withWeixinContent.map((item) => ({
+        ...item,
+        summary: /https?:\/\/mp\.weixin\.qq\.com\//i.test(toText(item.href))
+          ? compactText(
+            extractKeySentences(toText(item.rawContent) || toText(item.snippet), 4).join(' ')
+            || toText(item.summary)
+            || '暂无摘要',
+            600,
+          )
+          : compactText(
+            toText(item.summary)
+            || extractKeySentences(toText(item.snippet), 2).join(' ')
+            || extractKeySentences(toText(item.rawContent), 1).join(' ')
+            || '暂无摘要',
+            220,
+          ),
+      }))
+      : await enrichSearchRows(withWeixinContent)
+    const scopedRows = service.toLowerCase() === 'tavily'
+      ? enriched.filter((item) => {
+        const merged = `${toText(item.title)} ${toText(item.summary)} ${toText(item.snippet)} ${toText(item.href)}`
+        if (containsCatlIntent(keyword) && !containsCatlIntent(merged)) return false
+        if (isBoilerplateLike(toText(item.summary))) return false
+        if (isNoiseHost(toText(item.href))) return false
+        return true
+      })
+      : enriched
+    const filtered = scopedRows.filter((item) => {
+      const baseOk = scoreRelevance(item.title, `${item.snippet} ${item.summary}`, keyword) > 0
+      if (service.toLowerCase() !== 'tavily') return baseOk
+      const merged = `${toText(item.title)} ${toText(item.summary)} ${toText(item.snippet)} ${toText(item.href)}`
+      const catlOk = containsCatlIntent(keyword) && containsCatlIntent(merged)
+      const preferOk = Number(item.preferredScore || 0) >= 3
+      return baseOk || preferOk || catlOk
+    })
+    let fallbackRows = service.toLowerCase() === 'tavily' ? [] : scopedRows.slice(0, 5)
+    if (service.toLowerCase() === 'tavily' && filtered.length === 0) {
+      const tavilyKey = await resolveTavilyApiKey(serviceMeta)
+      fallbackRows = await searchViaTavilyRaw(keyword, tavilyKey)
+    }
+    const usedFallback = filtered.length === 0 && fallbackRows.length > 0
+    const finalRows = filtered.length > 0 ? filtered : fallbackRows
+    const headerLine = [
+      `[${now}]`,
+      `service=${service}`,
+      `keyword=${keyword}`,
+      `desc=${toText(serviceMeta.description) || 'N/A'}`,
+      `hits=${finalRows.length}`,
+    ].join(' ')
+    const hasWeixinRows = finalRows.some((item) => /https?:\/\/mp\.weixin\.qq\.com\//i.test(toText(item.href)))
+    const summaryLines = hasWeixinRows
+      ? []
+      : [
+        '【提炼总结】',
+        ...(finalRows.length > 0
+          ? finalRows.slice(0, 3).map((item, idx) => `${idx + 1}. ${toText(item.summary) || '暂无摘要'}`)
+          : ['1. 未检索到候选结果，请更换关键词或切换服务。']),
+        ...(usedFallback ? ['[提示] 当前为低置信候选结果（未通过关键词强相关过滤）。'] : []),
+      ]
+    const bodyLines = finalRows.map((item, idx) => {
+      const t = toText(item.title) || '(无标题)'
+      const isWeixin = /https?:\/\/mp\.weixin\.qq\.com\//i.test(toText(item.href))
+      const s = isWeixin
+        ? (toText(item.rawContent) || toText(item.summary || item.snippet))
+        : toText(item.summary || item.snippet)
+      const u = toText(item.href)
+      return `${idx + 1}. ${t}\n${s}${u ? `\n${u}` : ''}`
+    })
+    const line = [headerLine, ...summaryLines, ...bodyLines].join('\n')
+    return res.json({ code: 200, message: 'success', data: { text: line } })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `MCP检索失败: ${error.message}`, data: null })
   }
 })
 
@@ -11202,19 +11995,26 @@ app.delete('/api/mcp-services/:name', authMiddleware, async (req, res) => {
 })
 
 app.get('/api/knowledge-bases', authMiddleware, async (_req, res) => {
-  const rows = [...knowledgeBaseStore.values()]
-    .map((item) => ({
-      id: item.id,
-      name: item.name,
-      config: item.config || {},
-      createdAt: item.createdAt,
-      updatedAt: item.updatedAt,
-      documents: Array.isArray(item.documents) ? item.documents.map((doc) => ({
+  try {
+    const [kbRes, docRes] = await Promise.all([
+      pool.query(`SELECT id, name, config_json AS config, created_at AS "createdAt", updated_at AS "updatedAt" FROM ${knowledgeBaseTable} ORDER BY updated_at DESC`),
+      pool.query(`SELECT id, kb_id AS "kbId", source_type AS "sourceType", name, url, mime_type AS "mimeType", size_bytes AS size, status, chunk_count AS "chunkCount", vector_count AS "vectorCount", retry_count AS "retryCount", error_message AS "errorMessage", vector_path AS "vectorPath", content_base64 AS "contentBase64", created_at AS "createdAt", updated_at AS "updatedAt", completed_at AS "completedAt" FROM ${knowledgeBaseDocumentTable} ORDER BY updated_at DESC`),
+    ])
+    const docs = docRes.rows || []
+    const docMap = new Map()
+    for (const doc of docs) {
+      const key = toText(doc.kbId)
+      if (!docMap.has(key)) docMap.set(key, [])
+      const normalizedSourceType = (
+        toText(doc.sourceType) === 'web'
+        && toText(doc.url).startsWith('mcp://')
+      ) ? 'search' : toText(doc.sourceType)
+      docMap.get(key).push({
         id: doc.id,
-        sourceType: doc.sourceType,
+        sourceType: normalizedSourceType,
         name: doc.name,
         url: doc.url,
-        size: doc.size || 0,
+        size: Number(doc.size || 0),
         mimeType: doc.mimeType || '',
         status: doc.status || 'queued',
         chunkCount: Number(doc.chunkCount || 0),
@@ -11223,10 +12023,22 @@ app.get('/api/knowledge-bases', authMiddleware, async (_req, res) => {
         errorMessage: toText(doc.errorMessage || ''),
         createdAt: doc.createdAt || '',
         updatedAt: doc.updatedAt || '',
-      })) : [],
-    }))
-    .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))
-  return res.json({ code: 200, message: 'success', data: rows })
+      })
+    }
+    const rows = (kbRes.rows || [])
+      .map((item) => ({
+        id: item.id,
+        name: item.name,
+        config: item.config || {},
+        createdAt: item.createdAt,
+        updatedAt: item.updatedAt,
+        documents: docMap.get(toText(item.id)) || [],
+      }))
+      .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))
+    return res.json({ code: 200, message: 'success', data: rows })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `读取知识库失败: ${error.message}`, data: null })
+  }
 })
 
 app.post('/api/knowledge-bases', authMiddleware, async (req, res) => {
@@ -11234,7 +12046,7 @@ app.post('/api/knowledge-bases', authMiddleware, async (req, res) => {
   if (!name) return res.status(400).json({ code: 400, message: '缺少参数：name', data: null })
   const id = generateKbId('kb')
   const now = new Date().toISOString()
-  const embeddingModel = toText(req.body?.embeddingModel)
+  const embeddingModel = toText(req.body?.embeddingModel) || defaultKbEmbeddingModel
   const config = {
     embeddingModel,
     embeddingDimension: 1536,
@@ -11242,6 +12054,7 @@ app.post('/api/knowledge-bases', authMiddleware, async (req, res) => {
   }
   const row = { id, name, config, createdAt: now, updatedAt: now, documents: [] }
   knowledgeBaseStore.set(id, row)
+  await upsertKnowledgeBaseRow(row)
   schedulePersistKnowledgeBaseStore()
   return res.status(201).json({ code: 201, message: 'created', data: row })
 })
@@ -11252,7 +12065,7 @@ app.put('/api/knowledge-bases/:id', authMiddleware, async (req, res) => {
   if (!kb) return res.status(404).json({ code: 404, message: '知识库不存在', data: null })
   const name = toText(req.body?.name)
   if (!name) return res.status(400).json({ code: 400, message: '缺少参数：name', data: null })
-  const embeddingModel = toText(req.body?.embeddingModel)
+  const embeddingModel = toText(req.body?.embeddingModel) || defaultKbEmbeddingModel
   const topK = Number(req.body?.topK || 10) || 10
   const now = new Date().toISOString()
   kb.name = name
@@ -11263,6 +12076,7 @@ app.put('/api/knowledge-bases/:id', authMiddleware, async (req, res) => {
     topK,
   }
   kb.updatedAt = now
+  await upsertKnowledgeBaseRow(kb)
   schedulePersistKnowledgeBaseStore()
   return res.json({ code: 200, message: 'updated', data: kb })
 })
@@ -11296,9 +12110,58 @@ app.post('/api/knowledge-bases/:id/documents/file', authMiddleware, async (req, 
   }
   kb.documents = [doc, ...(kb.documents || [])]
   kb.updatedAt = now
+  await upsertKnowledgeBaseDocumentRow(kbId, doc)
   schedulePersistKnowledgeBaseStore()
   void runKnowledgeDocumentPipeline(kbId, doc.id)
   return res.status(202).json({ code: 202, message: 'accepted', data: { id: doc.id } })
+})
+
+app.get('/api/knowledge-bases/:id/documents/:docId/preview', authMiddleware, async (req, res) => {
+  const kbId = toText(req.params?.id)
+  const docId = toText(req.params?.docId)
+  if (!kbId || !docId) return res.status(400).json({ code: 400, message: '缺少参数', data: null })
+  try {
+    const docRes = await pool.query(
+      `SELECT id, kb_id AS "kbId", source_type AS "sourceType", name, url, status, error_message AS "errorMessage", content_base64 AS "contentBase64", updated_at AS "updatedAt"
+       FROM ${knowledgeBaseDocumentTable}
+       WHERE id = $1 AND kb_id = $2
+       LIMIT 1`,
+      [docId, kbId],
+    )
+    const doc = docRes.rows?.[0]
+    if (!doc) return res.status(404).json({ code: 404, message: '文档不存在', data: null })
+    const chunksRes = await pool.query(
+      `SELECT chunk_index AS "chunkIndex", left(chunk_text, 500) AS "chunkText", embedding_model AS "embeddingModel", embedding_dim AS "embeddingDim"
+       FROM ${knowledgeBaseVectorTable}
+       WHERE kb_id = $1 AND doc_id = $2
+       ORDER BY chunk_index ASC
+       LIMIT 8`,
+      [kbId, docId],
+    )
+    const decoded = decodeBase64Utf8(doc.contentBase64)
+    const plain = doc.sourceType === 'web' ? stripHtmlTags(decoded) : decoded
+    const chunks = chunksRes.rows || []
+    const fallbackText = chunks.map((item) => toText(item.chunkText)).join('\n\n')
+    const previewText = (plain || fallbackText).slice(0, 6000)
+    return res.json({
+      code: 200,
+      message: 'success',
+      data: {
+        id: doc.id,
+        kbId: doc.kbId,
+        sourceType: doc.sourceType,
+        name: doc.name,
+        url: doc.url,
+        status: doc.status,
+        errorMessage: toText(doc.errorMessage),
+        updatedAt: doc.updatedAt,
+        previewText,
+        chunks,
+      },
+    })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `预览失败: ${error.message}`, data: null })
+  }
 })
 
 app.post('/api/knowledge-bases/:id/documents/web', authMiddleware, async (req, res) => {
@@ -11312,7 +12175,7 @@ app.post('/api/knowledge-bases/:id/documents/web', authMiddleware, async (req, r
   const now = new Date().toISOString()
   const doc = {
     id: generateKbId('doc'),
-    sourceType: 'web',
+    sourceType: 'search',
     name: url,
     url,
     mimeType: 'text/html',
@@ -11327,6 +12190,41 @@ app.post('/api/knowledge-bases/:id/documents/web', authMiddleware, async (req, r
   }
   kb.documents = [doc, ...(kb.documents || [])]
   kb.updatedAt = now
+  await upsertKnowledgeBaseDocumentRow(kbId, doc)
+  schedulePersistKnowledgeBaseStore()
+  void runKnowledgeDocumentPipeline(kbId, doc.id)
+  return res.status(202).json({ code: 202, message: 'accepted', data: { id: doc.id } })
+})
+
+app.post('/api/knowledge-bases/:id/documents/text', authMiddleware, async (req, res) => {
+  const kbId = toText(req.params?.id)
+  const kb = knowledgeBaseStore.get(kbId)
+  if (!kb) return res.status(404).json({ code: 404, message: '知识库不存在', data: null })
+  const service = toMcpServiceName(req.body?.service)
+  const keyword = toText(req.body?.keyword)
+  const text = toText(req.body?.text)
+  if (!text) return res.status(400).json({ code: 400, message: '缺少参数：text', data: null })
+  const now = new Date().toISOString()
+  const contentBase64 = Buffer.from(text, 'utf8').toString('base64')
+  const doc = {
+    id: generateKbId('doc'),
+    sourceType: 'search',
+    name: `[MCP] ${service || 'unknown'} - ${keyword || 'manual'}`,
+    url: `mcp://${encodeURIComponent(service || 'unknown')}?q=${encodeURIComponent(keyword || '')}`,
+    mimeType: 'text/plain',
+    size: Buffer.byteLength(text, 'utf8'),
+    contentBase64,
+    status: 'queued',
+    retryCount: 0,
+    chunkCount: 0,
+    vectorCount: 0,
+    errorMessage: '',
+    createdAt: now,
+    updatedAt: now,
+  }
+  kb.documents = [doc, ...(kb.documents || [])]
+  kb.updatedAt = now
+  await upsertKnowledgeBaseDocumentRow(kbId, doc)
   schedulePersistKnowledgeBaseStore()
   void runKnowledgeDocumentPipeline(kbId, doc.id)
   return res.status(202).json({ code: 202, message: 'accepted', data: { id: doc.id } })
@@ -11341,9 +12239,13 @@ app.post('/api/knowledge-bases/:id/documents/:docId/retry', authMiddleware, asyn
   if (!doc) return res.status(404).json({ code: 404, message: '文档不存在', data: null })
   doc.retryCount = Number(doc.retryCount || 0) + 1
   doc.status = 'queued'
-  doc.errorMessage = ''
+  doc.errorMessage = '重试中，准备解析...'
+  if (toText(doc.sourceType) === 'web' && /^mcp:\/\//i.test(toText(doc.url))) {
+    doc.sourceType = 'search'
+  }
   doc.updatedAt = new Date().toISOString()
   kb.updatedAt = doc.updatedAt
+  await upsertKnowledgeBaseDocumentRow(kbId, doc)
   schedulePersistKnowledgeBaseStore()
   void runKnowledgeDocumentPipeline(kbId, docId)
   return res.json({ code: 200, message: 'retry_triggered', data: { id: docId } })
@@ -11357,12 +12259,24 @@ app.delete('/api/knowledge-bases/:id/documents/:docId', authMiddleware, async (r
   const docs = Array.isArray(kb.documents) ? kb.documents : []
   const target = docs.find((item) => item.id === docId)
   if (!target) return res.status(404).json({ code: 404, message: '文档不存在', data: null })
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    await client.query(`DELETE FROM ${knowledgeBaseDocumentTable} WHERE id = $1 AND kb_id = $2`, [docId, kbId])
+    await client.query('COMMIT')
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {})
+    return res.status(500).json({ code: 500, message: `删除失败: ${error.message}`, data: null })
+  } finally {
+    client.release()
+  }
   kb.documents = docs.filter((item) => item.id !== docId)
   kb.updatedAt = new Date().toISOString()
   schedulePersistKnowledgeBaseStore()
-  try {
-    await pool.query(`DELETE FROM ${knowledgeBaseVectorTable} WHERE doc_id = $1`, [docId])
-  } catch {}
+  const vectorPath = toText(target.vectorPath)
+  if (vectorPath) {
+    await fs.unlink(vectorPath).catch(() => {})
+  }
   return res.json({ code: 200, message: 'deleted', data: { id: docId } })
 })
 
@@ -11378,7 +12292,7 @@ app.post('/api/knowledge-bases/:id/search', authMiddleware, async (req, res) => 
   const candidateK = Math.min(Math.max(topK * 8, 80), 500)
   const queryVector = await embedTextByProvider(
     queryText,
-    toText(kb.config?.embeddingModel) || 'text-embedding-3-small',
+    resolveKnowledgeBaseEmbeddingModel(kb),
     knowledgeVectorStoreDim,
   )
   const queryVectorLiteral = toPgVectorLiteral(queryVector)
@@ -11413,29 +12327,34 @@ app.post('/api/knowledge-bases/:id/search', authMiddleware, async (req, res) => 
   }
   const finalTokens = [...expandedTokens].filter((token) => String(token || '').trim().length >= 2)
   const strictKeyword = req.body?.strictKeyword !== false
+  const perDocLimit = Math.max(1, Number(req.body?.perDocLimit || 6))
   try {
     const result = await pool.query(
       `
       SELECT
-        id,
-        kb_id AS "kbId",
-        doc_id AS "docId",
-        chunk_index AS "chunkIndex",
-        chunk_text AS "chunkText",
-        embedding_model AS "embeddingModel",
-        embedding_dim AS "embeddingDim",
-        embedding::text AS "embeddingText",
-        (embedding <=> $3::vector) AS "cosineDistance",
-        (embedding <-> $3::vector) AS "euclideanDistance"
-      FROM ${knowledgeBaseVectorTable}
-      WHERE kb_id = $1
+        v.id,
+        v.kb_id AS "kbId",
+        v.doc_id AS "docId",
+        v.chunk_index AS "chunkIndex",
+        v.chunk_text AS "chunkText",
+        v.embedding_model AS "embeddingModel",
+        v.embedding_dim AS "embeddingDim",
+        v.embedding::text AS "embeddingText",
+        d.source_type AS "sourceType",
+        d.name AS "docName",
+        d.url AS "docUrl",
+        (v.embedding <=> $3::vector) AS "cosineDistance",
+        (v.embedding <-> $3::vector) AS "euclideanDistance"
+      FROM ${knowledgeBaseVectorTable} v
+      LEFT JOIN ${knowledgeBaseDocumentTable} d ON d.id = v.doc_id
+      WHERE v.kb_id = $1
         AND embedding IS NOT NULL
       ORDER BY ${orderExpr} ASC
       LIMIT $2
       `,
       [kbId, candidateK, queryVectorLiteral],
     )
-    const rows = (result.rows || []).map((row) => {
+    const rankedRows = (result.rows || []).map((row) => {
       const vectorText = toText(row.embeddingText).replace(/^\[|\]$/g, '')
       const embedding = vectorText
         ? vectorText.split(',').map((item) => Number(item)).filter((item) => Number.isFinite(item))
@@ -11443,20 +12362,25 @@ app.post('/api/knowledge-bases/:id/search', authMiddleware, async (req, res) => 
       const chunkText = toText(row.chunkText)
       const phraseHit = chunkText.toLowerCase().includes(queryText.toLowerCase()) ? 1 : 0
       let tokenHits = 0
+      const hitTokens = []
       const lowerChunk = chunkText.toLowerCase()
       for (const token of finalTokens) {
         if (!token) continue
         const normalizedToken = token.toLowerCase().replace(/\s+/g, '')
         if (!normalizedToken) continue
         const normalizedChunk = lowerChunk.replace(/\s+/g, '')
-        if (normalizedChunk.includes(normalizedToken)) tokenHits += 1
+        if (normalizedChunk.includes(normalizedToken)) {
+          tokenHits += 1
+          hitTokens.push(token)
+        }
       }
       const allTermsHit = finalTokens.length === 0 ? 0 : (tokenHits > 0 ? 1 : 0)
       const cosineDistance = Number(row.cosineDistance || 0)
       const euclideanDistance = Number(row.euclideanDistance || 0)
       const baseDistance = metric === 'euclidean' ? euclideanDistance : cosineDistance
       const keywordBoost = phraseHit * 0.3 + allTermsHit * 0.25 + tokenHits * 0.05
-      const finalScore = baseDistance - keywordBoost
+      const sourceBoost = toText(row.sourceType) === 'search' ? 0.025 : 0
+      const finalScore = baseDistance - keywordBoost - sourceBoost
       return {
         id: row.id,
         kbId: row.kbId,
@@ -11465,18 +12389,32 @@ app.post('/api/knowledge-bases/:id/search', authMiddleware, async (req, res) => 
         chunkText,
         embeddingModel: toText(row.embeddingModel),
         embeddingDim: Number(row.embeddingDim || 1536),
+        sourceType: toText(row.sourceType),
+        docName: toText(row.docName),
+        docUrl: toText(row.docUrl),
         embedding,
         cosineDistance,
         euclideanDistance,
         phraseHit,
         tokenHits,
+        hitTokens,
         allTermsHit,
         finalScore,
       }
     })
       .filter((item) => !strictKeyword || item.phraseHit > 0 || item.tokenHits > 0)
       .sort((a, b) => a.finalScore - b.finalScore)
-      .slice(0, topK)
+    const picked = []
+    const docCounts = new Map()
+    for (const item of rankedRows) {
+      const key = toText(item.docId)
+      const used = Number(docCounts.get(key) || 0)
+      if (used >= perDocLimit) continue
+      picked.push(item)
+      docCounts.set(key, used + 1)
+      if (picked.length >= topK) break
+    }
+    const rows = picked
     return res.json({
       code: 200,
       message: 'success',
@@ -11487,6 +12425,7 @@ app.post('/api/knowledge-bases/:id/search', authMiddleware, async (req, res) => 
         query: queryText,
         queryTokens: finalTokens,
         strictKeyword,
+        perDocLimit,
         queryVector,
         results: rows,
       },
@@ -15092,3 +16031,4 @@ async function bootstrap() {
 }
 
 bootstrap()
+

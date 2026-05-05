@@ -545,6 +545,10 @@ body {
   background: var(--bg-soft);
 }
 
+.kb-focused-row > td {
+  background: #fffbe6 !important;
+}
+
 @media (max-width: 980px) {
   .kb-layout {
     grid-template-columns: 1fr;
