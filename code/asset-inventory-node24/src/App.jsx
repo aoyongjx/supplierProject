@@ -35,6 +35,10 @@ import HomePage from './pages/HomePage'
 import InventoryFormPage from './pages/InventoryFormPage'
 import InventoryListPage from './pages/InventoryListPage'
 import LoginPage from './pages/LoginPage'
+import LangchainKnowledgeBasePage from './pages/LangchainKnowledgeBasePage'
+import LangchainMcpPage from './pages/LangchainMcpPage'
+import LangchainMultiChatPage from './pages/LangchainMultiChatPage'
+import LangchainRagChatPage from './pages/LangchainRagChatPage'
 import KnowledgeBaseManagementPage from './pages/KnowledgeBaseManagementPage'
 import SessionChatPage from './pages/SessionChatPage'
 import SessionHistoryPage from './pages/SessionHistoryPage'
@@ -48,6 +52,7 @@ import SupplyChainFormPage from './pages/SupplyChainFormPage'
 import GasSupplierPortraitWorkspacePage from './pages/GasSupplierPortraitWorkspacePage'
 import McpServicesPage from './pages/McpServicesPage'
 import SkillManagementPage from './pages/SkillManagementPage'
+import PreciseSourcingAgentPage from './pages/PreciseSourcingAgentPage'
 import { fetchRecentSessions } from './api/sessionApi'
 const VectorSearchPage = lazy(() => import('./pages/VectorSearchPage'))
 
@@ -149,6 +154,18 @@ const baseMenuGroups = [
       { id: 'capability-vector-search', key: '/capability-center/vector-search', label: '向量检索' },
     ],
   },
+  {
+    id: 'langchain-dialog',
+    key: 'langchain-dialog-menu',
+    icon: <MessageOutlined />,
+    label: 'Langchain对话',
+    children: [
+      { id: 'langchain-multi-chat', key: '/langchain-chatchat/multi-chat', label: '多功能对话' },
+      { id: 'langchain-rag-chat', key: '/langchain-chatchat/rag-chat', label: 'RAG对话' },
+      { id: 'langchain-knowledge-base', key: '/langchain-chatchat/knowledge-base', label: '知识库管理' },
+      { id: 'langchain-mcp-management', key: '/langchain-chatchat/mcp-management', label: 'MCP管理' },
+    ],
+  },
 ]
 
 const menuPermissionSections = [
@@ -204,6 +221,16 @@ const menuPermissionSections = [
       { id: 'capability-vector-search', label: '向量检索' },
     ],
   },
+  {
+    title: 'Langchain对话',
+    items: [
+      { id: 'langchain-dialog', label: '显示一级菜单' },
+      { id: 'langchain-multi-chat', label: '多功能对话' },
+      { id: 'langchain-rag-chat', label: 'RAG对话' },
+      { id: 'langchain-knowledge-base', label: '知识库管理' },
+      { id: 'langchain-mcp-management', label: 'MCP管理' },
+    ],
+  },
 ]
 
 const defaultVisibleMenuIds = baseMenuGroups.flatMap((item) => [item.id, ...(item.children?.map((child) => child.id) || [])])
@@ -228,6 +255,21 @@ function readVisibleMenuIds() {
     }
     if (!next.has('capability-vector-search') && next.has('capability-center')) {
       next.add('capability-vector-search')
+    }
+    if (!next.has('langchain-dialog') && next.has('langchain-chatchat-link')) {
+      next.add('langchain-dialog')
+    }
+    if (!next.has('langchain-multi-chat') && next.has('langchain-dialog')) {
+      next.add('langchain-multi-chat')
+    }
+    if (!next.has('langchain-rag-chat') && next.has('langchain-dialog')) {
+      next.add('langchain-rag-chat')
+    }
+    if (!next.has('langchain-knowledge-base') && next.has('langchain-dialog')) {
+      next.add('langchain-knowledge-base')
+    }
+    if (!next.has('langchain-mcp-management') && next.has('langchain-dialog')) {
+      next.add('langchain-mcp-management')
     }
     return defaultVisibleMenuIds.filter((id) => next.has(id))
   } catch {
@@ -277,6 +319,9 @@ function getOpenMenuKeys(pathname) {
   }
   if (pathname.startsWith('/agents')) return ['agents-menu']
   if (pathname.startsWith('/capability-center')) return ['capability-center-menu']
+  if (pathname.startsWith('/langchain-chatchat')) {
+    return ['langchain-dialog-menu']
+  }
   if (pathname.startsWith('/sessions')) return ['sessions-menu']
   return []
 }
@@ -341,6 +386,10 @@ function App() {
     if (location.pathname.startsWith('/capability-center/skills')) return '/capability-center/skills'
     if (location.pathname.startsWith('/capability-center/knowledge-base')) return '/capability-center/knowledge-base'
     if (location.pathname.startsWith('/capability-center/vector-search')) return '/capability-center/vector-search'
+    if (location.pathname.startsWith('/langchain-chatchat/multi-chat')) return '/langchain-chatchat/multi-chat'
+    if (location.pathname.startsWith('/langchain-chatchat/rag-chat')) return '/langchain-chatchat/rag-chat'
+    if (location.pathname.startsWith('/langchain-chatchat/knowledge-base')) return '/langchain-chatchat/knowledge-base'
+    if (location.pathname.startsWith('/langchain-chatchat/mcp-management')) return '/langchain-chatchat/mcp-management'
     if (location.pathname.startsWith('/sessions/new')) return '/sessions/new'
     if (/^\/sessions\/\d+$/.test(location.pathname)) return location.pathname
     if (location.pathname.startsWith('/sessions')) return '/sessions'
@@ -394,6 +443,10 @@ function App() {
     if (location.pathname.startsWith('/capability-center/skills')) return { title: 'Skill管理', breadcrumb: ['能力中心', 'Skill管理'] }
     if (location.pathname.startsWith('/capability-center/knowledge-base')) return { title: '知识库管理', breadcrumb: ['能力中心', '知识库管理'] }
     if (location.pathname.startsWith('/capability-center/vector-search')) return { title: '向量检索', breadcrumb: ['能力中心', '向量检索'] }
+    if (location.pathname.startsWith('/langchain-chatchat/multi-chat')) return { title: '多功能对话', breadcrumb: ['Langchain对话', '多功能对话'] }
+    if (location.pathname.startsWith('/langchain-chatchat/rag-chat')) return { title: 'RAG对话', breadcrumb: ['Langchain对话', 'RAG对话'] }
+    if (location.pathname.startsWith('/langchain-chatchat/knowledge-base')) return { title: '知识库管理', breadcrumb: ['Langchain对话', '知识库管理'] }
+    if (location.pathname.startsWith('/langchain-chatchat/mcp-management')) return { title: 'MCP管理', breadcrumb: ['Langchain对话', 'MCP管理'] }
     if (location.pathname === '/sessions') return { title: '会话历史', breadcrumb: ['会话', '历史会话'] }
     if (location.pathname === '/sessions/new') return { title: '新会话', breadcrumb: ['会话', '开启一个会话'] }
     if (/^\/sessions\/\d+$/.test(location.pathname)) return { title: '历史会话', breadcrumb: ['会话', '历史会话'] }
@@ -437,10 +490,14 @@ function App() {
             openKeys={openMenuKeys}
             items={menuItems}
             onOpenChange={(keys) => setOpenMenuKeys(keys)}
-            onClick={({ key }) => {
-              if (typeof key === 'string' && key.startsWith('/')) {
-                navigate(key)
-              }
+              onClick={({ key }) => {
+                if (typeof key === 'string' && /^https?:\/\//i.test(key)) {
+                  window.open(key, '_blank', 'noopener,noreferrer')
+                  return
+                }
+                if (typeof key === 'string' && key.startsWith('/')) {
+                  navigate(key)
+                }
             }}
           />
         </Sider>
@@ -516,7 +573,7 @@ function App() {
               <Route path="/gas-supplier-portrait" element={<GasSupplierPortraitPage />} />
               <Route path="/gas-oems" element={<GasOemListPage />} />
               <Route path="/gas-industry-map" element={<GASIndustryMapPage />} />
-              <Route path="/agents/precise-sourcing" element={<PlaceholderPage title="精准寻源智能体" />} />
+              <Route path="/agents/precise-sourcing" element={<PreciseSourcingAgentPage />} />
               <Route path="/agents/admission-screening" element={<PlaceholderPage title="准入排查智能体" />} />
               <Route path="/agents/realtime-monitoring" element={<PlaceholderPage title="实时监控智能体" />} />
               <Route path="/agents/supplier-dd" element={<PlaceholderPage title="供应商尽调智能体" />} />
@@ -524,6 +581,10 @@ function App() {
               <Route path="/capability-center/skills" element={<SkillManagementPage />} />
               <Route path="/capability-center/knowledge-base" element={<KnowledgeBaseManagementPage />} />
               <Route path="/capability-center/vector-search" element={<Suspense fallback={<Card className="app-elevated-card">加载中...</Card>}><VectorSearchPage /></Suspense>} />
+              <Route path="/langchain-chatchat/multi-chat" element={<LangchainMultiChatPage />} />
+              <Route path="/langchain-chatchat/rag-chat" element={<LangchainRagChatPage />} />
+              <Route path="/langchain-chatchat/knowledge-base" element={<LangchainKnowledgeBasePage />} />
+              <Route path="/langchain-chatchat/mcp-management" element={<LangchainMcpPage />} />
               <Route path="/sessions" element={<SessionHistoryPage />} />
               <Route path="/sessions/new" element={<SessionChatPage />} />
               <Route path="/sessions/:id" element={<SessionChatPage />} />
@@ -570,6 +631,9 @@ function App() {
                             if (item.id === 'capability-mcp-services' || item.id === 'capability-skill-management' || item.id === 'capability-knowledge-base' || item.id === 'capability-vector-search') {
                               set.add('capability-center')
                             }
+                            if (item.id === 'langchain-multi-chat' || item.id === 'langchain-rag-chat' || item.id === 'langchain-knowledge-base' || item.id === 'langchain-mcp-management') {
+                              set.add('langchain-dialog')
+                            }
                           } else {
                             set.delete(item.id)
                             if (item.id === 'gys-suppliers') {
@@ -596,6 +660,12 @@ function App() {
                               set.delete('capability-skill-management')
                               set.delete('capability-knowledge-base')
                               set.delete('capability-vector-search')
+                            }
+                            if (item.id === 'langchain-dialog') {
+                              set.delete('langchain-multi-chat')
+                              set.delete('langchain-rag-chat')
+                              set.delete('langchain-knowledge-base')
+                              set.delete('langchain-mcp-management')
                             }
                           }
                           return defaultVisibleMenuIds.filter((id) => set.has(id))

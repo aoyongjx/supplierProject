@@ -9,12 +9,13 @@
   "scripts": {
     "dev": "concurrently \"npm:dev:server\" \"npm:dev:client\"",
     "dev:watch": "concurrently \"npm:dev:server:watch\" \"npm:dev:client\"",
-    "dev:client": "vite",
-    "dev:server": "node server/index.js",
-    "dev:server:watch": "node --watch server/index.js",
+    "dev:client": "node scripts/run-with-local-no-proxy.mjs vite",
+    "dev:server": "node scripts/run-with-local-no-proxy.mjs node server/index.js",
+    "dev:server:watch": "node scripts/run-with-local-no-proxy.mjs node --watch server/index.js",
+    "dev:langchain-chatchat": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-langchain-chatchat.ps1",
     "stable": "concurrently \"npm:stable:server\" \"npm:stable:client\"",
-    "stable:client": "vite preview --host 127.0.0.1 --strictPort --port 5173",
-    "stable:server": "node server/index.js",
+    "stable:client": "node scripts/run-with-local-no-proxy.mjs vite preview --host 127.0.0.1 --strictPort --port 5173",
+    "stable:server": "node scripts/run-with-local-no-proxy.mjs node server/index.js",
     "start": "node server/index.js",
     "build": "vite build",
     "verify:stocks": "node scripts/verify-stocks.mjs",
@@ -22,6 +23,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@langchain/core": "^1.1.44",
+    "@langchain/langgraph": "^1.2.9",
     "antd": "^6.3.6",
     "concurrently": "^9.2.1",
     "cors": "^2.8.6",
@@ -43,7 +46,8 @@
     "recharts": "^3.8.1",
     "three": "^0.184.0",
     "three-spritetext": "^1.10.0",
-    "umap-js": "^1.4.0"
+    "umap-js": "^1.4.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",

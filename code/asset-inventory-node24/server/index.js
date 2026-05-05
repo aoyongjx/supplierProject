@@ -2,10 +2,12 @@ import cors from 'cors'
 import { execFile as execFileCallback } from 'child_process'
 import dotenv from 'dotenv'
 import express from 'express'
+import { Annotation, END, START, StateGraph } from '@langchain/langgraph'
 import { promises as fs } from 'fs'
 import path from 'path'
 import pg from 'pg'
 import { promisify } from 'util'
+import { createPreciseSourcingLangGraph } from './agents/preciseSourcingLangGraph.js'
 
 dotenv.config()
 
@@ -2703,6 +2705,10 @@ function parseCsvObjects(csvText) {
 
 function toText(value) {
   return String(value || '').trim()
+}
+
+function toJsonSafe(value) {
+  return JSON.parse(JSON.stringify(value, (_key, current) => (typeof current === 'bigint' ? Number(current) : current)))
 }
 
 function parseJsonValueFromText(text = '') {
@@ -14273,20 +14279,33 @@ app.delete('/api/supply-chain/records/batch-delete', authMiddleware, async (req,
 app.get('/api/suppliers', authMiddleware, async (req, res) => {
   const limit = Math.min(Math.max(Number(req.query.limit || 1000), 1), 5000)
   const keyword = String(req.query.keyword || '').trim()
+  const fuzzy = String(req.query.fuzzy ?? 'true') !== 'false'
   const nodeId = Number(req.query.nodeId || 0)
   const filters = []
   const params = []
   if (keyword) {
-    params.push(`%${keyword}%`)
-    filters.push(`(
-      company_name ILIKE $${params.length}
-      OR node_name ILIKE $${params.length}
-      OR main_products ILIKE $${params.length}
-      OR quality_system ILIKE $${params.length}
-      OR region ILIKE $${params.length}
-      OR list_page_url ILIKE $${params.length}
-      OR detail_url ILIKE $${params.length}
-    )`)
+    const searchFields = [
+      'company_name',
+      'node_name',
+      'main_products',
+      'quality_system',
+      'region',
+      'list_page_url',
+      'detail_url',
+      'source_url',
+    ]
+    const rawTokens = keyword.split(/[\s,，。；;、|/]+/g).map((t) => t.trim()).filter(Boolean)
+    const compactTokens = rawTokens.map((t) => t.replace(/[-_]/g, '')).filter(Boolean)
+    const variants = fuzzy
+      ? [...new Set([keyword, ...rawTokens, ...compactTokens])]
+      : [keyword]
+    const variantClauses = []
+    for (const variant of variants) {
+      params.push(`%${variant}%`)
+      const p = `$${params.length}`
+      variantClauses.push(`(${searchFields.map((field) => `${field} ILIKE ${p}`).join(' OR ')})`)
+    }
+    filters.push(`(${variantClauses.join(' OR ')})`)
   }
   if (Number.isInteger(nodeId) && nodeId > 0) {
     params.push(nodeId)
@@ -15988,6 +16007,428 @@ app.get('/api/stocks/kline', authMiddleware, async (req, res) => {
     })
   } catch (error) {
     return res.status(500).json({ code: 500, message: `K线查询失败: ${error.message}`, data: null })
+  }
+})
+
+async function callPreciseSourcingLlm(state) {
+  const apiKey = toText(process.env.OPENAI_API_KEY || process.env.QWEN_API_KEY)
+  if (!apiKey) return ''
+
+  const model = toText(process.env.OPENAI_CHAT_MODEL || process.env.DEFAULT_LLM_MODEL || 'gpt-4.1-mini')
+  const baseUrl = toText(process.env.OPENAI_BASE_URL || 'https://api.openai.com')
+  const evidencePayload = {
+    userInput: state.userInput,
+    supplierRows: (state.supplierRows || []).slice(0, 5).map((item) => ({
+      name: toText(item.name || item.supplier_name),
+      sourceUrl: toText(item.source_url || item.sourceUrl),
+    })),
+    kbHits: (state.kbHits || []).slice(0, 5).map((item) => ({
+      docName: toText(item.docName || item.docId),
+      cosineDistance: Number(item.cosineDistance || 0),
+      snippet: toText(item.chunkText).slice(0, 80),
+    })),
+  }
+  const response = await fetchByNetworkPolicy(`${baseUrl.replace(/\/+$/, '')}/v1/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model,
+      temperature: 0.2,
+      messages: [
+        { role: 'system', content: '你是精准寻源智能体。只输出简洁业务结论，禁止输出推理过程。' },
+        {
+          role: 'user',
+          content: `请基于证据输出中文简洁结果，严格使用以下模板（不超过10行）：
+【结论】一句话
+【命中统计】DB x条，RAG y条
+【候选供应商Top3】每行“序号. 名称 | 理由(不超过20字)”
+【下一步】1-3条可执行动作
+
+证据JSON：
+${JSON.stringify(evidencePayload)}`,
+        },
+      ],
+    }),
+  })
+  const payload = await response.json().catch(() => ({}))
+  const answer = toText(payload?.choices?.[0]?.message?.content)
+  if (answer) return answer
+  const errMsg = toText(payload?.error?.message || payload?.message || '')
+  if (/not supported when using Codex with a ChatGPT account/i.test(errMsg)) {
+    return ''
+  }
+  if (!response.ok) {
+    return `模型调用失败（HTTP ${response.status}）：${errMsg || 'unknown error'}`
+  }
+  return ''
+}
+
+function buildPreciseSourcingFallbackAnswer(state) {
+  const suppliers = Array.isArray(state?.supplierRows) ? state.supplierRows : []
+  const kbHits = Array.isArray(state?.kbHits) ? state.kbHits : []
+  const supplierTop = suppliers
+    .slice(0, 5)
+    .map((item, idx) => `${idx + 1}. ${toText(item?.name || item?.supplier_name || '未知供应商')}（${toText(item?.source_url || item?.sourceUrl || '无URL')}）`)
+    .join('\n')
+  const ragTop = kbHits
+    .slice(0, 5)
+    .map((item, idx) => `${idx + 1}. ${toText(item?.docName || item?.docId || '未知文档')} | 距离=${Number(item?.cosineDistance || 0).toFixed(4)}`)
+    .join('\n')
+  return [
+    '【结论】已完成初筛，建议按证据相关度推进候选核验。',
+    `【命中统计】DB ${suppliers.length}条，RAG ${kbHits.length}条`,
+    '',
+    '【候选供应商Top3】',
+    supplierTop || '暂无',
+    '',
+    '【下一步】',
+    '1. 用 RAG 命中文档关键词反查供应商主数据。',
+    '2. 进入准入排查补齐认证、量产、客户字段。',
+    '3. 以认证完整度+相关性+可联系性输出Top10。',
+    ragTop ? `\n【RAG参考】\n${ragTop}` : '',
+  ].join('\n')
+}
+
+function toCompactKbHit(hit = {}) {
+  const chunkText = toText(hit?.chunkText)
+  return {
+    id: hit?.id,
+    kbId: toText(hit?.kbId),
+    docId: toText(hit?.docId),
+    docName: toText(hit?.docName),
+    docUrl: toText(hit?.docUrl),
+    chunkIndex: Number(hit?.chunkIndex || 0),
+    cosineDistance: Number(hit?.cosineDistance || 0),
+    euclideanDistance: Number(hit?.euclideanDistance || 0),
+    sourceType: toText(hit?.sourceType),
+    snippetPreview: chunkText.slice(0, 220),
+    chunkText,
+  }
+}
+
+const preciseSourcingLangGraph = createPreciseSourcingLangGraph({
+  async searchSuppliers(userInput, authHeader = '') {
+    const dbQuery = new URLSearchParams({ keyword: toText(userInput), limit: '20', fuzzy: 'true' })
+    const dbResponse = await fetchByNetworkPolicy(`http://127.0.0.1:${port}/api/suppliers?${dbQuery.toString()}`, {
+      headers: toText(authHeader) ? { Authorization: toText(authHeader) } : {},
+    })
+    const dbPayload = await dbResponse.json().catch(() => ({}))
+    return Array.isArray(dbPayload?.data) ? dbPayload.data : []
+  },
+  async searchRag(kbId, userInput, topK, authHeader = '') {
+    const ragResponse = await fetchByNetworkPolicy(`http://127.0.0.1:${port}/api/knowledge-bases/${encodeURIComponent(toText(kbId))}/search`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(toText(authHeader) ? { Authorization: toText(authHeader) } : {}),
+      },
+      body: JSON.stringify({
+        query: toText(userInput),
+        topK: Math.min(Number(topK || 20), 20),
+        metric: 'cosine',
+        strictKeyword: false,
+      }),
+    })
+    const ragPayload = await ragResponse.json().catch(() => ({}))
+    return Array.isArray(ragPayload?.data?.results) ? ragPayload.data.results : []
+  },
+  async generateAnswer(state) {
+    let answer = await callPreciseSourcingLlm(state)
+    const fallbackAnswer = buildPreciseSourcingFallbackAnswer(state)
+    if (!toText(answer)) answer = fallbackAnswer
+    else if (toText(answer).startsWith('模型调用失败')) answer = `${toText(answer)}\n\n${fallbackAnswer}`
+    return answer
+  },
+})
+
+app.post('/api/agents/precise-sourcing/chat', authMiddleware, async (req, res) => {
+  const userInput = toText(req.body?.message)
+  const authHeader = toText(req.headers.authorization)
+  const kbIdInput = toText(req.body?.kbId)
+  const topK = Math.min(Math.max(Number(req.body?.topK || 20), 5), 50)
+  if (!userInput) {
+    return res.status(400).json({ code: 400, message: '缺少参数：message', data: null })
+  }
+  const targetKbId = kbIdInput || toText(knowledgeBaseStore.keys().next()?.value)
+
+  try {
+    const graphResult = await preciseSourcingLangGraph.run({
+      userInput,
+      authHeader,
+      kbId: targetKbId || '',
+      topK: Math.min(topK, 20),
+    })
+    const safeSuppliers = toJsonSafe(Array.isArray(graphResult.supplierRows) ? graphResult.supplierRows.slice(0, 20) : [])
+    const safeKbHits = toJsonSafe(
+      Array.isArray(graphResult.kbHits)
+        ? graphResult.kbHits.slice(0, 20).map((item) => toCompactKbHit(item))
+        : [],
+    )
+
+    return res.json({
+      code: 200,
+      message: 'success',
+      data: {
+        agent: 'precise-sourcing',
+        kbId: targetKbId || '',
+        answer: toText(graphResult.answer),
+        traces: graphResult.traces || [],
+        react: graphResult.react || { rounds: [] },
+        evidence: {
+          suppliers: safeSuppliers,
+          kbHits: safeKbHits,
+        },
+      },
+    })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `精准寻源智能体执行失败: ${error.message}`, data: null })
+  }
+})
+
+function toLangchainMessages(history = [], userMessage = '') {
+  const mapped = Array.isArray(history)
+    ? history
+      .filter((item) => item && typeof item === 'object')
+      .slice(-16)
+      .map((item) => ({
+        role: toText(item.role) === 'assistant' ? 'assistant' : 'user',
+        content: toText(item.content),
+      }))
+      .filter((item) => item.content)
+    : []
+  const current = toText(userMessage)
+  if (current) mapped.push({ role: 'user', content: current })
+  return mapped.length > 0 ? mapped : [{ role: 'user', content: current || '你好' }]
+}
+
+async function fetchLangchainModelCatalog() {
+  const codexConfigPath = 'C:\\Users\\aoyon\\.codex\\config.toml'
+  const codexModelCatalog = ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex', 'gpt-5.2']
+  try {
+    const text = await fs.readFile(codexConfigPath, 'utf8')
+    const defaults = []
+    for (const match of String(text || '').matchAll(/^\s*model\s*=\s*"([^"]+)"\s*$/gim)) {
+      const name = toText(match?.[1])
+      if (name) defaults.push(name)
+    }
+    const merged = [...new Set([...defaults, ...codexModelCatalog])]
+    return {
+      platform: 'codex-local',
+      models: merged,
+    }
+  } catch {
+    return { platform: 'codex-local', models: codexModelCatalog }
+  }
+}
+
+async function callLangchainCompatibleChat(messages, options = {}) {
+  const apiKey = toText(process.env.OPENAI_API_KEY || process.env.LLM_API_KEY || process.env.CODEX_API_KEY)
+  const baseUrl = toText(process.env.OPENAI_BASE_URL || process.env.LLM_BASE_URL || 'https://api.openai.com')
+  const model = toText(options.model) || toText(process.env.LANGCHAIN_CHAT_MODEL || process.env.OPENAI_MODEL || 'gpt-4o-mini')
+  const temperature = Number.isFinite(Number(options.temperature)) ? Number(options.temperature) : 0.3
+  if (!apiKey) {
+    throw new Error('未配置 OPENAI_API_KEY/LLM_API_KEY，无法调用 LangChain 对话模型')
+  }
+  const normalizedBase = baseUrl.replace(/\/+$/, '')
+  const apiBase = /\/v\d+$/i.test(normalizedBase) ? normalizedBase : `${normalizedBase}/v1`
+  const response = await fetchByNetworkPolicy(`${apiBase}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model,
+      messages,
+      temperature,
+    }),
+  })
+  if (!response.ok) {
+    const text = await response.text().catch(() => '')
+    throw new Error(`模型调用失败（HTTP ${response.status}）${text ? `: ${text.slice(0, 240)}` : ''}`)
+  }
+  const contentType = toText(response.headers.get('content-type')).toLowerCase()
+  if (!contentType.includes('application/json')) {
+    const raw = await response.text().catch(() => '')
+    throw new Error(`模型接口返回非JSON内容（base=${apiBase}）。请检查 OPENAI_BASE_URL 是否为 API 地址。片段: ${raw.slice(0, 120)}`)
+  }
+  const payload = await response.json().catch(() => ({}))
+  const first = payload?.choices?.[0]?.message
+  let answer = toText(first?.content)
+  if (!answer && Array.isArray(first?.content)) {
+    answer = first.content
+      .map((part) => toText(part?.text || part?.content || (typeof part === 'string' ? part : '')))
+      .filter(Boolean)
+      .join('\n')
+  }
+  if (!answer) {
+    answer = toText(payload?.choices?.[0]?.text)
+  }
+  if (!answer) {
+    answer = '模型已返回，但当前响应无可解析文本内容。请尝试切换模型或降低复杂度后重试。'
+  }
+  return { answer, raw: payload, modelRequested: model, modelReturned: toText(payload?.model), apiBase }
+}
+
+const LangchainShellState = Annotation.Root({
+  history: Annotation({ reducer: (_x, y) => y, default: () => [] }),
+  message: Annotation({ reducer: (_x, y) => y, default: () => '' }),
+  model: Annotation({ reducer: (_x, y) => y, default: () => '' }),
+  temperature: Annotation({ reducer: (_x, y) => y, default: () => 0.3 }),
+  systemMessage: Annotation({ reducer: (_x, y) => y, default: () => '' }),
+  useAgent: Annotation({ reducer: (_x, y) => y, default: () => false }),
+  useMcp: Annotation({ reducer: (_x, y) => y, default: () => false }),
+  selectedTools: Annotation({ reducer: (_x, y) => y, default: () => [] }),
+  messages: Annotation({ reducer: (_x, y) => y, default: () => [] }),
+  answer: Annotation({ reducer: (_x, y) => y, default: () => '' }),
+  modelRequested: Annotation({ reducer: (_x, y) => y, default: () => '' }),
+  modelReturned: Annotation({ reducer: (_x, y) => y, default: () => '' }),
+  apiBase: Annotation({ reducer: (_x, y) => y, default: () => '' }),
+})
+
+function createLangchainShellGraph() {
+  const graph = new StateGraph(LangchainShellState)
+    .addNode('prepare', async (state) => {
+      const selectedTools = Array.isArray(state.selectedTools)
+        ? state.selectedTools.map((item) => toText(item)).filter(Boolean).slice(0, 20)
+        : []
+      const useAgent = Boolean(state.useAgent)
+      const useMcp = Boolean(state.useMcp)
+      const toolHint = selectedTools.length > 0
+        ? `\\n\\n[运行参数]\\n- useAgent: ${useAgent}\\n- useMcp: ${useMcp}\\n- selectedTools: ${selectedTools.join(', ')}`
+        : ''
+      const messages = toLangchainMessages(state.history, state.message)
+      if (toText(state.systemMessage)) {
+        messages.unshift({ role: 'system', content: toText(state.systemMessage) })
+      }
+      if (toolHint) {
+        messages.push({ role: 'system', content: `请参考如下工具策略进行回答（若无工具能力可直说）：${toolHint}` })
+      }
+      return { messages }
+    })
+    .addNode('call_model', async (state) => {
+      const result = await callLangchainCompatibleChat(state.messages, {
+        model: state.model,
+        temperature: state.temperature,
+      })
+      return {
+        answer: result.answer || '',
+        modelRequested: result.modelRequested || '',
+        modelReturned: result.modelReturned || '',
+        apiBase: result.apiBase || '',
+      }
+    })
+    .addEdge(START, 'prepare')
+    .addEdge('prepare', 'call_model')
+    .addEdge('call_model', END)
+  return graph.compile()
+}
+
+const langchainShellGraph = createLangchainShellGraph()
+
+app.post('/api/langchain/chat', authMiddleware, async (req, res) => {
+  const messageText = toText(req.body?.message)
+  if (!messageText) {
+    return res.status(400).json({ code: 400, message: '缺少参数：message', data: null })
+  }
+  try {
+    const result = await langchainShellGraph.invoke({
+      history: Array.isArray(req.body?.history) ? req.body.history : [],
+      message: messageText,
+      model: toText(req.body?.model),
+      temperature: Number(req.body?.temperature || 0.3),
+      systemMessage: toText(req.body?.systemMessage),
+      useAgent: Boolean(req.body?.useAgent),
+      useMcp: Boolean(req.body?.useMcp),
+      selectedTools: Array.isArray(req.body?.selectedTools) ? req.body.selectedTools : [],
+    })
+    return res.json({
+      code: 200,
+      message: 'success',
+      data: {
+        answer: toText(result.answer),
+        messages: Array.isArray(result.messages) ? result.messages : [],
+        meta: {
+          modelRequested: toText(result?.modelRequested),
+          modelReturned: toText(result?.modelReturned),
+          apiBase: toText(result?.apiBase),
+        },
+      },
+    })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `LangChain 对话失败: ${error.message}`, data: null })
+  }
+})
+
+app.get('/api/langchain/models', authMiddleware, async (_req, res) => {
+  try {
+    const catalog = await fetchLangchainModelCatalog()
+    return res.json({
+      code: 200,
+      message: 'success',
+      data: catalog,
+    })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `读取模型列表失败: ${error.message}`, data: null })
+  }
+})
+
+app.get('/api/langchain/tools', authMiddleware, async (_req, res) => {
+  return res.json({
+    code: 200,
+    message: 'success',
+    data: [
+      { key: 'arxiv', label: 'ARXIV论文' },
+      { key: 'calculator', label: '数学计算器' },
+      { key: 'web_search', label: '互联网搜索' },
+      { key: 'local_kb', label: '本地知识库' },
+      { key: 'youtube', label: '油管视频' },
+      { key: 'shell', label: '系统命令' },
+      { key: 'image_gen', label: '文本生成图片工具' },
+      { key: 'db_chat', label: '数据库对话' },
+    ],
+  })
+})
+
+app.post('/api/langchain/rag-chat', authMiddleware, async (req, res) => {
+  const kbId = toText(req.body?.kbId)
+  const question = toText(req.body?.question)
+  const topK = Math.min(Math.max(Number(req.body?.topK || 8), 1), 20)
+  if (!kbId || !question) {
+    return res.status(400).json({ code: 400, message: '缺少参数：kbId 或 question', data: null })
+  }
+  try {
+    const kb = knowledgeBaseStore.get(kbId)
+    if (!kb) return res.status(404).json({ code: 404, message: `知识库不存在: ${kbId}`, data: null })
+    const hits = searchKnowledgeBaseRecords(kb, question, topK, false)
+    const contextText = hits
+      .slice(0, topK)
+      .map((item, idx) => `证据${idx + 1}（score=${Number(item.score || 0).toFixed(4)}）:\n${toText(item.content)}`)
+      .join('\n\n')
+    const prompt = `请基于以下知识库证据回答用户问题。若证据不足，请明确说明。\n\n${contextText || '（无命中证据）'}\n\n用户问题：${question}`
+    const messages = toLangchainMessages(req.body?.history, prompt)
+    const result = await callLangchainCompatibleChat(messages, {
+      model: req.body?.model,
+      temperature: req.body?.temperature,
+    })
+    return res.json({
+      code: 200,
+      message: 'success',
+      data: {
+        answer: result.answer,
+        hits: hits.slice(0, topK).map((item) => ({
+          id: item.id,
+          score: item.score,
+          content: item.content,
+          source: item.name || item.url || item.sourceType || '-',
+        })),
+      },
+    })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `LangChain RAG 对话失败: ${error.message}`, data: null })
   }
 })
 

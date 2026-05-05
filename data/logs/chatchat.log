@@ -1,0 +1,257 @@
+2026-05-05 16:41:20.971 | WARNING  | chatchat.server.utils:detect_xf_models:105 - auto_detect_model needs xinference-client installed. Please try "pip install xinference-client". 
+2026-05-05 16:41:20.971 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 16:41:20.971 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 16:41:21.000 | WARNING  | chatchat.server.utils:get_default_embedding:216 - default embedding model bge-m3 is not found in available embeddings, using quentinz/bge-large-zh-v1.5 instead
+2026-05-05 16:41:21.001 | WARNING  | chatchat.server.utils:get_default_embedding:216 - default embedding model bge-m3 is not found in available embeddings, using quentinz/bge-large-zh-v1.5 instead
+2026-05-05 16:41:21.003 | WARNING  | chatchat.server.utils:get_default_embedding:216 - default embedding model bge-m3 is not found in available embeddings, using quentinz/bge-large-zh-v1.5 instead
+2026-05-05 16:41:21.005 | WARNING  | chatchat.server.utils:get_default_embedding:216 - default embedding model bge-m3 is not found in available embeddings, using quentinz/bge-large-zh-v1.5 instead
+2026-05-05 16:41:33.237 | WARNING  | chatchat.server.utils:detect_xf_models:105 - auto_detect_model needs xinference-client installed. Please try "pip install xinference-client". 
+2026-05-05 16:41:33.238 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 16:41:33.238 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 16:41:33.254 | WARNING  | chatchat.server.utils:get_default_embedding:216 - default embedding model bge-m3 is not found in available embeddings, using quentinz/bge-large-zh-v1.5 instead
+2026-05-05 16:41:33.256 | WARNING  | chatchat.server.utils:get_default_embedding:216 - default embedding model bge-m3 is not found in available embeddings, using quentinz/bge-large-zh-v1.5 instead
+2026-05-05 16:41:33.257 | WARNING  | chatchat.server.utils:get_default_embedding:216 - default embedding model bge-m3 is not found in available embeddings, using quentinz/bge-large-zh-v1.5 instead
+2026-05-05 16:41:33.258 | WARNING  | chatchat.server.utils:get_default_embedding:216 - default embedding model bge-m3 is not found in available embeddings, using quentinz/bge-large-zh-v1.5 instead
+2026-05-05 16:41:33.262 | SUCCESS  | chatchat.cli:init:47 - 开始初始化项目数据目录：E:\workspaceCodeing
+2026-05-05 16:41:33.264 | SUCCESS  | chatchat.cli:init:49 - 创建所有数据目录：成功。
+2026-05-05 16:41:33.274 | SUCCESS  | chatchat.cli:init:52 - 复制 samples 知识库文件：成功。
+2026-05-05 16:41:33.302 | SUCCESS  | chatchat.cli:init:54 - 初始化知识库数据库：成功。
+2026-05-05 16:41:33.517 | SUCCESS  | chatchat.cli:init:66 - 生成默认配置文件：成功。
+2026-05-05 16:41:33.517 | SUCCESS  | chatchat.cli:init:67 - 请先检查确认 model_settings.yaml 里模型平台、LLM模型和Embed模型信息已经正确
+2026-05-05 16:41:33.517 | SUCCESS  | chatchat.cli:init:76 - 执行 chatchat kb -r 初始化知识库，然后 chatchat start -a 启动服务。
+2026-05-05 16:42:41.178 | WARNING  | chatchat.server.utils:detect_xf_models:105 - auto_detect_model needs xinference-client installed. Please try "pip install xinference-client". 
+2026-05-05 16:42:41.215 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 16:42:41.216 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 16:42:41.246 | WARNING  | chatchat.server.utils:get_default_embedding:216 - default embedding model bge-m3 is not found in available embeddings, using quentinz/bge-large-zh-v1.5 instead
+2026-05-05 16:42:41.258 | WARNING  | chatchat.server.utils:get_default_embedding:216 - default embedding model bge-m3 is not found in available embeddings, using quentinz/bge-large-zh-v1.5 instead
+2026-05-05 16:42:41.269 | WARNING  | chatchat.server.utils:get_default_embedding:216 - default embedding model bge-m3 is not found in available embeddings, using quentinz/bge-large-zh-v1.5 instead
+2026-05-05 16:42:41.281 | WARNING  | chatchat.server.utils:get_default_embedding:216 - default embedding model bge-m3 is not found in available embeddings, using quentinz/bge-large-zh-v1.5 instead
+2026-05-05 16:42:44.593 | WARNING  | chatchat.server.utils:detect_xf_models:105 - auto_detect_model needs xinference-client installed. Please try "pip install xinference-client". 
+2026-05-05 16:42:44.629 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 16:42:44.630 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 16:42:44.660 | WARNING  | chatchat.server.utils:get_default_embedding:216 - default embedding model bge-m3 is not found in available embeddings, using quentinz/bge-large-zh-v1.5 instead
+2026-05-05 16:42:44.672 | WARNING  | chatchat.server.utils:get_default_embedding:216 - default embedding model bge-m3 is not found in available embeddings, using quentinz/bge-large-zh-v1.5 instead
+2026-05-05 16:42:44.683 | WARNING  | chatchat.server.utils:get_default_embedding:216 - default embedding model bge-m3 is not found in available embeddings, using quentinz/bge-large-zh-v1.5 instead
+2026-05-05 16:42:44.696 | WARNING  | chatchat.server.utils:get_default_embedding:216 - default embedding model bge-m3 is not found in available embeddings, using quentinz/bge-large-zh-v1.5 instead
+2026-05-05 16:42:44.723 | INFO     | chatchat.startup:start_main_server:256 - 正在启动服务：
+2026-05-05 16:42:44.726 | INFO     | chatchat.startup:start_main_server:257 - 如需查看 llm_api 日志，请前往 E:\workspaceCodeing\data\logs
+2026-05-05 16:42:47.859 | WARNING  | chatchat.server.utils:detect_xf_models:105 - auto_detect_model needs xinference-client installed. Please try "pip install xinference-client". 
+2026-05-05 16:42:47.861 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 16:42:47.861 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 16:42:47.891 | WARNING  | chatchat.server.utils:get_default_embedding:216 - default embedding model bge-m3 is not found in available embeddings, using quentinz/bge-large-zh-v1.5 instead
+2026-05-05 16:42:47.904 | WARNING  | chatchat.server.utils:get_default_embedding:216 - default embedding model bge-m3 is not found in available embeddings, using quentinz/bge-large-zh-v1.5 instead
+2026-05-05 16:42:47.916 | WARNING  | chatchat.server.utils:get_default_embedding:216 - default embedding model bge-m3 is not found in available embeddings, using quentinz/bge-large-zh-v1.5 instead
+2026-05-05 16:42:47.929 | WARNING  | chatchat.server.utils:get_default_embedding:216 - default embedding model bge-m3 is not found in available embeddings, using quentinz/bge-large-zh-v1.5 instead
+2026-05-05 16:42:47.946 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 16:42:48.080 | WARNING  | chatchat.server.utils:get_default_embedding:216 - default embedding model bge-m3 is not found in available embeddings, using quentinz/bge-large-zh-v1.5 instead
+2026-05-05 16:42:48.082 | WARNING  | chatchat.server.utils:get_default_embedding:216 - default embedding model bge-m3 is not found in available embeddings, using quentinz/bge-large-zh-v1.5 instead
+2026-05-05 16:42:48.083 | WARNING  | chatchat.server.utils:get_default_embedding:216 - default embedding model bge-m3 is not found in available embeddings, using quentinz/bge-large-zh-v1.5 instead
+2026-05-05 16:42:48.084 | WARNING  | chatchat.server.utils:get_default_embedding:216 - default embedding model bge-m3 is not found in available embeddings, using quentinz/bge-large-zh-v1.5 instead
+2026-05-05 16:42:48.097 | WARNING  | chatchat.server.utils:get_default_embedding:216 - default embedding model bge-m3 is not found in available embeddings, using quentinz/bge-large-zh-v1.5 instead
+2026-05-05 16:42:48.196 | WARNING  | chatchat.server.utils:get_default_embedding:216 - default embedding model bge-m3 is not found in available embeddings, using quentinz/bge-large-zh-v1.5 instead
+2026-05-05 16:42:48.285 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 16:42:48.330 | WARNING  | chatchat.server.utils:get_default_embedding:216 - default embedding model bge-m3 is not found in available embeddings, using quentinz/bge-large-zh-v1.5 instead
+2026-05-05 16:42:48.344 | WARNING  | chatchat.server.utils:get_default_embedding:216 - default embedding model bge-m3 is not found in available embeddings, using quentinz/bge-large-zh-v1.5 instead
+2026-05-05 16:42:48.355 | WARNING  | chatchat.server.utils:get_default_embedding:216 - default embedding model bge-m3 is not found in available embeddings, using quentinz/bge-large-zh-v1.5 instead
+2026-05-05 16:42:48.367 | WARNING  | chatchat.server.utils:get_default_embedding:216 - default embedding model bge-m3 is not found in available embeddings, using quentinz/bge-large-zh-v1.5 instead
+2026-05-05 16:42:48.485 | INFO     | chatchat.startup:run_api_server:54 - Api MODEL_PLATFORMS: [PlatformConfig(platform_name='xinference', platform_type='xinference', api_base_url='http://127.0.0.1:9997/v1', api_key='EMPTY', api_proxy='', api_concurrencies=5, auto_detect_model=True, llm_models=[], embed_models=[], text2image_models=[], image2text_models=[], rerank_models=[], speech2text_models=[], text2speech_models=[]), PlatformConfig(platform_name='ollama', platform_type='ollama', api_base_url='http://127.0.0.1:11434/v1', api_key='EMPTY', api_proxy='', api_concurrencies=5, auto_detect_model=False, llm_models=['qwen:7b', 'qwen2:7b'], embed_models=['quentinz/bge-large-zh-v1.5'], text2image_models=[], image2text_models=[], rerank_models=[], speech2text_models=[], text2speech_models=[]), PlatformConfig(platform_name='oneapi', platform_type='oneapi', api_base_url='http://127.0.0.1:3000/v1', api_key='sk-', api_proxy='', api_concurrencies=5, auto_detect_model=False, llm_models=['chatglm_pro', 'chatglm_turbo', 'chatglm_std', 'chatglm_lite', 'qwen-turbo', 'qwen-plus', 'qwen-max', 'qwen-max-longcontext', 'ERNIE-Bot', 'ERNIE-Bot-turbo', 'ERNIE-Bot-4', 'SparkDesk'], embed_models=['text-embedding-v1', 'Embedding-V1'], text2image_models=[], image2text_models=[], rerank_models=[], speech2text_models=[], text2speech_models=[]), PlatformConfig(platform_name='openai', platform_type='openai', api_base_url='https://api.openai.com/v1', api_key='sk-proj-', api_proxy='', api_concurrencies=5, auto_detect_model=False, llm_models=['gpt-4o', 'gpt-3.5-turbo'], embed_models=['text-embedding-3-small', 'text-embedding-3-large'], text2image_models=[], image2text_models=[], rerank_models=[], speech2text_models=[], text2speech_models=[])]
+2026-05-05 16:42:51.678 | WARNING  | chatchat.server.utils:detect_xf_models:105 - auto_detect_model needs xinference-client installed. Please try "pip install xinference-client". 
+2026-05-05 16:42:51.679 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 16:42:51.679 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 16:42:51.708 | WARNING  | chatchat.server.utils:get_default_embedding:216 - default embedding model bge-m3 is not found in available embeddings, using quentinz/bge-large-zh-v1.5 instead
+2026-05-05 16:42:51.722 | WARNING  | chatchat.server.utils:get_default_embedding:216 - default embedding model bge-m3 is not found in available embeddings, using quentinz/bge-large-zh-v1.5 instead
+2026-05-05 16:42:51.735 | WARNING  | chatchat.server.utils:get_default_embedding:216 - default embedding model bge-m3 is not found in available embeddings, using quentinz/bge-large-zh-v1.5 instead
+2026-05-05 16:42:51.748 | WARNING  | chatchat.server.utils:get_default_embedding:216 - default embedding model bge-m3 is not found in available embeddings, using quentinz/bge-large-zh-v1.5 instead
+2026-05-05 16:42:51.754 | INFO     | chatchat.startup:run_webui:79 - Webui MODEL_PLATFORMS: [PlatformConfig(platform_name='xinference', platform_type='xinference', api_base_url='http://127.0.0.1:9997/v1', api_key='EMPTY', api_proxy='', api_concurrencies=5, auto_detect_model=True, llm_models=[], embed_models=[], text2image_models=[], image2text_models=[], rerank_models=[], speech2text_models=[], text2speech_models=[]), PlatformConfig(platform_name='ollama', platform_type='ollama', api_base_url='http://127.0.0.1:11434/v1', api_key='EMPTY', api_proxy='', api_concurrencies=5, auto_detect_model=False, llm_models=['qwen:7b', 'qwen2:7b'], embed_models=['quentinz/bge-large-zh-v1.5'], text2image_models=[], image2text_models=[], rerank_models=[], speech2text_models=[], text2speech_models=[]), PlatformConfig(platform_name='oneapi', platform_type='oneapi', api_base_url='http://127.0.0.1:3000/v1', api_key='sk-', api_proxy='', api_concurrencies=5, auto_detect_model=False, llm_models=['chatglm_pro', 'chatglm_turbo', 'chatglm_std', 'chatglm_lite', 'qwen-turbo', 'qwen-plus', 'qwen-max', 'qwen-max-longcontext', 'ERNIE-Bot', 'ERNIE-Bot-turbo', 'ERNIE-Bot-4', 'SparkDesk'], embed_models=['text-embedding-v1', 'Embedding-V1'], text2image_models=[], image2text_models=[], rerank_models=[], speech2text_models=[], text2speech_models=[]), PlatformConfig(platform_name='openai', platform_type='openai', api_base_url='https://api.openai.com/v1', api_key='sk-proj-', api_proxy='', api_concurrencies=5, auto_detect_model=False, llm_models=['gpt-4o', 'gpt-3.5-turbo'], embed_models=['text-embedding-3-small', 'text-embedding-3-large'], text2image_models=[], image2text_models=[], rerank_models=[], speech2text_models=[], text2speech_models=[])]
+2026-05-05 16:42:54.470 | WARNING  | chatchat.server.utils:get_default_embedding:216 - default embedding model bge-m3 is not found in available embeddings, using quentinz/bge-large-zh-v1.5 instead
+2026-05-05 16:42:54.503 | WARNING  | chatchat.server.utils:get_default_embedding:216 - default embedding model bge-m3 is not found in available embeddings, using quentinz/bge-large-zh-v1.5 instead
+2026-05-05 16:42:54.537 | WARNING  | chatchat.server.utils:get_default_embedding:216 - default embedding model bge-m3 is not found in available embeddings, using quentinz/bge-large-zh-v1.5 instead
+2026-05-05 16:42:55.610 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 16:42:55.697 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 16:42:55.700 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 16:42:55.701 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 16:42:55.703 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 16:43:11.977 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 16:43:12.255 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 16:43:36.401 | INFO     | chatchat.server.api_server.mcp_routes:get_mcp_profile_endpoint:48 - 获取 MCP 通用配置
+2026-05-05 16:43:36.412 | INFO     | chatchat.server.api_server.mcp_routes:get_mcp_profile_endpoint:60 - MCP 通用配置不存在，返回默认配置
+2026-05-05 16:43:36.627 | INFO     | chatchat.server.api_server.mcp_routes:get_mcp_profile_endpoint:48 - 获取 MCP 通用配置
+2026-05-05 16:43:36.630 | INFO     | chatchat.server.api_server.mcp_routes:get_mcp_profile_endpoint:60 - MCP 通用配置不存在，返回默认配置
+2026-05-05 16:43:36.647 | INFO     | chatchat.server.api_server.mcp_routes:list_mcp_connections:259 - 获取 MCP 连接列表, enabled_only=False
+2026-05-05 16:43:36.651 | INFO     | chatchat.server.api_server.mcp_routes:list_mcp_connections:280 - 成功获取 MCP 连接列表，共 0 个连接
+2026-05-05 16:43:53.532 | WARNING  | chatchat.server.utils:detect_xf_models:105 - auto_detect_model needs xinference-client installed. Please try "pip install xinference-client". 
+2026-05-05 16:43:53.533 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 16:43:53.840 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 16:43:56.115 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 16:43:56.227 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 16:43:56.454 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 16:43:56.455 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 16:43:56.456 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 16:43:56.457 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 16:44:18.620 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 16:44:18.852 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 16:50:27.429 | WARNING  | chatchat.server.utils:detect_xf_models:105 - auto_detect_model needs xinference-client installed. Please try "pip install xinference-client". 
+2026-05-05 16:50:27.430 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 16:50:27.511 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 16:50:27.512 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 16:50:27.512 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 16:50:27.514 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 16:50:44.470 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 16:50:44.734 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 16:50:48.736 | INFO     | chatchat.server.api_server.mcp_routes:get_mcp_profile_endpoint:48 - 获取 MCP 通用配置
+2026-05-05 16:50:48.737 | INFO     | chatchat.server.api_server.mcp_routes:get_mcp_profile_endpoint:60 - MCP 通用配置不存在，返回默认配置
+2026-05-05 16:50:48.938 | INFO     | chatchat.server.api_server.mcp_routes:get_mcp_profile_endpoint:48 - 获取 MCP 通用配置
+2026-05-05 16:50:48.943 | INFO     | chatchat.server.api_server.mcp_routes:get_mcp_profile_endpoint:60 - MCP 通用配置不存在，返回默认配置
+2026-05-05 16:50:48.958 | INFO     | chatchat.server.api_server.mcp_routes:list_mcp_connections:259 - 获取 MCP 连接列表, enabled_only=False
+2026-05-05 16:50:48.959 | INFO     | chatchat.server.api_server.mcp_routes:list_mcp_connections:280 - 成功获取 MCP 连接列表，共 0 个连接
+2026-05-05 16:51:19.002 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 16:51:19.061 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 16:51:19.062 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 16:51:19.062 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 16:51:19.063 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 16:51:19.232 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 16:51:19.321 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 16:51:19.322 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 16:51:19.323 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 16:51:19.324 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 16:51:23.171 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 16:51:23.294 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 16:51:23.295 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 16:51:23.295 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 16:51:23.296 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 16:54:57.223 | WARNING  | chatchat.server.utils:detect_xf_models:105 - auto_detect_model needs xinference-client installed. Please try "pip install xinference-client". 
+2026-05-05 16:54:57.224 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 16:54:57.288 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 16:54:57.289 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 16:54:57.290 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 16:54:57.291 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 17:09:21.349 | WARNING  | chatchat.server.utils:detect_xf_models:105 - auto_detect_model needs xinference-client installed. Please try "pip install xinference-client". 
+2026-05-05 17:09:21.387 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 17:09:21.453 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 17:09:21.455 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 17:09:21.456 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 17:09:21.457 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 17:11:12.039 | WARNING  | chatchat.server.utils:detect_xf_models:105 - auto_detect_model needs xinference-client installed. Please try "pip install xinference-client". 
+2026-05-05 17:11:12.040 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 17:11:12.129 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 17:11:12.130 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 17:11:12.132 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 17:11:12.132 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 17:11:37.078 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 17:11:37.142 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 17:11:37.143 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 17:11:37.144 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 17:11:37.144 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 17:11:45.698 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 17:11:45.924 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 17:11:46.607 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 17:11:46.842 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 17:11:47.010 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 17:11:47.010 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 17:11:47.011 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 17:11:47.012 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 17:11:47.667 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 17:11:47.760 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 17:11:52.166 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 17:11:52.230 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 17:11:52.618 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 17:11:52.686 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 17:11:52.687 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 17:11:52.688 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 17:11:52.689 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 17:11:52.863 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 17:11:52.934 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 17:11:52.935 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 17:11:52.936 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 17:11:52.937 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 17:14:20.064 | WARNING  | chatchat.server.utils:detect_xf_models:105 - auto_detect_model needs xinference-client installed. Please try "pip install xinference-client". 
+2026-05-05 17:14:20.065 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 17:14:20.299 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 17:14:22.129 | INFO     | chatchat.server.api_server.mcp_routes:get_mcp_profile_endpoint:48 - 获取 MCP 通用配置
+2026-05-05 17:14:22.166 | INFO     | chatchat.server.api_server.mcp_routes:get_mcp_profile_endpoint:60 - MCP 通用配置不存在，返回默认配置
+2026-05-05 17:14:22.175 | INFO     | chatchat.server.api_server.mcp_routes:list_mcp_connections:259 - 获取 MCP 连接列表, enabled_only=False
+2026-05-05 17:14:22.176 | INFO     | chatchat.server.api_server.mcp_routes:list_mcp_connections:280 - 成功获取 MCP 连接列表，共 0 个连接
+2026-05-05 17:14:22.396 | INFO     | chatchat.server.api_server.mcp_routes:list_mcp_connections:259 - 获取 MCP 连接列表, enabled_only=False
+2026-05-05 17:14:22.398 | INFO     | chatchat.server.api_server.mcp_routes:list_mcp_connections:280 - 成功获取 MCP 连接列表，共 0 个连接
+2026-05-05 17:14:43.976 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 17:14:44.180 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 17:15:11.804 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 17:15:11.910 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 17:15:11.911 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 17:15:11.913 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 17:15:11.914 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 17:39:48.526 | INFO     | chatchat.server.api_server.mcp_routes:get_mcp_profile_endpoint:48 - 获取 MCP 通用配置
+2026-05-05 17:39:48.563 | INFO     | chatchat.server.api_server.mcp_routes:get_mcp_profile_endpoint:60 - MCP 通用配置不存在，返回默认配置
+2026-05-05 17:39:48.733 | INFO     | chatchat.server.api_server.mcp_routes:get_mcp_profile_endpoint:48 - 获取 MCP 通用配置
+2026-05-05 17:39:48.734 | INFO     | chatchat.server.api_server.mcp_routes:get_mcp_profile_endpoint:60 - MCP 通用配置不存在，返回默认配置
+2026-05-05 17:39:48.750 | INFO     | chatchat.server.api_server.mcp_routes:list_mcp_connections:259 - 获取 MCP 连接列表, enabled_only=False
+2026-05-05 17:39:48.752 | INFO     | chatchat.server.api_server.mcp_routes:list_mcp_connections:280 - 成功获取 MCP 连接列表，共 0 个连接
+2026-05-05 19:13:28.284 | WARNING  | chatchat.server.utils:detect_xf_models:105 - auto_detect_model needs xinference-client installed. Please try "pip install xinference-client". 
+2026-05-05 19:13:28.285 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:13:28.350 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:13:28.351 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:13:28.351 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:13:28.352 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:17:24.194 | WARNING  | chatchat.server.utils:detect_xf_models:105 - auto_detect_model needs xinference-client installed. Please try "pip install xinference-client". 
+2026-05-05 19:17:24.195 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:17:24.274 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:17:24.276 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:17:24.276 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:17:24.277 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:17:25.346 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:17:25.421 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:17:25.421 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:17:25.422 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:17:25.423 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:17:26.175 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:17:26.314 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:17:26.314 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:17:26.315 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:17:26.316 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:17:26.747 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:17:26.849 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:17:26.850 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:17:26.851 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:17:26.852 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:17:27.390 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:17:27.505 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:17:27.506 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:17:27.507 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:17:27.508 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:17:28.092 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:17:28.149 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:17:28.150 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:17:28.151 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:17:28.152 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:17:30.478 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:17:30.586 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:17:30.588 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:17:30.589 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:17:30.590 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:18:14.655 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:18:14.722 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:18:14.724 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:18:14.726 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:18:14.727 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:19:09.911 | WARNING  | chatchat.server.utils:detect_xf_models:105 - auto_detect_model needs xinference-client installed. Please try "pip install xinference-client". 
+2026-05-05 19:19:09.947 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:19:10.044 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:19:10.045 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:19:10.045 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:19:10.046 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:35:31.805 | WARNING  | chatchat.server.utils:detect_xf_models:105 - auto_detect_model needs xinference-client installed. Please try "pip install xinference-client". 
+2026-05-05 19:35:31.843 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:35:31.931 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:35:31.932 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:35:31.933 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:35:31.935 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:35:33.629 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:35:33.694 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:35:33.695 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:35:33.696 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:35:33.696 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:35:35.133 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:35:35.260 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:35:35.261 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:35:35.262 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
+2026-05-05 19:35:35.263 | WARNING  | chatchat.server.utils:get_default_llm:206 - default llm model glm4-chat is not found in available llms, using qwen:7b instead
