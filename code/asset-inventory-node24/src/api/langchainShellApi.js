@@ -53,3 +53,22 @@ export async function sendLangchainRagChat(payload) {
   const result = await parseJson(response)
   return result.data
 }
+
+export async function fetchLangchainSessionState() {
+  const response = await fetch('/api/langchain/session-state', {
+    method: 'GET',
+    headers: { ...buildAuthHeaders() },
+  })
+  const result = await parseJson(response)
+  return result.data || { sessions: [{ name: 'default', messages: [] }], currentSession: 'default' }
+}
+
+export async function saveLangchainSessionState(payload) {
+  const response = await fetch('/api/langchain/session-state', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...buildAuthHeaders() },
+    body: JSON.stringify(payload || {}),
+  })
+  const result = await parseJson(response)
+  return result.data || { sessions: [{ name: 'default', messages: [] }], currentSession: 'default' }
+}

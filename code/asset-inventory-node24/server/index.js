@@ -737,6 +737,7 @@ const supplierCertDictTable = `"${schemaName}"."supplier_certification_dict"`
 const gasSupplierPortraitSettingTable = `"${schemaName}"."gas_supplier_portrait_setting"`
 const chatSessionTable = `"${schemaName}"."chat_session"`
 const chatMessageTable = `"${schemaName}"."chat_message"`
+const langchainSessionStateTable = `"${schemaName}"."langchain_multi_chat_state"`
 const knowledgeBaseTable = `"${schemaName}"."knowledge_base"`
 const knowledgeBaseDocumentTable = `"${schemaName}"."knowledge_base_document"`
 const knowledgeBaseVectorTable = `"${schemaName}"."knowledge_base_vector"`
@@ -2379,6 +2380,14 @@ async function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_chat_session_updated_at ON ${chatSessionTable}(updated_at DESC);
     CREATE INDEX IF NOT EXISTS idx_chat_session_pinned ON ${chatSessionTable}(pinned DESC, updated_at DESC);
     CREATE INDEX IF NOT EXISTS idx_chat_message_session ON ${chatMessageTable}(session_id, id ASC);
+
+    CREATE TABLE IF NOT EXISTS ${langchainSessionStateTable} (
+      owner VARCHAR(128) PRIMARY KEY,
+      sessions_json JSONB NOT NULL DEFAULT '[]',
+      current_session VARCHAR(128) NOT NULL DEFAULT '',
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_langchain_multi_chat_state_updated_at ON ${langchainSessionStateTable}(updated_at DESC);
   `
   await pool.query(sql)
   await pool.query(
@@ -16188,25 +16197,57 @@ app.post('/api/agents/precise-sourcing/chat', authMiddleware, async (req, res) =
   }
 })
 
-function toLangchainMessages(history = [], userMessage = '') {
+function normalizeImageDataUrl(input) {
+  const value = toText(input)
+  if (!value) return ''
+  const ok = /^data:image\/(png|jpeg|jpg|gif|webp|bmp);base64,[a-z0-9+/=\r\n]+$/i.test(value)
+  return ok ? value : ''
+}
+
+function toLangchainMessages(history = [], userMessage = '', userImageDataUrl = '') {
   const mapped = Array.isArray(history)
     ? history
       .filter((item) => item && typeof item === 'object')
       .slice(-16)
-      .map((item) => ({
-        role: toText(item.role) === 'assistant' ? 'assistant' : 'user',
-        content: toText(item.content),
-      }))
-      .filter((item) => item.content)
+      .map((item) => {
+        const role = toText(item.role) === 'assistant' ? 'assistant' : 'user'
+        const content = toText(item.content)
+        const imageDataUrl = normalizeImageDataUrl(item.imageDataUrl)
+        if (role === 'user' && imageDataUrl) {
+          return {
+            role,
+            content: [
+              ...(content ? [{ type: 'text', text: content }] : []),
+              { type: 'image_url', image_url: { url: imageDataUrl } },
+            ],
+          }
+        }
+        return { role, content }
+      })
+      .filter((item) => (Array.isArray(item.content) ? item.content.length > 0 : Boolean(item.content)))
     : []
   const current = toText(userMessage)
-  if (current) mapped.push({ role: 'user', content: current })
+  const currentImage = normalizeImageDataUrl(userImageDataUrl)
+  if (current || currentImage) {
+    if (currentImage) {
+      mapped.push({
+        role: 'user',
+        content: [
+          ...(current ? [{ type: 'text', text: current }] : []),
+          { type: 'image_url', image_url: { url: currentImage } },
+        ],
+      })
+    } else {
+      mapped.push({ role: 'user', content: current })
+    }
+  }
   return mapped.length > 0 ? mapped : [{ role: 'user', content: current || '你好' }]
 }
 
+const langchainModelCatalog = ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex', 'gpt-5.2']
+
 async function fetchLangchainModelCatalog() {
   const codexConfigPath = 'C:\\Users\\aoyon\\.codex\\config.toml'
-  const codexModelCatalog = ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex', 'gpt-5.2']
   try {
     const text = await fs.readFile(codexConfigPath, 'utf8')
     const defaults = []
@@ -16214,41 +16255,65 @@ async function fetchLangchainModelCatalog() {
       const name = toText(match?.[1])
       if (name) defaults.push(name)
     }
-    const merged = [...new Set([...defaults, ...codexModelCatalog])]
+    const merged = [...new Set([...defaults, ...langchainModelCatalog])]
     return {
       platform: 'codex-local',
       models: merged,
     }
   } catch {
-    return { platform: 'codex-local', models: codexModelCatalog }
+    return { platform: 'codex-local', models: langchainModelCatalog }
   }
 }
 
 async function callLangchainCompatibleChat(messages, options = {}) {
   const apiKey = toText(process.env.OPENAI_API_KEY || process.env.LLM_API_KEY || process.env.CODEX_API_KEY)
   const baseUrl = toText(process.env.OPENAI_BASE_URL || process.env.LLM_BASE_URL || 'https://api.openai.com')
-  const model = toText(options.model) || toText(process.env.LANGCHAIN_CHAT_MODEL || process.env.OPENAI_MODEL || 'gpt-4o-mini')
+  const requestedModel = toText(options.model)
+  const envDefaultModel = toText(process.env.LANGCHAIN_CHAT_MODEL || process.env.OPENAI_MODEL)
+  const modelCandidates = [...new Set([
+    requestedModel,
+    envDefaultModel,
+    ...langchainModelCatalog,
+    'gpt-5.3-codex',
+    'gpt-5.5',
+  ].filter(Boolean))]
+  const model = modelCandidates[0] || 'gpt-5.3-codex'
   const temperature = Number.isFinite(Number(options.temperature)) ? Number(options.temperature) : 0.3
   if (!apiKey) {
     throw new Error('未配置 OPENAI_API_KEY/LLM_API_KEY，无法调用 LangChain 对话模型')
   }
   const normalizedBase = baseUrl.replace(/\/+$/, '')
   const apiBase = /\/v\d+$/i.test(normalizedBase) ? normalizedBase : `${normalizedBase}/v1`
-  const response = await fetchByNetworkPolicy(`${apiBase}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model,
-      messages,
-      temperature,
-    }),
-  })
-  if (!response.ok) {
+  let response = null
+  let usedModel = model
+  let lastErrorText = ''
+  for (const candidate of modelCandidates) {
+    response = await fetchByNetworkPolicy(`${apiBase}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: candidate,
+        messages,
+        temperature,
+      }),
+    })
+    if (response.ok) {
+      usedModel = candidate
+      break
+    }
     const text = await response.text().catch(() => '')
-    throw new Error(`模型调用失败（HTTP ${response.status}）${text ? `: ${text.slice(0, 240)}` : ''}`)
+    lastErrorText = text
+    const unsupportedByAccount = /not supported when using Codex with a ChatGPT account/i.test(text)
+    if (!unsupportedByAccount) {
+      throw new Error(`模型调用失败（HTTP ${response.status}）${text ? `: ${text.slice(0, 240)}` : ''}`)
+    }
+  }
+  if (!response || !response.ok) {
+    const status = response?.status || 500
+    throw new Error(`模型调用失败（HTTP ${status}）${lastErrorText ? `: ${lastErrorText.slice(0, 240)}` : ''}`)
   }
   const contentType = toText(response.headers.get('content-type')).toLowerCase()
   if (!contentType.includes('application/json')) {
@@ -16270,13 +16335,55 @@ async function callLangchainCompatibleChat(messages, options = {}) {
   if (!answer) {
     answer = '模型已返回，但当前响应无可解析文本内容。请尝试切换模型或降低复杂度后重试。'
   }
-  return { answer, raw: payload, modelRequested: model, modelReturned: toText(payload?.model), apiBase }
+  return { answer, raw: payload, modelRequested: usedModel, modelReturned: toText(payload?.model), apiBase }
+}
+
+async function callLangchainImageGeneration(prompt = '', options = {}) {
+  const apiKey = toText(process.env.OPENAI_API_KEY || process.env.LLM_API_KEY || process.env.CODEX_API_KEY)
+  const baseUrl = toText(process.env.OPENAI_BASE_URL || process.env.LLM_BASE_URL || 'https://api.openai.com')
+  const requestedModel = toText(options.imageModel || options.model)
+  const configuredImageModel = toText(process.env.LANGCHAIN_IMAGE_MODEL || 'gpt-image-1')
+  const imageModel = /image|dall-e|gpt-image/i.test(requestedModel) ? requestedModel : configuredImageModel
+  if (!apiKey) {
+    throw new Error('未配置 OPENAI_API_KEY/LLM_API_KEY，无法调用图片生成模型')
+  }
+  const normalizedBase = baseUrl.replace(/\/+$/, '')
+  const apiBase = /\/v\d+$/i.test(normalizedBase) ? normalizedBase : `${normalizedBase}/v1`
+  const response = await fetchByNetworkPolicy(`${apiBase}/images/generations`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: imageModel,
+      prompt: toText(prompt),
+      size: '1024x1024',
+    }),
+  })
+  if (!response.ok) {
+    const text = await response.text().catch(() => '')
+    throw new Error(`图片生成失败（HTTP ${response.status}）${text ? `: ${text.slice(0, 240)}` : ''}`)
+  }
+  const payload = await response.json().catch(() => ({}))
+  const item = Array.isArray(payload?.data) ? payload.data[0] : null
+  const imageUrl = toText(item?.url)
+  const imageB64 = toText(item?.b64_json)
+  if (imageUrl) {
+    return { imageUrl, apiBase, model: imageModel }
+  }
+  if (imageB64) {
+    return { imageUrl: `data:image/png;base64,${imageB64}`, apiBase, model: imageModel }
+  }
+  throw new Error('图片生成接口未返回可用图片地址')
 }
 
 const LangchainShellState = Annotation.Root({
   history: Annotation({ reducer: (_x, y) => y, default: () => [] }),
   message: Annotation({ reducer: (_x, y) => y, default: () => '' }),
+  imageDataUrl: Annotation({ reducer: (_x, y) => y, default: () => '' }),
   model: Annotation({ reducer: (_x, y) => y, default: () => '' }),
+  imageModel: Annotation({ reducer: (_x, y) => y, default: () => 'gpt-image-1' }),
   temperature: Annotation({ reducer: (_x, y) => y, default: () => 0.3 }),
   systemMessage: Annotation({ reducer: (_x, y) => y, default: () => '' }),
   useAgent: Annotation({ reducer: (_x, y) => y, default: () => false }),
@@ -16300,9 +16407,50 @@ function createLangchainShellGraph() {
       const toolHint = selectedTools.length > 0
         ? `\\n\\n[运行参数]\\n- useAgent: ${useAgent}\\n- useMcp: ${useMcp}\\n- selectedTools: ${selectedTools.join(', ')}`
         : ''
-      const messages = toLangchainMessages(state.history, state.message)
+      const messages = toLangchainMessages(state.history, state.message, state.imageDataUrl)
       if (toText(state.systemMessage)) {
         messages.unshift({ role: 'system', content: toText(state.systemMessage) })
+      }
+      if (useAgent && selectedTools.includes('web_search')) {
+        try {
+          const tavilyKey = await resolveTavilyApiKey({})
+          const keyword = toText(state.message)
+          const rows = await searchViaTavily(keyword, tavilyKey)
+          const relevantRows = (Array.isArray(rows) ? rows : [])
+            .map((item) => {
+              const merged = `${toText(item?.title)} ${toText(item?.summary || item?.snippet)} ${toText(item?.href)}`
+              const score = scoreRelevance(toText(item?.title), `${toText(item?.summary || item?.snippet)}`, keyword)
+              const catlBoost = containsCatlIntent(keyword) && containsCatlIntent(merged)
+              return { ...item, _agentScore: score + (catlBoost ? 3 : 0) }
+            })
+            .filter((item) => Number(item._agentScore || 0) > 0)
+            .sort((a, b) => Number(b._agentScore || 0) - Number(a._agentScore || 0))
+          if (relevantRows.length > 0) {
+            const snippetText = relevantRows
+              .slice(0, 5)
+              .map((item, idx) => {
+                const title = toText(item?.title) || '未命名结果'
+                const href = toText(item?.href) || '-'
+                const summary = compactText(toText(item?.summary || item?.snippet), 180)
+                return `${idx + 1}. ${title}\\nURL: ${href}\\n摘要: ${summary}`
+              })
+              .join('\\n\\n')
+            messages.unshift({
+              role: 'system',
+              content: `以下是“互联网搜索”实时结果（请优先基于这些结果回答，并在结论后附来源URL）：\\n\\n${snippetText}`,
+            })
+          } else {
+            messages.unshift({
+              role: 'system',
+              content: '互联网搜索已执行，但未返回有效结果。请明确告知用户“本次搜索无命中”，并建议换关键词重试。',
+            })
+          }
+        } catch (error) {
+          messages.unshift({
+            role: 'system',
+            content: `互联网搜索执行失败：${toText(error?.message)}。请明确告知用户搜索失败原因，不要伪造实时结果。`,
+          })
+        }
       }
       if (toolHint) {
         messages.push({ role: 'system', content: `请参考如下工具策略进行回答（若无工具能力可直说）：${toolHint}` })
@@ -16310,6 +16458,27 @@ function createLangchainShellGraph() {
       return { messages }
     })
     .addNode('call_model', async (state) => {
+      const selectedTools = Array.isArray(state.selectedTools)
+        ? state.selectedTools.map((item) => toText(item)).filter(Boolean)
+        : []
+      const shouldUseImageGen = Boolean(state.useAgent)
+        && selectedTools.includes('image_gen')
+        && !/(不要出图|不用出图|仅文本|只要提示词|不要图片)/i.test(toText(state.message))
+      if (shouldUseImageGen) {
+        const image = await callLangchainImageGeneration(toText(state.message), { model: state.model, imageModel: state.imageModel })
+        const answer = [
+          '已为你生成图片：',
+          `![generated-image](${image.imageUrl})`,
+          '',
+          `图片模型：${image.model}`,
+        ].join('\n')
+        return {
+          answer,
+          modelRequested: image.model,
+          modelReturned: image.model,
+          apiBase: image.apiBase,
+        }
+      }
       const result = await callLangchainCompatibleChat(state.messages, {
         model: state.model,
         temperature: state.temperature,
@@ -16329,16 +16498,117 @@ function createLangchainShellGraph() {
 
 const langchainShellGraph = createLangchainShellGraph()
 
+function normalizeLangchainSessionState(input = {}) {
+  const rawSessions = Array.isArray(input?.sessions) ? input.sessions : []
+  const sessions = rawSessions
+    .filter((item) => item && typeof item === 'object')
+    .map((item) => ({
+      name: toText(item.name).slice(0, 120),
+      messages: Array.isArray(item.messages)
+        ? item.messages
+          .filter((msg) => msg && typeof msg === 'object')
+          .map((msg) => ({
+            role: toText(msg.role) === 'assistant' ? 'assistant' : 'user',
+            content: toText(msg.content),
+            imageDataUrl: normalizeImageDataUrl(msg.imageDataUrl),
+          }))
+          .slice(-200)
+        : [],
+    }))
+    .filter((item) => item.name)
+    .slice(0, 100)
+  const fallback = sessions.length > 0 ? sessions[0].name : 'default'
+  const requestedCurrent = toText(input?.currentSession)
+  const exists = sessions.some((item) => item.name === requestedCurrent)
+  const currentSession = exists ? requestedCurrent : fallback
+  return {
+    sessions: sessions.length > 0 ? sessions : [{ name: 'default', messages: [] }],
+    currentSession,
+  }
+}
+
+app.get('/api/langchain/session-state', authMiddleware, async (req, res) => {
+  const owner = toText(req.authUser?.userName || req.authUser?.username || 'unknown')
+  try {
+    const result = await pool.query(
+      `SELECT sessions_json, current_session FROM ${langchainSessionStateTable} WHERE owner = $1 LIMIT 1`,
+      [owner],
+    )
+    if (result.rowCount === 0) {
+      return res.json({
+        code: 200,
+        message: 'success',
+        data: { sessions: [{ name: 'default', messages: [] }], currentSession: 'default' },
+      })
+    }
+    const payload = normalizeLangchainSessionState({
+      sessions: result.rows[0]?.sessions_json,
+      currentSession: result.rows[0]?.current_session,
+    })
+    return res.json({ code: 200, message: 'success', data: payload })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `读取 LangChain 会话状态失败: ${error.message}`, data: null })
+  }
+})
+
+app.put('/api/langchain/session-state', authMiddleware, async (req, res) => {
+  const owner = toText(req.authUser?.userName || req.authUser?.username || 'unknown')
+  const normalized = normalizeLangchainSessionState(req.body || {})
+  try {
+    await pool.query(
+      `
+      INSERT INTO ${langchainSessionStateTable} (owner, sessions_json, current_session, updated_at)
+      VALUES ($1, $2::jsonb, $3, NOW())
+      ON CONFLICT (owner) DO UPDATE
+      SET sessions_json = EXCLUDED.sessions_json,
+          current_session = EXCLUDED.current_session,
+          updated_at = NOW()
+      `,
+      [owner, JSON.stringify(normalized.sessions), normalized.currentSession],
+    )
+    return res.json({ code: 200, message: 'updated', data: normalized })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `保存 LangChain 会话状态失败: ${error.message}`, data: null })
+  }
+})
+
 app.post('/api/langchain/chat', authMiddleware, async (req, res) => {
   const messageText = toText(req.body?.message)
   if (!messageText) {
     return res.status(400).json({ code: 400, message: '缺少参数：message', data: null })
   }
   try {
+    const selectedTools = Array.isArray(req.body?.selectedTools)
+      ? req.body.selectedTools.map((item) => toText(item)).filter(Boolean)
+      : []
+    const preferImageGen = Boolean(req.body?.useAgent)
+      && selectedTools.includes('image_gen')
+      && !/(不要出图|不用出图|仅文本|只要提示词|不要图片)/i.test(messageText)
+    if (preferImageGen) {
+      const image = await callLangchainImageGeneration(messageText, {
+        imageModel: toText(req.body?.imageModel || 'gpt-image-1'),
+        model: toText(req.body?.model),
+      })
+      return res.json({
+        code: 200,
+        message: 'success',
+        data: {
+          answer: `已为你生成图片：\n![generated-image](${image.imageUrl})\n\n图片模型：${image.model}`,
+          messages: Array.isArray(req.body?.history) ? req.body.history : [],
+          meta: {
+            modelRequested: image.model,
+            modelReturned: image.model,
+            apiBase: image.apiBase,
+          },
+        },
+      })
+    }
     const result = await langchainShellGraph.invoke({
       history: Array.isArray(req.body?.history) ? req.body.history : [],
       message: messageText,
+      imageDataUrl: toText(req.body?.imageDataUrl),
       model: toText(req.body?.model),
+      imageModel: toText(req.body?.imageModel || 'gpt-image-1'),
       temperature: Number(req.body?.temperature || 0.3),
       systemMessage: toText(req.body?.systemMessage),
       useAgent: Boolean(req.body?.useAgent),
