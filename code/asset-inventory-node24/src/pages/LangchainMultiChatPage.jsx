@@ -1,4 +1,4 @@
-import { AppstoreOutlined, MessageOutlined, SettingOutlined, UserOutlined } from '@ant-design/icons'
+import { AppstoreOutlined, MenuFoldOutlined, MenuUnfoldOutlined, MessageOutlined, SettingOutlined, UserOutlined } from '@ant-design/icons'
 import { Avatar, Button, Card, Checkbox, Empty, Input, InputNumber, Modal, Select, Slider, Space, Tabs, Typography, Upload, message } from 'antd'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -39,6 +39,7 @@ export default function LangchainMultiChatPage() {
   const [previewModalOpen, setPreviewModalOpen] = useState(false)
   const [previewModalImage, setPreviewModalImage] = useState('')
   const [sessionStateHydrated, setSessionStateHydrated] = useState(false)
+  const [showSidebar, setShowSidebar] = useState(true)
   const messageViewportRef = useRef(null)
 
   useEffect(() => {
@@ -60,7 +61,7 @@ export default function LangchainMultiChatPage() {
         }
       })
       .catch((error) => message.error(error.message || '加载模型列表失败'))
-    fetchLangchainSessionState()
+    fetchLangchainSessionState('multi_chat')
       .then((state) => {
         const rows = Array.isArray(state?.sessions) ? state.sessions : []
         if (rows.length > 0) {
@@ -77,7 +78,7 @@ export default function LangchainMultiChatPage() {
   useEffect(() => {
     if (!sessionStateHydrated) return
     const timer = window.setTimeout(() => {
-      void saveLangchainSessionState({ sessions, currentSession }).catch((error) => {
+      void saveLangchainSessionState({ chatType: 'multi_chat', sessions, currentSession }).catch((error) => {
         message.error(error.message || '保存会话失败')
       })
     }, 250)
@@ -250,9 +251,13 @@ export default function LangchainMultiChatPage() {
   }
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '320px 1fr', gap: 12, height: 'calc(100vh - 130px)', minHeight: 0, overflow: 'hidden' }}>
-      <Card className="app-elevated-card" style={{ height: '100%', minHeight: 0 }} bodyStyle={{ padding: 12, height: '100%', overflowY: 'auto', overflowX: 'hidden' }}>
+    <div style={{ display: 'grid', gridTemplateColumns: showSidebar ? '320px 1fr' : '44px 1fr', gap: 12, height: 'calc(100vh - 130px)', minHeight: 0, overflow: 'hidden' }}>
+      {showSidebar ? (
+        <Card className="app-elevated-card" style={{ height: '100%', minHeight: 0 }} bodyStyle={{ padding: 12, height: '100%', overflowY: 'auto', overflowX: 'hidden' }}>
         <Space direction="vertical" size={14} style={{ width: '100%' }}>
+          <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+            <Button type="text" icon={<MenuFoldOutlined />} onClick={() => setShowSidebar(false)} />
+          </div>
           <div style={{ border: '1px solid #e5e7eb', borderRadius: 10, padding: 12, background: '#f8fafc' }}>
             <Space align="center" size={8}>
               <MessageOutlined style={{ color: '#2563eb' }} />
@@ -364,7 +369,12 @@ export default function LangchainMultiChatPage() {
             ]}
           />
         </Space>
-      </Card>
+        </Card>
+      ) : (
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: 8 }}>
+          <Button type="text" icon={<MenuUnfoldOutlined />} onClick={() => setShowSidebar(true)} />
+        </div>
+      )}
 
       <Card className="app-elevated-card" style={{ height: '100%', minHeight: 0 }} bodyStyle={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, padding: 12, overflow: 'hidden' }}>
         <div ref={messageViewportRef} style={{ flex: 1, minHeight: 0, border: '1px solid #e5e7eb', borderRadius: 10, background: '#fff', padding: 10, overflowY: 'auto', overflowX: 'hidden' }}>

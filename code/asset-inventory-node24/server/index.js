@@ -8,6 +8,7 @@ import path from 'path'
 import pg from 'pg'
 import { promisify } from 'util'
 import { createPreciseSourcingLangGraph } from './agents/preciseSourcingLangGraph.js'
+import { buildLangChainToolbox, normalizeToolJsonResult } from './integrations/langchainTools.js'
 
 dotenv.config()
 
@@ -738,6 +739,8 @@ const gasSupplierPortraitSettingTable = `"${schemaName}"."gas_supplier_portrait_
 const chatSessionTable = `"${schemaName}"."chat_session"`
 const chatMessageTable = `"${schemaName}"."chat_message"`
 const langchainSessionStateTable = `"${schemaName}"."langchain_multi_chat_state"`
+const modelProviderTable = `"${schemaName}"."model_provider_config"`
+const modelProviderModelTable = `"${schemaName}"."model_provider_model"`
 const knowledgeBaseTable = `"${schemaName}"."knowledge_base"`
 const knowledgeBaseDocumentTable = `"${schemaName}"."knowledge_base_document"`
 const knowledgeBaseVectorTable = `"${schemaName}"."knowledge_base_vector"`
@@ -2382,11 +2385,77 @@ async function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_chat_message_session ON ${chatMessageTable}(session_id, id ASC);
 
     CREATE TABLE IF NOT EXISTS ${langchainSessionStateTable} (
-      owner VARCHAR(128) PRIMARY KEY,
+      id BIGSERIAL PRIMARY KEY,
+      owner VARCHAR(128) NOT NULL,
+      chat_type VARCHAR(32) NOT NULL DEFAULT 'multi_chat',
       sessions_json JSONB NOT NULL DEFAULT '[]',
       current_session VARCHAR(128) NOT NULL DEFAULT '',
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+    CREATE TABLE IF NOT EXISTS ${modelProviderTable} (
+      id BIGSERIAL PRIMARY KEY,
+      provider_name VARCHAR(64) NOT NULL UNIQUE,
+      provider_type VARCHAR(64) NOT NULL DEFAULT 'OpenAI',
+      enabled BOOLEAN NOT NULL DEFAULT TRUE,
+      api_key TEXT NOT NULL DEFAULT '',
+      api_base_url TEXT NOT NULL DEFAULT '',
+      models_json JSONB NOT NULL DEFAULT '[]',
+      fetched_models_json JSONB NOT NULL DEFAULT '[]',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS ${modelProviderModelTable} (
+      id BIGSERIAL PRIMARY KEY,
+      provider_name VARCHAR(64) NOT NULL,
+      model_id VARCHAR(255) NOT NULL,
+      group_name VARCHAR(128) NOT NULL DEFAULT 'Other',
+      capability_video BOOLEAN NOT NULL DEFAULT FALSE,
+      capability_reasoning BOOLEAN NOT NULL DEFAULT FALSE,
+      capability_tool BOOLEAN NOT NULL DEFAULT TRUE,
+      owned_by VARCHAR(255) NOT NULL DEFAULT '',
+      object_type VARCHAR(64) NOT NULL DEFAULT '',
+      source_type VARCHAR(32) NOT NULL DEFAULT 'saved',
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (provider_name, model_id),
+      CONSTRAINT fk_model_provider_model_provider
+        FOREIGN KEY (provider_name)
+        REFERENCES ${modelProviderTable}(provider_name)
+        ON UPDATE CASCADE
+        ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_model_provider_updated_at ON ${modelProviderTable}(updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_model_provider_model_provider ON ${modelProviderModelTable}(provider_name, sort_order ASC);
+    CREATE INDEX IF NOT EXISTS idx_model_provider_model_group ON ${modelProviderModelTable}(provider_name, group_name);
+    ALTER TABLE ${modelProviderTable} ADD COLUMN IF NOT EXISTS provider_type VARCHAR(64) NOT NULL DEFAULT 'OpenAI';
+    ALTER TABLE ${langchainSessionStateTable} ADD COLUMN IF NOT EXISTS id BIGSERIAL;
+    ALTER TABLE ${langchainSessionStateTable} ADD COLUMN IF NOT EXISTS chat_type VARCHAR(32) NOT NULL DEFAULT 'multi_chat';
+    UPDATE ${langchainSessionStateTable}
+    SET id = nextval(pg_get_serial_sequence('${schemaName}.langchain_multi_chat_state', 'id'))
+    WHERE id IS NULL;
+    DO $$
+    DECLARE
+      pk_name text;
+    BEGIN
+      SELECT c.conname INTO pk_name
+      FROM pg_constraint c
+      JOIN pg_class t ON c.conrelid = t.oid
+      JOIN pg_namespace n ON n.oid = t.relnamespace
+      WHERE c.contype = 'p'
+        AND t.relname = 'langchain_multi_chat_state'
+        AND n.nspname = '${schemaName}'
+      LIMIT 1;
+      IF pk_name IS NOT NULL THEN
+        EXECUTE format('ALTER TABLE %I.%I DROP CONSTRAINT %I', '${schemaName}', 'langchain_multi_chat_state', pk_name);
+      END IF;
+    EXCEPTION WHEN OTHERS THEN
+      NULL;
+    END $$;
+    ALTER TABLE ${langchainSessionStateTable} ALTER COLUMN id SET NOT NULL;
+    ALTER TABLE ${langchainSessionStateTable} ADD PRIMARY KEY (id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_langchain_multi_chat_state_owner_type
+      ON ${langchainSessionStateTable}(owner, chat_type);
     CREATE INDEX IF NOT EXISTS idx_langchain_multi_chat_state_updated_at ON ${langchainSessionStateTable}(updated_at DESC);
   `
   await pool.query(sql)
@@ -12505,6 +12574,308 @@ app.post('/api/skills/install', authMiddleware, async (req, res) => {
   }
 })
 
+function normalizeModelProviderRow(row = {}) {
+  return {
+    id: Number(row.id || 0),
+    providerName: toText(row.provider_name || row.providerName),
+    providerType: toText(row.provider_type || row.providerType || 'OpenAI'),
+    enabled: row.enabled !== false,
+    apiKey: toText(row.api_key || row.apiKey),
+    apiBaseUrl: toText(row.api_base_url || row.apiBaseUrl),
+    models: Array.isArray(row.models_json) ? row.models_json : [],
+    fetchedModels: Array.isArray(row.fetched_models_json) ? row.fetched_models_json : [],
+    updatedAt: row.updated_at || '',
+  }
+}
+
+function deriveModelCapabilities(modelId = '') {
+  const text = toText(modelId).toLowerCase()
+  return {
+    video: /(vision|video|vl|imagine|image)/.test(text),
+    reasoning: /(reason|think|r1|o1|o3|deep|mini)/.test(text),
+    tool: /(tool|function|coder|fast|mini|chat)/.test(text) || true,
+  }
+}
+
+function deriveModelGroupName(modelId = '') {
+  const text = toText(modelId).trim()
+  if (!text) return 'Other'
+  const slashIdx = text.indexOf('/')
+  if (slashIdx > 0) return text.slice(0, slashIdx)
+  const dashIdx = text.indexOf('-')
+  if (dashIdx > 0) return text.slice(0, dashIdx)
+  return text
+}
+
+async function replaceProviderModelRows(client, providerName = '', fetchedModels = []) {
+  const normalizedProviderName = toText(providerName)
+  if (!normalizedProviderName) return
+  const items = Array.isArray(fetchedModels) ? fetchedModels : []
+  await client.query(`DELETE FROM ${modelProviderModelTable} WHERE provider_name = $1`, [normalizedProviderName])
+  if (!items.length) return
+  const values = []
+  const placeholders = []
+  let index = 1
+  for (let i = 0; i < items.length; i += 1) {
+    const item = items[i] || {}
+    const modelId = toText(item?.id)
+    if (!modelId) continue
+    const caps = deriveModelCapabilities(modelId)
+    const groupName = deriveModelGroupName(modelId)
+    const ownedBy = toText(item?.ownedBy || item?.owned_by)
+    const objectType = toText(item?.object)
+    placeholders.push(`($${index}, $${index + 1}, $${index + 2}, $${index + 3}, $${index + 4}, $${index + 5}, $${index + 6}, $${index + 7}, $${index + 8}, $${index + 9}, NOW())`)
+    values.push(
+      normalizedProviderName,
+      modelId,
+      groupName,
+      caps.video,
+      caps.reasoning,
+      caps.tool,
+      ownedBy,
+      objectType,
+      toText(item?.sourceType || 'saved'),
+      i,
+    )
+    index += 10
+  }
+  if (!placeholders.length) return
+  await client.query(
+    `
+    INSERT INTO ${modelProviderModelTable}
+    (provider_name, model_id, group_name, capability_video, capability_reasoning, capability_tool, owned_by, object_type, source_type, sort_order, updated_at)
+    VALUES ${placeholders.join(', ')}
+    `,
+    values,
+  )
+}
+
+async function fetchProviderModelCatalog(apiBaseUrl = '', apiKey = '') {
+  const base = toText(apiBaseUrl).replace(/\/+$/, '')
+  if (!base) throw new Error('缺少 API 地址')
+  if (!toText(apiKey)) throw new Error('缺少 API 密钥')
+  const response = await fetchByNetworkPolicy(`${base}/models`, {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${toText(apiKey)}`,
+      'Content-Type': 'application/json',
+    },
+  })
+  const payload = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    throw new Error(toText(payload?.error?.message || payload?.message || `HTTP ${response.status}`))
+  }
+  const list = Array.isArray(payload?.data) ? payload.data : []
+  return list
+    .map((item) => ({
+      id: toText(item?.id),
+      ownedBy: toText(item?.owned_by || item?.ownedBy),
+      object: toText(item?.object),
+    }))
+    .filter((item) => item.id)
+}
+
+app.get('/api/model-providers', authMiddleware, async (_req, res) => {
+  try {
+    const result = await pool.query(`SELECT * FROM ${modelProviderTable} ORDER BY provider_name ASC`)
+    return res.json({
+      code: 200,
+      message: 'success',
+      data: (result.rows || []).map(normalizeModelProviderRow),
+    })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `读取模型配置失败: ${error.message}`, data: [] })
+  }
+})
+
+app.post('/api/model-providers', authMiddleware, async (req, res) => {
+  const providerName = toText(req.body?.providerName)
+  if (!providerName) return res.status(400).json({ code: 400, message: '缺少 providerName', data: null })
+  const providerType = toText(req.body?.providerType || 'OpenAI')
+  const enabled = req.body?.enabled !== false
+  const apiKey = toText(req.body?.apiKey)
+  const apiBaseUrl = toText(req.body?.apiBaseUrl)
+  try {
+    const result = await pool.query(
+      `
+      INSERT INTO ${modelProviderTable}
+      (provider_name, provider_type, enabled, api_key, api_base_url, models_json, fetched_models_json, updated_at)
+      VALUES ($1, $2, $3, $4, $5, '[]'::jsonb, '[]'::jsonb, NOW())
+      RETURNING *
+      `,
+      [providerName, providerType, enabled, apiKey, apiBaseUrl],
+    )
+    return res.json({ code: 200, message: 'created', data: normalizeModelProviderRow(result.rows?.[0] || {}) })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `新增模型供应商失败: ${error.message}`, data: null })
+  }
+})
+
+app.put('/api/model-providers/:providerName', authMiddleware, async (req, res) => {
+  const providerName = toText(req.params?.providerName)
+  if (!providerName) return res.status(400).json({ code: 400, message: '缺少 providerName', data: null })
+  const providerType = toText(req.body?.providerType || 'OpenAI')
+  const enabled = req.body?.enabled !== false
+  const apiKey = toText(req.body?.apiKey)
+  const apiBaseUrl = toText(req.body?.apiBaseUrl)
+  const models = Array.isArray(req.body?.models) ? req.body.models : []
+  const fetchedModels = Array.isArray(req.body?.fetchedModels) ? req.body.fetchedModels : []
+  const normalizedFetchedModels = fetchedModels
+    .map((item) => ({
+      id: toText(item?.id),
+      ownedBy: toText(item?.ownedBy || item?.owned_by),
+      object: toText(item?.object),
+      sourceType: toText(item?.sourceType || 'saved'),
+    }))
+    .filter((item) => item.id)
+  try {
+    const client = await pool.connect()
+    let result
+    try {
+      await client.query('BEGIN')
+      result = await client.query(
+        `
+        INSERT INTO ${modelProviderTable}
+        (provider_name, provider_type, enabled, api_key, api_base_url, models_json, fetched_models_json, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, NOW())
+        ON CONFLICT (provider_name) DO UPDATE
+        SET provider_type = EXCLUDED.provider_type,
+            enabled = EXCLUDED.enabled,
+            api_key = EXCLUDED.api_key,
+            api_base_url = EXCLUDED.api_base_url,
+            models_json = EXCLUDED.models_json,
+            fetched_models_json = EXCLUDED.fetched_models_json,
+            updated_at = NOW()
+        RETURNING *
+        `,
+        [providerName, providerType, enabled, apiKey, apiBaseUrl, JSON.stringify(models), JSON.stringify(normalizedFetchedModels)],
+      )
+      await replaceProviderModelRows(client, providerName, normalizedFetchedModels)
+      await client.query('COMMIT')
+    } catch (error) {
+      await client.query('ROLLBACK')
+      throw error
+    } finally {
+      client.release()
+    }
+    return res.json({ code: 200, message: 'updated', data: normalizeModelProviderRow(result.rows[0] || {}) })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `保存模型配置失败: ${error.message}`, data: null })
+  }
+})
+
+app.patch('/api/model-providers/:providerName/rename', authMiddleware, async (req, res) => {
+  const providerName = toText(req.params?.providerName)
+  const nextProviderName = toText(req.body?.providerName)
+  const nextProviderType = toText(req.body?.providerType || '')
+  if (!providerName) return res.status(400).json({ code: 400, message: '缺少 providerName', data: null })
+  if (!nextProviderName) return res.status(400).json({ code: 400, message: '缺少新供应商名称', data: null })
+  try {
+    let updated
+    if (nextProviderType) {
+      updated = await pool.query(
+        `
+        UPDATE ${modelProviderTable}
+        SET provider_name = $2, provider_type = $3, updated_at = NOW()
+        WHERE provider_name = $1
+        RETURNING *
+        `,
+        [providerName, nextProviderName, nextProviderType],
+      )
+    } else {
+      updated = await pool.query(
+        `
+        UPDATE ${modelProviderTable}
+        SET provider_name = $2, updated_at = NOW()
+        WHERE provider_name = $1
+        RETURNING *
+        `,
+        [providerName, nextProviderName],
+      )
+    }
+    if (!updated.rows?.[0]) {
+      return res.status(404).json({ code: 404, message: '模型供应商不存在', data: null })
+    }
+    return res.json({ code: 200, message: 'renamed', data: normalizeModelProviderRow(updated.rows[0]) })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `重命名失败: ${error.message}`, data: null })
+  }
+})
+
+app.post('/api/model-providers/:providerName/test', authMiddleware, async (req, res) => {
+  const providerName = toText(req.params?.providerName)
+  if (!providerName) return res.status(400).json({ code: 400, message: '缺少 providerName', data: null })
+  try {
+    const row = await pool.query(
+      `SELECT * FROM ${modelProviderTable} WHERE provider_name = $1 LIMIT 1`,
+      [providerName],
+    )
+    const item = normalizeModelProviderRow(row.rows?.[0] || {})
+    if (!item.providerName) return res.status(404).json({ code: 404, message: '模型供应商不存在', data: null })
+    const overrideApiKey = toText(req.body?.apiKey)
+    const overrideApiBaseUrl = toText(req.body?.apiBaseUrl)
+    const testApiKey = overrideApiKey || item.apiKey
+    const testApiBaseUrl = overrideApiBaseUrl || item.apiBaseUrl
+    const models = await fetchProviderModelCatalog(testApiBaseUrl, testApiKey)
+    return res.json({ code: 200, message: 'ok', data: { ok: true, count: models.length } })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `连接检测失败: ${error.message}`, data: { ok: false } })
+  }
+})
+
+app.post('/api/model-providers/:providerName/fetch-models', authMiddleware, async (req, res) => {
+  const providerName = toText(req.params?.providerName)
+  if (!providerName) return res.status(400).json({ code: 400, message: '缺少 providerName', data: null })
+  try {
+    const row = await pool.query(
+      `SELECT * FROM ${modelProviderTable} WHERE provider_name = $1 LIMIT 1`,
+      [providerName],
+    )
+    const item = normalizeModelProviderRow(row.rows?.[0] || {})
+    if (!item.providerName) return res.status(404).json({ code: 404, message: '模型供应商不存在', data: null })
+    const models = await fetchProviderModelCatalog(item.apiBaseUrl, item.apiKey)
+    const client = await pool.connect()
+    let saved
+    try {
+      await client.query('BEGIN')
+      saved = await client.query(
+        `
+        UPDATE ${modelProviderTable}
+        SET fetched_models_json = $2::jsonb, updated_at = NOW()
+        WHERE provider_name = $1
+        RETURNING *
+        `,
+        [providerName, JSON.stringify(models)],
+      )
+      await replaceProviderModelRows(client, providerName, models.map((item) => ({ ...item, sourceType: 'fetch' })))
+      await client.query('COMMIT')
+    } catch (error) {
+      await client.query('ROLLBACK')
+      throw error
+    } finally {
+      client.release()
+    }
+    return res.json({
+      code: 200,
+      message: 'success',
+      data: normalizeModelProviderRow(saved.rows?.[0] || {}),
+    })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `获取模型列表失败: ${error.message}`, data: null })
+  }
+})
+
+app.delete('/api/model-providers/:providerName', authMiddleware, async (req, res) => {
+  const providerName = toText(req.params?.providerName)
+  if (!providerName) return res.status(400).json({ code: 400, message: '缺少 providerName', data: null })
+  try {
+    await pool.query(`DELETE FROM ${modelProviderTable} WHERE provider_name = $1`, [providerName])
+    return res.json({ code: 200, message: 'deleted', data: { providerName } })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `删除模型供应商失败: ${error.message}`, data: null })
+  }
+})
+
 const crawlEnvGuideSteps = [
   '确认后端服务已重启到最新版本，并可访问 /api/health。',
   '确认 web-access 服务已启动，且 CDP 连接可用。',
@@ -15199,6 +15570,18 @@ app.get('/api/supplier-profiles', authMiddleware, async (req, res) => {
         OR website ILIKE $1
         OR supplier_profile_url ILIKE $1
         OR org_code ILIKE $1
+        OR fit_situation ILIKE $1
+        OR export_situation ILIKE $1
+        OR certificates ILIKE $1
+        OR company_news ILIKE $1
+        OR fit_oems::text ILIKE $1
+        OR product_fit_details::text ILIKE $1
+        OR export_countries::text ILIKE $1
+        OR certificate_items::text ILIKE $1
+        OR company_tags::text ILIKE $1
+        OR main_product_names::text ILIKE $1
+        OR business_info::text ILIKE $1
+        OR industrial_commercial_info::text ILIKE $1
       )`.replace(/\$1/g, `$${params.length}`))
   }
   const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : ''
@@ -15226,6 +15609,10 @@ app.get('/api/supplier-profiles', authMiddleware, async (req, res) => {
         email,
         website,
         supplier_profile_url AS "supplierProfileUrl",
+        fit_oems AS "fitOems",
+        product_fit_details AS "productFitDetails",
+        certificates,
+        main_product_names AS "mainProductNames",
         TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') AS "createdAt",
         TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') AS "updatedAt"
       FROM ${supplierProfileTable}
@@ -15244,6 +15631,9 @@ app.get('/api/supplier-profiles', authMiddleware, async (req, res) => {
         relatedNodeNames,
         relatedNodeName: relatedNodeNames.length > 0 ? relatedNodeNames.join('，') : toText(row.relatedNodeName),
         supplierProfileUrl: toText(row.supplierProfileUrl || row.website),
+        fitOems: parseStringArray(row.fitOems),
+        productFitDetails: Array.isArray(row.productFitDetails) ? row.productFitDetails : [],
+        mainProductNames: parseStringArray(row.mainProductNames),
       }
     })
     return res.json({ code: 200, message: 'success', data })
@@ -16025,11 +16415,39 @@ async function callPreciseSourcingLlm(state) {
 
   const model = toText(process.env.OPENAI_CHAT_MODEL || process.env.DEFAULT_LLM_MODEL || 'gpt-4.1-mini')
   const baseUrl = toText(process.env.OPENAI_BASE_URL || 'https://api.openai.com')
+  const resolveSupplierDisplayName = (item = {}) => toText(
+    item?.companyName
+    || item?.company_name
+    || item?.name
+    || item?.supplier_name
+    || item?.oem_name
+    || item?.businessEntity
+    || item?.brand
+    || '',
+  )
+  const resolveSupplierSourceUrl = (item = {}) => toText(
+    item?.sourceUrl
+    || item?.source_url
+    || item?.detailUrl
+    || item?.detail_url
+    || item?.website
+    || '',
+  )
   const evidencePayload = {
+    intent: toText(state.intent || 'supplier_search'),
+    generateCharts: state.generateCharts !== false,
+    reportTemplateType: toText(state?.reportTemplate?.type || ''),
     userInput: state.userInput,
     supplierRows: (state.supplierRows || []).slice(0, 5).map((item) => ({
-      name: toText(item.name || item.supplier_name),
-      sourceUrl: toText(item.source_url || item.sourceUrl),
+      name: resolveSupplierDisplayName(item),
+      sourceUrl: resolveSupplierSourceUrl(item),
+      matchScore: Number(item?._matchScore || 0),
+      matchFields: Array.isArray(item?._matchFieldScores)
+        ? item._matchFieldScores.slice(0, 5).map((entry) => ({
+          label: toText(entry?.field).split('.').filter(Boolean).pop() || '多字段',
+          relevance: Number(entry?.score || 0) >= 1.6 ? '高相关' : (Number(entry?.score || 0) >= 0.9 ? '中相关' : '低相关'),
+        }))
+        : [],
     })),
     kbHits: (state.kbHits || []).slice(0, 5).map((item) => ({
       docName: toText(item.docName || item.docId),
@@ -16045,16 +16463,20 @@ async function callPreciseSourcingLlm(state) {
     },
     body: JSON.stringify({
       model,
-      temperature: 0.2,
+      temperature: Math.max(0, Math.min(1, Number(state?.temperature ?? 0.2))),
       messages: [
         { role: 'system', content: '你是精准寻源智能体。只输出简洁业务结论，禁止输出推理过程。' },
         {
           role: 'user',
-          content: `请基于证据输出中文简洁结果，严格使用以下模板（不超过10行）：
+          content: `请基于证据输出中文简洁结果，严格使用以下模板（不超过12行）：
+【直接回答】先正面回答用户问题（一句话）
 【结论】一句话
+【意图】一句话
 【命中统计】DB x条，RAG y条
 【候选供应商Top3】每行“序号. 名称 | 理由(不超过20字)”
 【下一步】1-3条可执行动作
+${state?.generateCharts === false ? '【图表】不生成图表。' : '【图表】给出建议图表类型（如柱状图/雷达图）及字段。'}
+${toText(state?.reportTemplate?.type) ? `【报告模板】按 ${toText(state.reportTemplate.type)} 模板组织章节。` : ''}
 
 证据JSON：
 ${JSON.stringify(evidencePayload)}`,
@@ -16076,22 +16498,82 @@ ${JSON.stringify(evidencePayload)}`,
 }
 
 function buildPreciseSourcingFallbackAnswer(state) {
+  const toReadableFieldLabel = (fieldPath = '') => {
+    const text = toText(fieldPath)
+    if (!text) return '多字段'
+    if (text.includes('business_info') && text.includes('配套客户')) return '配套客户'
+    if (text.includes('company_intro')) return '公司简介'
+    if (text.includes('main_products')) return '主营产品'
+    if (text.includes('oem_name')) return '整车厂名称'
+    if (text.includes('supplier_name')) return '供应商名称'
+    const parts = text.split('.').filter(Boolean)
+    return parts.length > 0 ? parts[parts.length - 1] : '多字段'
+  }
+  const toLevelText = (score = 0) => {
+    const value = Number(score || 0)
+    if (value >= 1.6) return '高相关'
+    if (value >= 0.9) return '中相关'
+    return '低相关'
+  }
+  const toReadableReason = (fieldPath = '', score = 0) => {
+    const label = toReadableFieldLabel(fieldPath)
+    const level = toLevelText(score)
+    return `${label}命中（${level}）`
+  }
+  const resolveSupplierDisplayName = (item = {}) => toText(
+    item?.companyName
+    || item?.company_name
+    || item?.name
+    || item?.supplier_name
+    || item?.oem_name
+    || item?.businessEntity
+    || item?.brand
+    || '',
+  )
+  const resolveSupplierSourceUrl = (item = {}) => toText(
+    item?.sourceUrl
+    || item?.source_url
+    || item?.detailUrl
+    || item?.detail_url
+    || item?.website
+    || '',
+  )
   const suppliers = Array.isArray(state?.supplierRows) ? state.supplierRows : []
   const kbHits = Array.isArray(state?.kbHits) ? state.kbHits : []
   const supplierTop = suppliers
-    .slice(0, 5)
-    .map((item, idx) => `${idx + 1}. ${toText(item?.name || item?.supplier_name || '未知供应商')}（${toText(item?.source_url || item?.sourceUrl || '无URL')}）`)
+    .slice(0, 3)
+    .map((item, idx) => {
+      const name = resolveSupplierDisplayName(item) || '未知供应商'
+      const url = resolveSupplierSourceUrl(item) || '无URL'
+      const reason = Array.isArray(item?._matchFieldScores) && item._matchFieldScores.length > 0
+        ? toReadableReason(item._matchFieldScores[0]?.field, item._matchFieldScores[0]?.score)
+        : '证据命中（中相关）'
+      return `${idx + 1}. ${name}（${url}）| ${reason}`
+    })
     .join('\n')
+  const ragDerivedTop = kbHits
+    .slice(0, 5)
+    .map((item) => {
+      const source = toText(item?.docName || item?.docId || item?.source || '')
+      const m = source.match(/([\u4e00-\u9fa5A-Za-z0-9（）()·\-]{4,40}(公司|集团|股份|有限|汽车|科技))/)
+      return m?.[1] || ''
+    })
+    .filter(Boolean)
+  const ragTopCandidates = Array.from(new Set(ragDerivedTop)).slice(0, 3)
   const ragTop = kbHits
     .slice(0, 5)
-    .map((item, idx) => `${idx + 1}. ${toText(item?.docName || item?.docId || '未知文档')} | 距离=${Number(item?.cosineDistance || 0).toFixed(4)}`)
+    .map((item, idx) => {
+      const distance = Number(item?.cosineDistance || 0)
+      const similarity = Math.max(0, Math.min(1, 1 - distance))
+      return `${idx + 1}. ${toText(item?.docName || item?.docId || '未知文档')} | 相似度=${similarity.toFixed(4)}`
+    })
     .join('\n')
   return [
-    '【结论】已完成初筛，建议按证据相关度推进候选核验。',
+    `【结论】${suppliers.length > 0 ? '已完成初筛，建议按证据相关度推进候选核验。' : '数据库未直接命中，但已从RAG提取可跟进线索。'}`,
     `【命中统计】DB ${suppliers.length}条，RAG ${kbHits.length}条`,
     '',
     '【候选供应商Top3】',
-    supplierTop || '暂无',
+    (supplierTop || ragTopCandidates.map((name, idx) => `${idx + 1}. ${name}（来自RAG证据）`).join('\n') || '暂无（请放宽条件或关闭严格模式）'),
     '',
     '【下一步】',
     '1. 用 RAG 命中文档关键词反查供应商主数据。',
@@ -16119,30 +16601,364 @@ function toCompactKbHit(hit = {}) {
 }
 
 const preciseSourcingLangGraph = createPreciseSourcingLangGraph({
-  async searchSuppliers(userInput, authHeader = '') {
-    const dbQuery = new URLSearchParams({ keyword: toText(userInput), limit: '20', fuzzy: 'true' })
-    const dbResponse = await fetchByNetworkPolicy(`http://127.0.0.1:${port}/api/suppliers?${dbQuery.toString()}`, {
-      headers: toText(authHeader) ? { Authorization: toText(authHeader) } : {},
-    })
-    const dbPayload = await dbResponse.json().catch(() => ({}))
-    return Array.isArray(dbPayload?.data) ? dbPayload.data : []
+  async classifyIntent(userInput = '') {
+    const text = toText(userInput).toLowerCase()
+    if (!text) return 'supplier_search'
+    if (/只查数据库|仅数据库|只看数据库|db/.test(text)) return 'db_only'
+    if (/只查知识库|仅知识库|只看知识库|仅rag|只用rag|rag only/.test(text)) return 'kb_qa'
+    if (/报告|汇报|ppt|word|excel|模板/.test(text)) return 'report_generate'
+    return 'supplier_search'
   },
-  async searchRag(kbId, userInput, topK, authHeader = '') {
-    const ragResponse = await fetchByNetworkPolicy(`http://127.0.0.1:${port}/api/knowledge-bases/${encodeURIComponent(toText(kbId))}/search`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(toText(authHeader) ? { Authorization: toText(authHeader) } : {}),
-      },
-      body: JSON.stringify({
+  async parseDemand(userInput = '') {
+    const text = toText(userInput)
+    const stopWords = new Set([
+      '帮我', '搜索', '查找', '寻找', '一下', '一下子', '的', '和', '与', '以及', '供应商', '配套', '企业',
+      '同时', '同时也', '互联网信息', '网上信息', '网络信息', '相关信息', '资料', '线索',
+    ])
+    const coarse = text
+      .split(/[\s,，。；;、|/]+|请|帮我|帮忙|搜索|查找|寻找|找出|匹配|推荐|筛选|关于|有关|针对|相关|以及|和|与|的|供应商|配套|企业/g)
+      .map((x) => x.trim())
+      .filter(Boolean)
+    const orgLikeRaw = text.match(/[\u4e00-\u9fa5A-Za-z0-9]{2,30}(?:集团|公司|汽车|股份|有限|科技|工业|供应链|东风|比亚迪)/g) || []
+    const orgLike = orgLikeRaw
+      .map((x) => x.trim())
+      .filter((x) => x.length >= 2 && !/(帮我|帮忙|搜索|查找|寻找|找出|匹配|推荐|筛选)/.test(x))
+    const keywords = [...new Set([...coarse, ...orgLike].filter((w) => w.length >= 2 && !stopWords.has(w)).slice(0, 12))]
+    const needWebSearch = /(互联网|网上|网络|web|网页|新闻|公开信息|官网)/i.test(text)
+    return {
+      keywords,
+      raw: text.slice(0, 800),
+      needWebSearch,
+    }
+  },
+  async searchSuppliers(userInput, authHeader = '', options = {}) {
+    const dbTopK = Math.min(Math.max(Number(options?.dbTopK || 10), 1), 100)
+    const selected = Array.isArray(options?.selectedDbTables) ? options.selectedDbTables.map((x) => toText(x)) : []
+    const strictMode = options?.strictMode === true
+    const rows = []
+    try {
+      const dbToolRaw = await preciseSourcingToolbox.byName.sqlSearchSuppliers.invoke({
+        query: toText(userInput),
+        limit: dbTopK,
+      })
+      const dbToolResult = normalizeToolJsonResult(dbToolRaw)
+      if (dbToolResult?.ok && Array.isArray(dbToolResult.rows)) {
+        rows.push(...dbToolResult.rows.map((r, idx) => ({
+          ...r,
+          _fromTable: toText(r?._fromTable || 'supplier_base_info'),
+          _rowId: toText(r?.id || r?.company_name || r?.companyName || `tool-supplier-${idx}`),
+          companyName: toText(r?.company_name || r?.companyName || r?.name || r?.oem_name || ''),
+          sourceUrl: toText(r?.source_url || r?.sourceUrl || r?.detail_url || r?.detailUrl || r?.website || ''),
+          mainProducts: toText(r?.main_products || r?.mainProducts || ''),
+          region: toText(r?.region || r?.location || ''),
+        })))
+      }
+    } catch {
+      // Toolbox DB 失败时不打断主查询链路
+    }
+    const queryTextRaw = toText(userInput)
+    const queryText = queryTextRaw.toLowerCase()
+    const stopWords = new Set(['帮我', '搜索', '查找', '寻找', '一下', '一下子', '的', '和', '与', '以及', '供应商', '配套', '企业'])
+    const demandKeywords = Array.isArray(options?.demand?.keywords) ? options.demand.keywords.map((x) => toText(x)).filter(Boolean) : []
+    const coarseTokens = queryTextRaw
+      .split(/[\s,，。；;、|/]+|请|帮我|帮忙|搜索|查找|寻找|找出|匹配|推荐|筛选|关于|有关|针对|相关|以及|和|与|的|供应商|配套|企业/g)
+      .map((x) => x.trim())
+      .filter((x) => x.length >= 2 && !stopWords.has(x))
+    const orgLikeMatchesRaw = queryTextRaw.match(/[\u4e00-\u9fa5A-Za-z0-9]{2,20}(?:公司|集团|汽车|科技|股份|有限|东风|比亚迪)/g) || []
+    const orgLikeMatches = orgLikeMatchesRaw
+      .map((x) => x.trim())
+      .filter((x) => x.length >= 2 && !/(帮我|帮忙|搜索|查找|寻找|找出|匹配|推荐|筛选)/.test(x))
+    const searchTerms = [...new Set([...demandKeywords, ...coarseTokens, ...orgLikeMatches])].slice(0, 10)
+    const tokens = searchTerms.map((x) => x.toLowerCase())
+
+    function quoteIdent(name = '') {
+      const value = toText(name)
+      if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(value)) return ''
+      return `"${value.replaceAll('"', '""')}"`
+    }
+
+    const tableAliasMap = {
+      suppliers: 'supplier_base_info',
+      supplier_profiles: 'supplier_profile',
+      supply_chain_node: 'supply_chain_node',
+      gas_supply_chain_node: 'gas_supply_chain_node',
+      gas_suppliers: 'gas_supplier',
+      gas_supplier_profiles: 'supplier_profile',
+      gas_oems: 'gas_oem',
+      inventories: 'asset_inventory',
+    }
+
+    const selectedTables = selected
+      .map((value) => {
+        const part = value.includes('.') ? value.split('.')[1] : value
+        const key = toText(part)
+        return tableAliasMap[key] || key
+      })
+      .filter((name) => /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name))
+
+    let candidateTables = selectedTables
+    if (candidateTables.length === 0) {
+      const tableRes = await pool.query(
+        `
+        SELECT table_name
+        FROM information_schema.tables
+        WHERE table_schema = $1
+          AND table_type = 'BASE TABLE'
+          AND (
+            table_name ILIKE '%supplier%'
+            OR table_name ILIKE '%supply%'
+            OR table_name ILIKE '%oem%'
+            OR table_name ILIKE '%profile%'
+          )
+        ORDER BY table_name ASC
+        LIMIT 60
+        `,
+        [schemaName],
+      )
+      candidateTables = (tableRes.rows || []).map((r) => toText(r.table_name)).filter(Boolean)
+    }
+    if (candidateTables.length === 0) return []
+
+    const colRes = await pool.query(
+      `
+      SELECT table_name, column_name, data_type, udt_name
+      FROM information_schema.columns
+      WHERE table_schema = $1
+        AND table_name = ANY($2::text[])
+      ORDER BY table_name ASC, ordinal_position ASC
+      `,
+      [schemaName, candidateTables],
+    )
+    const textTypeSet = new Set(['character varying', 'text', 'json', 'jsonb', 'varchar'])
+    const tableColsMap = new Map()
+    for (const row of (colRes.rows || [])) {
+      const tableName = toText(row.table_name)
+      const colName = toText(row.column_name)
+      const dataType = toText(row.data_type).toLowerCase()
+      const udtName = toText(row.udt_name).toLowerCase()
+      const isTextLike = textTypeSet.has(dataType) || udtName === 'json' || udtName === 'jsonb'
+      if (!isTextLike) continue
+      if (!tableColsMap.has(tableName)) tableColsMap.set(tableName, [])
+      tableColsMap.get(tableName).push(colName)
+    }
+
+    const perTableLimit = Math.min(50, Math.max(4, Math.ceil(dbTopK / Math.max(candidateTables.length, 1)) + 3))
+    for (const tableName of candidateTables) {
+      const columns = (tableColsMap.get(tableName) || []).filter((c) => c)
+      if (columns.length === 0) continue
+      const safeSchema = quoteIdent(schemaName)
+      const safeTable = quoteIdent(tableName)
+      if (!safeSchema || !safeTable) continue
+      const predicates = []
+      const params = []
+      const qVariants = (searchTerms.length > 0 ? searchTerms : [queryTextRaw]).filter(Boolean).slice(0, 8)
+      for (const v of qVariants) {
+        params.push(`%${v}%`)
+        const p = `$${params.length}`
+        const colExpr = columns
+          .slice(0, 40)
+          .map((col) => `${quoteIdent(col)}::text ILIKE ${p}`)
+          .join(' OR ')
+        if (colExpr) predicates.push(`(${colExpr})`)
+      }
+      if (predicates.length === 0) continue
+      params.push(perTableLimit)
+      const sql = `
+        SELECT *
+        FROM ${safeSchema}.${safeTable}
+        WHERE ${predicates.join(' OR ')}
+        LIMIT $${params.length}
+      `
+      try {
+        const result = await pool.query(sql, params)
+        const rowsFromTable = Array.isArray(result.rows) ? result.rows : []
+        rows.push(...rowsFromTable.map((r, idx) => ({
+          ...r,
+          _fromTable: tableName,
+          _rowId: toText(r.id || r.company_name || r.companyName || `${tableName}-${idx}`),
+          companyName: toText(r.company_name || r.companyName || r.name || r.oem_name || ''),
+          sourceUrl: toText(r.source_url || r.sourceUrl || r.detail_url || r.detailUrl || r.website || ''),
+          mainProducts: toText(r.main_products || r.mainProducts || ''),
+          region: toText(r.region || r.location || ''),
+        })))
+      } catch {
+        continue
+      }
+    }
+    function normalizeCompanyNameForKey(input = '') {
+      return toText(input)
+        .toLowerCase()
+        .replace(/\s+/g, '')
+        .replace(/[（(]/g, '(')
+        .replace(/[）)]/g, ')')
+        .replace(/[·•]/g, '')
+        .trim()
+    }
+
+    const dedup = new Map()
+    function roughContentLength(item = {}) {
+      const parts = [
+        item?.companyName,
+        item?.mainProducts,
+        item?.business_info,
+        item?.company_intro,
+        item?.main_products,
+        item?.oem_name,
+      ]
+      return parts.map((x) => toText(x).length).reduce((a, b) => a + b, 0)
+    }
+
+    for (const item of rows) {
+      const companyKey = normalizeCompanyNameForKey(item?.companyName || item?.company_name || item?.name || item?.supplier_name)
+      const urlKey = toText(item?.sourceUrl || item?.source_url || item?.detailUrl || item?.detail_url || item?.website).trim().toLowerCase()
+      const fallbackId = toText(item?.id || item?.name || item?.supplier_name || item?._rowId || Math.random())
+      const key = companyKey || urlKey || fallbackId
+      if (!dedup.has(key)) {
+        dedup.set(key, item)
+      } else {
+        const prev = dedup.get(key)
+        if (roughContentLength(item) > roughContentLength(prev)) dedup.set(key, item)
+      }
+    }
+    function flattenTextFields(value, path = '', out = []) {
+      if (value == null) return out
+      if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+        const text = String(value).trim()
+        if (text) out.push({ path: path || 'value', text })
+        return out
+      }
+      if (Array.isArray(value)) {
+        value.forEach((item, idx) => flattenTextFields(item, `${path}[${idx}]`, out))
+        return out
+      }
+      if (typeof value === 'object') {
+        for (const [k, v] of Object.entries(value)) {
+          if (String(k).startsWith('_')) continue
+          flattenTextFields(v, path ? `${path}.${k}` : k, out)
+        }
+      }
+      return out
+    }
+
+    function scoreField(text = '') {
+      const lower = toText(text).toLowerCase()
+      if (!lower) return 0
+      let score = 0
+      for (const tk of tokens) {
+        if (!tk) continue
+        if (lower.includes(tk)) score += Math.max(0.8, Math.min(2.2, tk.length / 3))
+      }
+      if (queryText && lower.includes(queryText)) score += 3
+      if (!tokens.length && queryText && lower.includes(queryText.slice(0, 8))) score += 0.5
+      return score
+    }
+
+    const mapped = Array.from(dedup.values()).map((item) => {
+      const fields = flattenTextFields(item)
+      const scored = fields
+        .map((entry) => ({ ...entry, score: scoreField(entry.text) }))
+        .filter((entry) => entry.score > 0)
+        .sort((a, b) => b.score - a.score)
+      const top = scored.slice(0, 6)
+      const rowScore = top.reduce((sum, entry) => sum + entry.score, 0)
+      return {
+        ...item,
+        _matchFields: top.map((entry) => entry.path),
+        _matchFieldScores: top.map((entry) => ({ field: entry.path, score: Number(entry.score.toFixed(3)) })),
+        _matchScore: Number(rowScore.toFixed(3)),
+      }
+    })
+    .sort((a, b) => Number(b._matchScore || 0) - Number(a._matchScore || 0))
+
+    const positive = mapped.filter((item) => Number(item?._matchScore || 0) > 0)
+    if (!strictMode) {
+      return (positive.length > 0 ? positive : mapped).slice(0, dbTopK)
+    }
+
+    const strictThreshold = positive.length > 0
+      ? Math.max(1.2, Number((positive[0]?._matchScore || 0)) * 0.25)
+      : 0
+    const strictFiltered = positive.filter((item) => Number(item?._matchScore || 0) >= strictThreshold)
+    return (strictFiltered.length > 0 ? strictFiltered : (positive.length > 0 ? positive : mapped)).slice(0, dbTopK)
+  },
+  async searchRag(kbIds, userInput, topK, authHeader = '', _demand = {}, strictMode = false) {
+    const targets = Array.isArray(kbIds) ? kbIds.map((x) => toText(x)).filter(Boolean) : [toText(kbIds)].filter(Boolean)
+    const rows = []
+    try {
+      const ragToolRaw = await preciseSourcingToolbox.byName.ragSearchEvidence.invoke({
+        kbIds: targets,
         query: toText(userInput),
         topK: Math.min(Number(topK || 20), 20),
-        metric: 'cosine',
-        strictKeyword: false,
-      }),
+        strictKeyword: true,
+      })
+      const ragToolResult = normalizeToolJsonResult(ragToolRaw)
+      if (ragToolResult?.ok && Array.isArray(ragToolResult.hits) && ragToolResult.hits.length > 0) {
+        rows.push(...ragToolResult.hits)
+      }
+    } catch {
+      // Toolbox RAG 失败时回退到既有 HTTP 查询链路
+    }
+    if (rows.length > 0) return rows
+    for (const kbId of targets) {
+      let ragPayload = {}
+      let lastError = null
+      for (let attempt = 1; attempt <= 2; attempt += 1) {
+        try {
+          const ragResponse = await fetchByNetworkPolicy(`http://127.0.0.1:${port}/api/knowledge-bases/${encodeURIComponent(toText(kbId))}/search`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...(toText(authHeader) ? { Authorization: toText(authHeader) } : {}),
+            },
+            body: JSON.stringify({
+              query: toText(userInput),
+              topK: Math.min(Number(topK || 20), 20),
+              metric: 'cosine',
+              strictKeyword: true,
+              scoreThreshold: strictMode ? 0.45 : null,
+            }),
+          })
+          ragPayload = await ragResponse.json().catch(() => ({}))
+          if (ragResponse.ok) {
+            lastError = null
+            break
+          }
+          lastError = new Error(toText(ragPayload?.message || `RAG HTTP ${ragResponse.status}`))
+        } catch (error) {
+          lastError = error
+        }
+      }
+      if (lastError) throw lastError
+      const items = Array.isArray(ragPayload?.data?.results) ? ragPayload.data.results : []
+      rows.push(...items)
+    }
+    return rows
+  },
+  async traceStep(step = '', payload = {}) {
+    try {
+      await preciseSourcingToolbox.byName.traceTool.invoke({ step: toText(step), payload })
+    } catch {
+      // ignore trace failure
+    }
+  },
+  async fuseEvidence(state = {}) {
+    const supplierRows = Array.isArray(state?.supplierRows) ? state.supplierRows : []
+    const kbHits = Array.isArray(state?.kbHits) ? state.kbHits : []
+    const webHits = Array.isArray(state?.webHits) ? state.webHits : []
+    return {
+      suppliers: supplierRows.slice(0, 20),
+      kbHits: kbHits.slice(0, 20),
+      webHits: webHits.slice(0, 20),
+    }
+  },
+  async searchWeb(query = '', topK = 5) {
+    const raw = await preciseSourcingToolbox.byName.webSearchTool.invoke({
+      query: toText(query),
+      topK: Math.min(Math.max(Number(topK || 5), 1), 10),
     })
-    const ragPayload = await ragResponse.json().catch(() => ({}))
-    return Array.isArray(ragPayload?.data?.results) ? ragPayload.data.results : []
+    const parsed = normalizeToolJsonResult(raw)
+    if (!parsed?.ok) throw new Error(toText(parsed?.error || 'web_search_failed'))
+    return Array.isArray(parsed.results) ? parsed.results : []
   },
   async generateAnswer(state) {
     let answer = await callPreciseSourcingLlm(state)
@@ -16154,21 +16970,41 @@ const preciseSourcingLangGraph = createPreciseSourcingLangGraph({
 })
 
 app.post('/api/agents/precise-sourcing/chat', authMiddleware, async (req, res) => {
+  const traceVersion = 'ps-v20260506-04'
   const userInput = toText(req.body?.message)
   const authHeader = toText(req.headers.authorization)
   const kbIdInput = toText(req.body?.kbId)
+  const kbIdsInput = Array.isArray(req.body?.kbIds) ? req.body.kbIds.map((x) => toText(x)).filter(Boolean) : []
+  const selectedDbTables = Array.isArray(req.body?.selectedDbTables) ? req.body.selectedDbTables.map((x) => toText(x)).filter(Boolean) : []
+  const selectedSkills = Array.isArray(req.body?.selectedSkills)
+    ? req.body.selectedSkills.map((x) => toText(x)).filter(Boolean)
+    : (Array.isArray(req.body?.selectedTools) ? req.body.selectedTools.map((x) => toText(x)).filter(Boolean) : [])
   const topK = Math.min(Math.max(Number(req.body?.topK || 20), 5), 50)
+  const dbTopK = Math.min(Math.max(Number(req.body?.dbTopK || 10), 1), 100)
+  const generateCharts = req.body?.generateCharts !== false
+  const temperature = Math.max(0, Math.min(1, Number(req.body?.temperature ?? 0.2)))
+  const reportTemplate = req.body?.reportTemplate && typeof req.body.reportTemplate === 'object' ? req.body.reportTemplate : null
+  const strictMode = req.body?.strictMode === true
   if (!userInput) {
     return res.status(400).json({ code: 400, message: '缺少参数：message', data: null })
   }
-  const targetKbId = kbIdInput || toText(knowledgeBaseStore.keys().next()?.value)
+  const targetKbId = kbIdInput || kbIdsInput[0] || toText(knowledgeBaseStore.keys().next()?.value)
+  const targetKbIds = kbIdsInput.length > 0 ? kbIdsInput : (targetKbId ? [targetKbId] : [])
 
   try {
     const graphResult = await preciseSourcingLangGraph.run({
       userInput,
       authHeader,
       kbId: targetKbId || '',
+      kbIds: targetKbIds,
       topK: Math.min(topK, 20),
+      dbTopK,
+      selectedDbTables,
+      strictMode,
+      selectedSkills,
+      generateCharts,
+      temperature,
+      reportTemplate,
     })
     const safeSuppliers = toJsonSafe(Array.isArray(graphResult.supplierRows) ? graphResult.supplierRows.slice(0, 20) : [])
     const safeKbHits = toJsonSafe(
@@ -16177,14 +17013,21 @@ app.post('/api/agents/precise-sourcing/chat', authMiddleware, async (req, res) =
         : [],
     )
 
+    const tracesWithVersion = Array.isArray(graphResult.traces)
+      ? graphResult.traces.map((item) => ({ ...item, traceVersion }))
+      : []
     return res.json({
       code: 200,
       message: 'success',
       data: {
+        traceVersion,
         agent: 'precise-sourcing',
         kbId: targetKbId || '',
+        kbIds: targetKbIds,
+        intent: toText(graphResult.intent || 'supplier_search'),
+        demand: graphResult.demand || {},
         answer: toText(graphResult.answer),
-        traces: graphResult.traces || [],
+        traces: tracesWithVersion,
         react: graphResult.react || { rounds: [] },
         evidence: {
           suppliers: safeSuppliers,
@@ -16264,6 +17107,66 @@ async function fetchLangchainModelCatalog() {
     return { platform: 'codex-local', models: langchainModelCatalog }
   }
 }
+
+const preciseSourcingToolbox = buildLangChainToolbox({
+  pool,
+  schemaName,
+  async knowledgeBaseSearch({ kbIds = [], query = '', topK = 8, strictKeyword = true }) {
+    const targets = Array.isArray(kbIds) ? kbIds.map((x) => toText(x)).filter(Boolean) : []
+    const rows = []
+    for (const kbId of targets) {
+      const kb = knowledgeBaseStore.get(toText(kbId))
+      if (!kb) continue
+      const hits = await searchKnowledgeBaseRecords(kb, query, topK, {
+        metric: 'cosine',
+        strictKeyword,
+      })
+      rows.push(...hits.map((item) => ({
+        id: item.id,
+        kbId: item.kbId,
+        docId: item.docId,
+        docName: item.name,
+        docUrl: item.url,
+        chunkIndex: item.chunkIndex,
+        cosineDistance: Number(item.score || 0),
+        chunkText: item.content,
+        sourceType: item.sourceType || '',
+      })))
+    }
+    return rows
+  },
+  async webSearch({ query = '', topK = 5 }) {
+    const apiKey = toText(process.env.TAVILY_API_KEY)
+    if (!apiKey) throw new Error('TAVILY_API_KEY 未配置')
+    const response = await fetchByNetworkPolicy('https://api.tavily.com/search', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        api_key: apiKey,
+        query: toText(query),
+        max_results: Math.min(Math.max(Number(topK || 5), 1), 10),
+        topic: 'general',
+        search_depth: 'advanced',
+      }),
+    })
+    const payload = await response.json().catch(() => ({}))
+    if (!response.ok) {
+      throw new Error(toText(payload?.error || payload?.message || `Tavily HTTP ${response.status}`))
+    }
+    const results = Array.isArray(payload?.results) ? payload.results : []
+    return results.map((item) => ({
+      title: toText(item?.title),
+      url: toText(item?.url),
+      snippet: toText(item?.content || ''),
+      score: Number(item?.score || 0),
+    }))
+  },
+  async trace({ step, payload }) {
+    console.log(`[precise-sourcing.trace] ${toText(step)}`, payload || {})
+  },
+})
 
 async function callLangchainCompatibleChat(messages, options = {}) {
   const apiKey = toText(process.env.OPENAI_API_KEY || process.env.LLM_API_KEY || process.env.CODEX_API_KEY)
@@ -16527,12 +17430,99 @@ function normalizeLangchainSessionState(input = {}) {
   }
 }
 
+function normalizeLangchainChatType(input = '') {
+  const value = toText(input).toLowerCase()
+  if (value === 'precise_sourcing') return 'precise_sourcing'
+  if (value === 'rag_chat') return 'rag_chat'
+  return 'multi_chat'
+}
+
+async function searchKnowledgeBaseRecords(kb, queryText = '', topK = 8, options = {}) {
+  const metric = toText(options.metric).toLowerCase() === 'euclidean' ? 'euclidean' : 'cosine'
+  const strictKeyword = options.strictKeyword !== false
+  const perDocLimit = Math.max(1, Number(options.perDocLimit || 6))
+  const scoreThresholdRaw = Number(options.scoreThreshold)
+  const hasScoreThreshold = Number.isFinite(scoreThresholdRaw)
+  const scoreThreshold = hasScoreThreshold ? Math.max(0, Math.min(2, scoreThresholdRaw)) : null
+  const safeTopK = Math.min(Math.max(Number(topK || kb?.config?.topK || 8), 1), 200)
+  const candidateK = Math.min(Math.max(safeTopK * 8, 80), 500)
+  const queryVector = await embedTextByProvider(
+    queryText,
+    resolveKnowledgeBaseEmbeddingModel(kb),
+    knowledgeVectorStoreDim,
+  )
+  const queryVectorLiteral = toPgVectorLiteral(queryVector)
+  const orderExpr = metric === 'euclidean' ? 'embedding <-> $3::vector' : 'embedding <=> $3::vector'
+  const rowsRes = await pool.query(
+    `
+    SELECT
+      v.id,
+      v.kb_id AS "kbId",
+      v.doc_id AS "docId",
+      v.chunk_index AS "chunkIndex",
+      v.chunk_text AS "chunkText",
+      d.source_type AS "sourceType",
+      d.name AS "docName",
+      d.url AS "docUrl",
+      (v.embedding <=> $3::vector) AS "cosineDistance",
+      (v.embedding <-> $3::vector) AS "euclideanDistance"
+    FROM ${knowledgeBaseVectorTable} v
+    LEFT JOIN ${knowledgeBaseDocumentTable} d ON d.id = v.doc_id
+    WHERE v.kb_id = $1 AND embedding IS NOT NULL
+    ORDER BY ${orderExpr} ASC
+    LIMIT $2
+    `,
+    [toText(kb?.id), candidateK, queryVectorLiteral],
+  )
+  const tokens = queryText
+    .split(/[\s,，。；;、|]+/g)
+    .map((item) => item.trim().toLowerCase())
+    .filter((item) => item.length >= 2)
+  const ranked = (rowsRes.rows || [])
+    .map((row) => {
+      const content = toText(row.chunkText)
+      const lower = content.toLowerCase()
+      const tokenHits = tokens.filter((token) => lower.includes(token)).length
+      const cosineDistance = Number(row.cosineDistance || 0)
+      const euclideanDistance = Number(row.euclideanDistance || 0)
+      const score = metric === 'euclidean' ? euclideanDistance : cosineDistance
+      return {
+        id: toText(row.id),
+        kbId: toText(row.kbId),
+        docId: toText(row.docId),
+        chunkIndex: Number(row.chunkIndex || 0),
+        content,
+        sourceType: toText(row.sourceType),
+        name: toText(row.docName),
+        url: toText(row.docUrl),
+        score,
+        tokenHits,
+      }
+    })
+    .filter((item) => (!strictKeyword || tokens.length === 0 || item.tokenHits > 0))
+    .filter((item) => (hasScoreThreshold ? item.score <= scoreThreshold : true))
+    .sort((a, b) => Number(a.score) - Number(b.score))
+
+  const picked = []
+  const docCounts = new Map()
+  for (const item of ranked) {
+    const key = toText(item.docId)
+    const used = Number(docCounts.get(key) || 0)
+    if (used >= perDocLimit) continue
+    picked.push(item)
+    docCounts.set(key, used + 1)
+    if (picked.length >= safeTopK) break
+  }
+  return picked
+}
+
 app.get('/api/langchain/session-state', authMiddleware, async (req, res) => {
   const owner = toText(req.authUser?.userName || req.authUser?.username || 'unknown')
+  const chatType = normalizeLangchainChatType(req.query?.chatType)
   try {
     const result = await pool.query(
-      `SELECT sessions_json, current_session FROM ${langchainSessionStateTable} WHERE owner = $1 LIMIT 1`,
-      [owner],
+      `SELECT sessions_json, current_session FROM ${langchainSessionStateTable} WHERE owner = $1 AND chat_type = $2 LIMIT 1`,
+      [owner, chatType],
     )
     if (result.rowCount === 0) {
       return res.json({
@@ -16553,18 +17543,19 @@ app.get('/api/langchain/session-state', authMiddleware, async (req, res) => {
 
 app.put('/api/langchain/session-state', authMiddleware, async (req, res) => {
   const owner = toText(req.authUser?.userName || req.authUser?.username || 'unknown')
+  const chatType = normalizeLangchainChatType(req.body?.chatType)
   const normalized = normalizeLangchainSessionState(req.body || {})
   try {
     await pool.query(
       `
-      INSERT INTO ${langchainSessionStateTable} (owner, sessions_json, current_session, updated_at)
-      VALUES ($1, $2::jsonb, $3, NOW())
-      ON CONFLICT (owner) DO UPDATE
+      INSERT INTO ${langchainSessionStateTable} (owner, chat_type, sessions_json, current_session, updated_at)
+      VALUES ($1, $2, $3::jsonb, $4, NOW())
+      ON CONFLICT (owner, chat_type) DO UPDATE
       SET sessions_json = EXCLUDED.sessions_json,
           current_session = EXCLUDED.current_session,
           updated_at = NOW()
       `,
-      [owner, JSON.stringify(normalized.sessions), normalized.currentSession],
+      [owner, chatType, JSON.stringify(normalized.sessions), normalized.currentSession],
     )
     return res.json({ code: 200, message: 'updated', data: normalized })
   } catch (error) {
@@ -16667,19 +17658,47 @@ app.post('/api/langchain/rag-chat', authMiddleware, async (req, res) => {
   const kbId = toText(req.body?.kbId)
   const question = toText(req.body?.question)
   const topK = Math.min(Math.max(Number(req.body?.topK || 8), 1), 20)
+  const historyRounds = Math.min(Math.max(Number(req.body?.historyRounds || 3), 0), 20)
+  const onlySearchResults = Boolean(req.body?.onlySearchResults)
+  const scoreThreshold = Number(req.body?.scoreThreshold)
   if (!kbId || !question) {
     return res.status(400).json({ code: 400, message: '缺少参数：kbId 或 question', data: null })
   }
   try {
     const kb = knowledgeBaseStore.get(kbId)
     if (!kb) return res.status(404).json({ code: 404, message: `知识库不存在: ${kbId}`, data: null })
-    const hits = searchKnowledgeBaseRecords(kb, question, topK, false)
+    const hits = await searchKnowledgeBaseRecords(kb, question, topK, {
+      metric: 'cosine',
+      strictKeyword: false,
+      scoreThreshold: Number.isFinite(scoreThreshold) ? scoreThreshold : null,
+    })
     const contextText = hits
       .slice(0, topK)
       .map((item, idx) => `证据${idx + 1}（score=${Number(item.score || 0).toFixed(4)}）:\n${toText(item.content)}`)
       .join('\n\n')
+    const outputHits = hits.slice(0, topK).map((item) => ({
+      id: item.id,
+      kbId: item.kbId,
+      docId: item.docId,
+      chunkIndex: item.chunkIndex,
+      score: item.score,
+      content: item.content,
+      source: item.name || item.url || item.sourceType || '-',
+      url: item.url || '',
+    }))
+    if (onlySearchResults) {
+      return res.json({
+        code: 200,
+        message: 'success',
+        data: {
+          answer: outputHits.length > 0 ? '已返回检索结果（未调用模型）。' : '未检索到符合条件的内容。',
+          hits: outputHits,
+        },
+      })
+    }
     const prompt = `请基于以下知识库证据回答用户问题。若证据不足，请明确说明。\n\n${contextText || '（无命中证据）'}\n\n用户问题：${question}`
-    const messages = toLangchainMessages(req.body?.history, prompt)
+    const history = Array.isArray(req.body?.history) ? req.body.history.slice(-(historyRounds * 2)) : []
+    const messages = toLangchainMessages(history, prompt)
     const result = await callLangchainCompatibleChat(messages, {
       model: req.body?.model,
       temperature: req.body?.temperature,
@@ -16689,12 +17708,7 @@ app.post('/api/langchain/rag-chat', authMiddleware, async (req, res) => {
       message: 'success',
       data: {
         answer: result.answer,
-        hits: hits.slice(0, topK).map((item) => ({
-          id: item.id,
-          score: item.score,
-          content: item.content,
-          source: item.name || item.url || item.sourceType || '-',
-        })),
+        hits: outputHits,
       },
     })
   } catch (error) {

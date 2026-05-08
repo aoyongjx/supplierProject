@@ -119,3 +119,23 @@
   - `knowledge_base`
   - `knowledge_base_document`
   - `supplier_opinion_vector`（`pgvector`，`embedding vector(1536)`，`ivfflat` 索引）
+
+## 12. 模型管理近期改动（2026-05-07）
+
+- 新增能力中心二级页面：模型管理（供应商列表 + 右侧配置面板），并持续按参考截图做 UI/交互对齐。
+- 配置保存策略调整为“显式保存”：
+  - `启用`、`API 密钥`、`API 地址` 改为只更新前端表单状态。
+  - 点击右上角 `保存` 按钮后统一调用 `PUT /api/model-providers/:providerName` 入库。
+- 修复“检测误报缺少 API 密钥”问题：
+  - `POST /api/model-providers/:providerName/test` 支持读取请求体中的 `apiKey/apiBaseUrl`，优先于库内值。
+  - 前端检测按钮会将当前输入值直接传给后端，因此未保存也可先检测连接。
+- 新增并落地模型明细表（启动自动建表）：
+  - 表：`aoyong.model_provider_model`
+  - 字段：`provider_name`、`model_id`、`group_name`、`capability_video`、`capability_reasoning`、`capability_tool`、`owned_by`、`object_type`、`source_type`、`sort_order`、时间戳。
+  - 约束：`UNIQUE(provider_name, model_id)`；外键级联到 `model_provider_config(provider_name)`。
+- 入库事务化：
+  - 保存供应商配置与更新模型明细在同一事务中提交。
+  - 获取模型列表后同步刷新 `fetched_models_json` 与 `model_provider_model` 明细。
+- 前端交互补齐：
+  - 模型搜索框改为点击放大镜后展开，失焦自动收起。
+  - 分组删除与单模型删除图标分离，避免视觉混淆。

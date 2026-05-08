@@ -54,8 +54,9 @@ export async function sendLangchainRagChat(payload) {
   return result.data
 }
 
-export async function fetchLangchainSessionState() {
-  const response = await fetch('/api/langchain/session-state', {
+export async function fetchLangchainSessionState(chatType = 'multi_chat') {
+  const query = new URLSearchParams({ chatType: String(chatType || 'multi_chat') })
+  const response = await fetch(`/api/langchain/session-state?${query.toString()}`, {
     method: 'GET',
     headers: { ...buildAuthHeaders() },
   })
