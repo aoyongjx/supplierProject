@@ -1,7 +1,9 @@
 import {
   AppstoreOutlined,
   BarChartOutlined,
+  BgColorsOutlined,
   BulbOutlined,
+  CarOutlined,
   CloudSyncOutlined,
   EditOutlined,
   EyeInvisibleOutlined,
@@ -16,7 +18,7 @@ import {
   TeamOutlined,
   LineChartOutlined,
 } from '@ant-design/icons'
-import { Breadcrumb, Button, Card, Checkbox, ConfigProvider, Divider, Layout, Menu, Modal, Segmented, Space, Typography, theme } from 'antd'
+import { Breadcrumb, Button, Card, Checkbox, ConfigProvider, Divider, Layout, Menu, Modal, Select, Space, Typography, theme } from 'antd'
 import { Component, Suspense, lazy, useEffect, useMemo, useState } from 'react'
 import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import { clearTokens, getAccessToken } from './auth/token'
@@ -55,6 +57,8 @@ import McpServicesPage from './pages/McpServicesPage'
 import SkillManagementPage from './pages/SkillManagementPage'
 import PreciseSourcingAgentPage from './pages/PreciseSourcingAgentPage'
 import { fetchRecentSessions } from './api/sessionApi'
+import { fetchUiStyleSettings, saveUiStyleSettings } from './api/uiStyleSettingsApi'
+import { fetchMenuVisibilitySettings, saveMenuVisibilitySettings } from './api/menuVisibilitySettingsApi'
 const VectorSearchPage = lazy(() => import('./pages/VectorSearchPage'))
 
 class RouteErrorBoundary extends Component {
@@ -87,6 +91,286 @@ const { Header, Sider, Content } = Layout
 const { Title, Text } = Typography
 
 const MENU_VISIBILITY_STORAGE_KEY = 'app-menu-visibility'
+const STYLE_PRESET_STORAGE_KEY = 'app-ui-style-preset'
+const PALETTE_PRESET_STORAGE_KEY = 'app-ui-palette-preset'
+const PRODUCT_TYPE_PRESET_STORAGE_KEY = 'app-ui-product-type-preset'
+const CATEGORY_PRESET_STORAGE_KEY = 'app-ui-category-preset'
+const SCENARIO_PRESET_STORAGE_KEY = 'app-ui-scenario-preset'
+const STYLE_REFERENCE_URL = 'https://github.com/nextlevelbuilder/ui-ux-pro-max-skill'
+const STYLE_OPTIONS = [
+  { value: 'minimalism', label: 'minimalism', desc: '极简风，强调留白与信息密度平衡' },
+  { value: 'glassmorphism', label: 'glassmorphism', desc: '玻璃拟态，强调通透与层叠' },
+  { value: 'brutalism', label: 'brutalism', desc: '野兽派，强调粗线条与高对比' },
+  { value: 'neumorphism', label: 'neumorphism', desc: '新拟物，强调柔和浮雕质感' },
+  { value: 'bento-grid', label: 'bento-grid', desc: '模块拼贴，强调卡片化分区' },
+  { value: 'claymorphism', label: 'claymorphism', desc: '黏土风，强调圆润体块' },
+  { value: 'skeuomorphism', label: 'skeuomorphism', desc: '拟物风，强调真实材质' },
+  { value: 'flat-design', label: 'flat-design', desc: '扁平风，强调效率与清晰' },
+  { value: 'material-design', label: 'material-design', desc: '材质设计，强调层级与动效' },
+  { value: 'cyberpunk', label: 'cyberpunk', desc: '赛博朋克，强调霓虹科技感' },
+  { value: 'futurism', label: 'futurism', desc: '未来风，强调流线与科技感' },
+  { value: 'retro-futurism', label: 'retro-futurism', desc: '复古未来，强调怀旧科幻融合' },
+  { value: 'vaporwave', label: 'vaporwave', desc: '蒸汽波，强调霓虹与怀旧色调' },
+  { value: 'dark-academia', label: 'dark-academia', desc: '暗色学院风，强调文艺氛围' },
+  { value: 'light-academia', label: 'light-academia', desc: '浅色学院风，强调纸感排版' },
+  { value: 'editorial', label: 'editorial', desc: '杂志风，强调大标题与网格' },
+  { value: 'swiss-style', label: 'swiss-style', desc: '瑞士风，强调理性网格排版' },
+  { value: 'bauhaus', label: 'bauhaus', desc: '包豪斯，强调几何与基础色' },
+  { value: 'japanese-minimal', label: 'japanese-minimal', desc: '日式极简，强调克制与秩序' },
+  { value: 'scandinavian', label: 'scandinavian', desc: '北欧风，强调自然与简洁' },
+  { value: 'wabi-sabi', label: 'wabi-sabi', desc: '侘寂风，强调不完美与留白' },
+  { value: 'luxury-modern', label: 'luxury-modern', desc: '现代轻奢，强调高级材质感' },
+  { value: 'corporate', label: 'corporate', desc: '企业风，强调专业与稳健' },
+  { value: 'startup-saas', label: 'startup-saas', desc: 'SaaS 风，强调增长导向' },
+  { value: 'fintech', label: 'fintech', desc: '金融科技风，强调可信与严谨' },
+  { value: 'healthcare', label: 'healthcare', desc: '医疗健康风，强调安心与可读' },
+  { value: 'edtech', label: 'edtech', desc: '教育科技风，强调层次与互动' },
+  { value: 'ecommerce-modern', label: 'ecommerce-modern', desc: '电商现代风，强调转化引导' },
+  { value: 'marketplace', label: 'marketplace', desc: '平台风，强调信息组织效率' },
+  { value: 'dashboard-analytic', label: 'dashboard-analytic', desc: '分析看板风，强调数据重点' },
+  { value: 'command-center', label: 'command-center', desc: '指挥中心风，强调监控态势' },
+  { value: 'terminal-ui', label: 'terminal-ui', desc: '终端风，强调工程感交互' },
+  { value: 'developer-tool', label: 'developer-tool', desc: '开发者工具风，强调密度与效率' },
+  { value: 'ai-assistant', label: 'ai-assistant', desc: 'AI 助手风，强调会话与反馈' },
+  { value: 'notion-like', label: 'notion-like', desc: '知识库风，强调文档化组织' },
+  { value: 'figma-like', label: 'figma-like', desc: '设计协作风，强调面板结构' },
+  { value: 'apple-inspired', label: 'apple-inspired', desc: '苹果风，强调克制与光泽' },
+  { value: 'google-inspired', label: 'google-inspired', desc: '谷歌风，强调清爽与可用性' },
+  { value: 'microsoft-fluent', label: 'microsoft-fluent', desc: 'Fluent 风，强调层次与柔和' },
+  { value: 'github-inspired', label: 'github-inspired', desc: 'GitHub 风，强调工程阅读性' },
+  { value: 'dribbble-bold', label: 'dribbble-bold', desc: '展示风，强调视觉冲击' },
+  { value: 'behance-portfolio', label: 'behance-portfolio', desc: '作品集风，强调内容陈列' },
+  { value: 'newspaper', label: 'newspaper', desc: '报刊风，强调多栏排版' },
+  { value: 'storybook', label: 'storybook', desc: '故事叙事风，强调节奏与段落' },
+  { value: 'gaming', label: 'gaming', desc: '游戏风，强调动感与层次' },
+  { value: 'esports', label: 'esports', desc: '电竞风，强调速度与对抗' },
+  { value: 'music-player', label: 'music-player', desc: '音乐风，强调节奏和封面视觉' },
+  { value: 'travel-magazine', label: 'travel-magazine', desc: '旅行杂志风，强调场景氛围' },
+  { value: 'food-brand', label: 'food-brand', desc: '餐饮品牌风，强调食欲色彩' },
+  { value: 'fashion-brand', label: 'fashion-brand', desc: '时尚品牌风，强调高级排版' },
+  { value: 'architecture', label: 'architecture', desc: '建筑风，强调结构与留白' },
+  { value: 'museum', label: 'museum', desc: '展陈风，强调内容导览' },
+  { value: 'nature-organic', label: 'nature-organic', desc: '自然有机风，强调温润配色' },
+  { value: 'eco-sustainability', label: 'eco-sustainability', desc: '可持续风，强调绿色价值' },
+  { value: 'industrial', label: 'industrial', desc: '工业风，强调硬朗与秩序' },
+  { value: 'automotive', label: 'automotive', desc: '汽车风，强调性能与速度' },
+  { value: 'space-tech', label: 'space-tech', desc: '航天科技风，强调深空质感' },
+  { value: 'biotech', label: 'biotech', desc: '生物科技风，强调精密与洁净' },
+  { value: 'quantum', label: 'quantum', desc: '量子科技风，强调抽象结构' },
+  { value: 'data-viz', label: 'data-viz', desc: '可视化风，强调图形优先' },
+  { value: 'infographic', label: 'infographic', desc: '信息图风，强调解释性' },
+  { value: 'one-page-landing', label: 'one-page-landing', desc: '单页落地页风，强调转化路径' },
+  { value: 'app-onboarding', label: 'app-onboarding', desc: '引导风，强调新手体验' },
+  { value: 'mobile-native', label: 'mobile-native', desc: '原生移动风，强调触控反馈' },
+  { value: 'tablet-compact', label: 'tablet-compact', desc: '平板风，强调中密度布局' },
+  { value: 'watch-interface', label: 'watch-interface', desc: '可穿戴风，强调极简信息' },
+  { value: 'voice-first', label: 'voice-first', desc: '语音优先风，强调少操作' },
+]
+
+const PALETTE_COUNT = 161
+const PALETTE_OPTIONS = Array.from({ length: PALETTE_COUNT }, (_, index) => {
+  const id = index + 1
+  const hueA = (id * 23) % 360
+  const hueB = (hueA + 38) % 360
+  return {
+    value: `palette-${id}`,
+    label: `palette-${id}`,
+    desc: `主色 ${hueA}° / 强调 ${hueB}°`,
+    primary: `hsl(${hueA} 76% 46%)`,
+    warning: `hsl(${hueB} 82% 48%)`,
+    bgA: `hsl(${hueA} 82% 54% / 0.13)`,
+    bgB: `hsl(${hueB} 82% 54% / 0.10)`,
+  }
+})
+
+const PRODUCT_TYPE_COUNT = 161
+const PRODUCT_TYPE_OPTIONS = Array.from({ length: PRODUCT_TYPE_COUNT }, (_, index) => {
+  const id = index + 1
+  return {
+    value: `category-${id}`,
+    label: `category-${id}`,
+    desc: `产品类型分类 ${id}`,
+  }
+})
+
+const CATEGORY_OPTIONS = [
+  'All', 'SaaS', 'Education', 'Pet Services', 'AI/Chatbot', 'E-commerce', 'Fintech/Crypto', 'Healthcare',
+  'Creative', 'Real Estate', 'Gaming', 'Food & Restaurant', 'Fitness', 'Travel', 'NFT/Web3',
+  'Beauty/Spa', 'Developer Tools', 'Entertainment', 'Legal', 'Events', 'Other',
+]
+
+const CATEGORY_PRESETS = {
+  SaaS: { style: 'glassmorphism', palette: 'palette-12', productType: 'category-1', font: '"Inter","Fira Sans","Segoe UI",sans-serif', mode: 'light' },
+  Education: { style: 'claymorphism', palette: 'palette-29', productType: 'category-2', font: '"Nunito","Fira Sans","Segoe UI",sans-serif', mode: 'light' },
+  'Pet Services': { style: 'vibrant-block', palette: 'palette-44', productType: 'category-5', font: '"Poppins","Fira Sans","Segoe UI",sans-serif', mode: 'light' },
+  'AI/Chatbot': { style: 'ai-assistant', palette: 'palette-61', productType: 'category-8', font: '"Space Grotesk","Fira Sans","Segoe UI",sans-serif', mode: 'dark' },
+  'E-commerce': { style: 'bento-grid', palette: 'palette-23', productType: 'category-16', font: '"Manrope","Fira Sans","Segoe UI",sans-serif', mode: 'light' },
+  'Fintech/Crypto': { style: 'cyberpunk', palette: 'palette-77', productType: 'category-21', font: '"IBM Plex Sans","Fira Sans","Segoe UI",sans-serif', mode: 'dark' },
+  Healthcare: { style: 'soft-ui-evolution', palette: 'palette-35', productType: 'category-34', font: '"Source Sans 3","Fira Sans","Segoe UI",sans-serif', mode: 'light' },
+  Creative: { style: 'brutalism', palette: 'palette-99', productType: 'category-58', font: '"Archivo","Fira Sans","Segoe UI",sans-serif', mode: 'light' },
+  'Real Estate': { style: 'luxury-modern', palette: 'palette-14', productType: 'category-68', font: '"Cormorant Garamond","Fira Sans","Segoe UI",serif', mode: 'light' },
+  Gaming: { style: 'hud-sci-fi-fui', palette: 'palette-113', productType: 'category-74', font: '"Rajdhani","Fira Sans","Segoe UI",sans-serif', mode: 'dark' },
+  'Food & Restaurant': { style: 'editorial-grid-magazine', palette: 'palette-52', productType: 'category-88', font: '"DM Serif Display","Fira Sans","Segoe UI",serif', mode: 'light' },
+  Fitness: { style: 'motion-driven', palette: 'palette-102', productType: 'category-95', font: '"Barlow","Fira Sans","Segoe UI",sans-serif', mode: 'light' },
+  Travel: { style: 'nature-distilled', palette: 'palette-133', productType: 'category-109', font: '"Lora","Fira Sans","Segoe UI",serif', mode: 'light' },
+  'NFT/Web3': { style: 'vaporwave', palette: 'palette-147', productType: 'category-121', font: '"Orbitron","Fira Sans","Segoe UI",sans-serif', mode: 'dark' },
+  'Beauty/Spa': { style: 'neumorphism', palette: 'palette-140', productType: 'category-130', font: '"Playfair Display","Fira Sans","Segoe UI",serif', mode: 'light' },
+  'Developer Tools': { style: 'terminal-ui', palette: 'palette-7', productType: 'category-142', font: '"Fira Code","Fira Sans","Segoe UI",monospace', mode: 'dark' },
+  Entertainment: { style: 'retro-futurism', palette: 'palette-150', productType: 'category-148', font: '"Bebas Neue","Fira Sans","Segoe UI",sans-serif', mode: 'dark' },
+  Legal: { style: 'swiss-style', palette: 'palette-4', productType: 'category-154', font: '"Merriweather","Fira Sans","Segoe UI",serif', mode: 'light' },
+  Events: { style: 'kinetic-typography', palette: 'palette-120', productType: 'category-159', font: '"Montserrat","Fira Sans","Segoe UI",sans-serif', mode: 'light' },
+  Other: { style: 'minimalism', palette: 'palette-1', productType: 'category-161', font: '"Fira Sans","Segoe UI","PingFang SC","Microsoft YaHei",sans-serif', mode: 'light' },
+}
+
+const CATEGORY_SCENARIO_LIBRARY = {
+  'SaaS': ['SaaS Analytics Dashboard', 'Sales CRM Platform', 'Customer Support CRM'],
+  'Education': ['Educational Platform', 'Online Course Hub', 'Learning Management Suite'],
+  'Pet Services': ['Pet Grooming & Spa', 'Veterinary Clinic', 'Pet Boarding Service'],
+  'AI/Chatbot': ['AI Chatbot Platform', 'Sustainability Platform', 'Generative Art Platform', 'AI Writing Assistant', 'AI Image Generator'],
+  'E-commerce': ['Product Showcase Store', 'Conversion Shop', 'Marketplace Commerce'],
+  'Fintech/Crypto': ['Fintech Crypto Dashboard', 'Investment Platform', 'Payment Gateway', 'Crypto Wallet', 'DeFi Yield Platform', 'CEX Trading Platform'],
+  'Healthcare': ['Health & Wellness App', 'Telemedicine Platform', 'Mental Health App'],
+  'Creative': ['Creative Agency Portfolio', 'Design Studio Showcase', 'Visual Storytelling Site'],
+  'Real Estate': ['Real Estate Luxury', 'Property Listing Portal', 'Rental Marketplace'],
+  'Gaming': ['Gaming Platform', 'eSports Hub', 'Game Community Portal'],
+  'Food & Restaurant': ['Restaurant & Food', 'Chef Booking Platform', 'Online Menu Experience'],
+  'Fitness': ['Fitness & Gym App', 'Workout Scheduler', 'Nutrition Tracker'],
+  'Travel': ['Travel & Tourism', 'Trip Planner', 'Adventure Booking Platform'],
+  'NFT/Web3': ['NFT & Web3 Platform', 'NFT Art Gallery', 'DAO Community Portal'],
+  'Beauty/Spa': ['Beauty & Spa Service', 'Skincare Clinic', 'Salon Booking App'],
+  'Developer Tools': ['Developer Tools', 'API Docs Platform', 'DevOps Monitoring Console'],
+  'Entertainment': ['Music Streaming', 'Video Creator Platform', 'Fan Community App'],
+  'Legal': ['Legal Services', 'Case Management Portal', 'Law Firm Website'],
+  'Events': ['Wedding & Events', 'Event Ticketing Platform', 'Conference Landing'],
+  'Other': ['Veterinary Clinic', 'Medical Clinic Portal', 'Digital Banking App'],
+}
+
+function slugifyName(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+}
+
+function asText(input = '') {
+  return String(input ?? '').trim()
+}
+
+const CATEGORY_SCENARIOS = Object.entries(CATEGORY_SCENARIO_LIBRARY).flatMap(([category, titles], categoryIndex) => {
+  const preset = CATEGORY_PRESETS[category] || CATEGORY_PRESETS.Other
+  return titles.map((title, titleIndex) => {
+    const mode = titleIndex === 1 ? 'dark' : (preset?.mode || 'light')
+    return {
+      id: `${slugifyName(category)}-${titleIndex + 1}`,
+      category,
+      title,
+      mode,
+      style: preset?.style || 'minimalism',
+      palette: `palette-${((categoryIndex * 7 + titleIndex * 3) % PALETTE_COUNT) + 1}`,
+      productType: `category-${((categoryIndex * 11 + titleIndex * 5) % PRODUCT_TYPE_COUNT) + 1}`,
+      font: preset?.font || '"Fira Sans","Segoe UI","PingFang SC","Microsoft YaHei",sans-serif',
+    }
+  })
+})
+
+const DEFAULT_UI_SELECTION = {
+  stylePreset: 'glassmorphism',
+  palettePreset: 'palette-12',
+  productTypePreset: 'category-1',
+  categoryPreset: 'SaaS',
+  mode: 'light',
+}
+
+const DEFAULT_SCENARIO = CATEGORY_SCENARIOS.find((item) => item.category === DEFAULT_UI_SELECTION.categoryPreset) || CATEGORY_SCENARIOS[0] || null
+
+function normalizeScenarioId(input = '') {
+  const value = asText(input)
+  if (!value) return DEFAULT_SCENARIO?.id || ''
+  const byId = CATEGORY_SCENARIOS.find((item) => item.id === value)
+  if (byId) return byId.id
+  const byTitle = CATEGORY_SCENARIOS.find((item) => item.title === value)
+  if (byTitle) return byTitle.id
+  return DEFAULT_SCENARIO?.id || ''
+}
+
+const STYLE_THEME_PRESETS = {
+  minimalism: { primary: '#3b82f6', warning: '#f59e0b', radius: 10, font: '"Fira Sans","Segoe UI","PingFang SC","Microsoft YaHei",sans-serif', bgA: 'rgba(59,130,246,0.10)', bgB: 'rgba(249,115,22,0.06)' },
+  glassmorphism: { primary: '#06b6d4', warning: '#f97316', radius: 16, font: '"Fira Sans","Segoe UI","PingFang SC","Microsoft YaHei",sans-serif', bgA: 'rgba(6,182,212,0.14)', bgB: 'rgba(56,189,248,0.10)' },
+  brutalism: { primary: '#111827', warning: '#ef4444', radius: 4, font: '"Fira Sans","Segoe UI","PingFang SC","Microsoft YaHei",sans-serif', bgA: 'rgba(17,24,39,0.08)', bgB: 'rgba(239,68,68,0.07)' },
+  neumorphism: { primary: '#6366f1', warning: '#fb7185', radius: 18, font: '"Fira Sans","Segoe UI","PingFang SC","Microsoft YaHei",sans-serif', bgA: 'rgba(99,102,241,0.10)', bgB: 'rgba(244,114,182,0.08)' },
+  'bento-grid': { primary: '#2563eb', warning: '#f97316', radius: 14, font: '"Fira Sans","Segoe UI","PingFang SC","Microsoft YaHei",sans-serif', bgA: 'rgba(37,99,235,0.11)', bgB: 'rgba(249,115,22,0.08)' },
+  claymorphism: { primary: '#0ea5e9', warning: '#fb923c', radius: 20, font: '"Fira Sans","Segoe UI","PingFang SC","Microsoft YaHei",sans-serif', bgA: 'rgba(14,165,233,0.12)', bgB: 'rgba(251,146,60,0.09)' },
+  'flat-design': { primary: '#2563eb', warning: '#f97316', radius: 10, font: '"Fira Sans","Segoe UI","PingFang SC","Microsoft YaHei",sans-serif', bgA: 'rgba(37,99,235,0.10)', bgB: 'rgba(249,115,22,0.07)' },
+  cyberpunk: { primary: '#22d3ee', warning: '#f43f5e', radius: 10, font: '"Fira Code","Segoe UI","PingFang SC","Microsoft YaHei",sans-serif', bgA: 'rgba(34,211,238,0.14)', bgB: 'rgba(244,63,94,0.10)' },
+  editorial: { primary: '#1d4ed8', warning: '#ea580c', radius: 8, font: '"Times New Roman","Songti SC","Fira Sans",serif', bgA: 'rgba(29,78,216,0.08)', bgB: 'rgba(234,88,12,0.06)' },
+  corporate: { primary: '#1e40af', warning: '#d97706', radius: 8, font: '"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif', bgA: 'rgba(30,64,175,0.09)', bgB: 'rgba(217,119,6,0.07)' },
+}
+
+function hashStyleName(name) {
+  let hash = 0
+  for (let index = 0; index < String(name).length; index += 1) {
+    hash = ((hash << 5) - hash) + String(name).charCodeAt(index)
+    hash |= 0
+  }
+  return Math.abs(hash)
+}
+
+function buildThemeFromName(name) {
+  const hash = hashStyleName(name)
+  const hueA = hash % 360
+  const hueB = (hueA + 72) % 360
+  const radius = 8 + (hash % 13)
+  return {
+    primary: `hsl(${hueA} 75% 46%)`,
+    warning: `hsl(${hueB} 80% 48%)`,
+    radius,
+    font: '"Fira Sans","Segoe UI","PingFang SC","Microsoft YaHei",sans-serif',
+    bgA: `hsl(${hueA} 85% 55% / 0.12)`,
+    bgB: `hsl(${hueB} 85% 55% / 0.10)`,
+  }
+}
+
+function resolveStyleTheme(stylePreset) {
+  return STYLE_THEME_PRESETS[stylePreset] || buildThemeFromName(stylePreset)
+}
+
+function resolveStyleFamily(stylePreset) {
+  const value = String(stylePreset || '').toLowerCase()
+  if (value.includes('glass') || value.includes('aurora') || value.includes('liquid')) return 'glass'
+  if (value.includes('brutal') || value.includes('raw') || value.includes('maximal')) return 'brutal'
+  if (value.includes('neumorphism') || value.includes('clay') || value.includes('soft')) return 'soft'
+  if (value.includes('cyber') || value.includes('hud') || value.includes('sci-fi') || value.includes('vapor') || value.includes('y2k')) return 'cyber'
+  if (value.includes('editorial') || value.includes('swiss') || value.includes('newspaper') || value.includes('magazine')) return 'editorial'
+  if (value.includes('bento') || value.includes('dashboard') || value.includes('data')) return 'bento'
+  return 'minimal'
+}
+
+function resolvePaletteTheme(palettePreset) {
+  return PALETTE_OPTIONS.find((item) => item.value === palettePreset) || PALETTE_OPTIONS[0]
+}
+
+function resolveProductTypeTheme(productTypePreset) {
+  const raw = String(productTypePreset || 'category-1')
+  const idText = raw.replace('category-', '')
+  const id = Number(idText)
+  const safeId = Number.isFinite(id) && id > 0 ? id : 1
+  const density = safeId % 3
+  const menuRadius = density === 0 ? 8 : density === 1 ? 12 : 16
+  const menuGap = density === 0 ? 6 : density === 1 ? 8 : 10
+  const tintOpacity = density === 0 ? 0.08 : density === 1 ? 0.12 : 0.16
+  return { menuRadius, menuGap, tintOpacity }
+}
+
+function pickScenario(category, mode, fallbackId) {
+  const scoped = CATEGORY_SCENARIOS.filter((item) => category === 'All' || item.category === category)
+  const modeScoped = mode === 'all' ? scoped : scoped.filter((item) => item.mode === mode)
+  const list = modeScoped.length > 0 ? modeScoped : scoped
+  if (fallbackId) {
+    const found = list.find((item) => item.id === fallbackId)
+    if (found) return found
+  }
+  return list[0] || null
+}
 
 function PlaceholderPage({ title }) {
   return (
@@ -322,21 +606,111 @@ function getOpenMenuKeys(pathname) {
   return []
 }
 
+function normalizeVisibleIds(input) {
+  if (!Array.isArray(input)) return []
+  const set = new Set(input.map((item) => String(item)))
+  return defaultVisibleMenuIds.filter((id) => set.has(id))
+}
+
 function App() {
   const navigate = useNavigate()
   const location = useLocation()
   const isAuthed = Boolean(getAccessToken())
 
-  const [mode, setMode] = useState(() => localStorage.getItem('ui-theme') || 'light')
+  const [mode, setMode] = useState(() => localStorage.getItem('ui-theme') || DEFAULT_UI_SELECTION.mode)
   const [recentSessions, setRecentSessions] = useState([])
   const [visibleMenuIds, setVisibleMenuIds] = useState(readVisibleMenuIds)
   const [menuSettingOpen, setMenuSettingOpen] = useState(false)
+  const [menuSaving, setMenuSaving] = useState(false)
+  const [savedMenuIds, setSavedMenuIds] = useState(() => normalizeVisibleIds(readVisibleMenuIds()))
+  const [stylePickerOpen, setStylePickerOpen] = useState(false)
+  const [stylePreset, setStylePreset] = useState(() => localStorage.getItem(STYLE_PRESET_STORAGE_KEY) || DEFAULT_UI_SELECTION.stylePreset)
+  const [styleDraft, setStyleDraft] = useState(() => localStorage.getItem(STYLE_PRESET_STORAGE_KEY) || DEFAULT_UI_SELECTION.stylePreset)
+  const [palettePreset, setPalettePreset] = useState(() => localStorage.getItem(PALETTE_PRESET_STORAGE_KEY) || DEFAULT_UI_SELECTION.palettePreset)
+  const [paletteDraft, setPaletteDraft] = useState(() => localStorage.getItem(PALETTE_PRESET_STORAGE_KEY) || DEFAULT_UI_SELECTION.palettePreset)
+  const [productTypePreset, setProductTypePreset] = useState(() => localStorage.getItem(PRODUCT_TYPE_PRESET_STORAGE_KEY) || DEFAULT_UI_SELECTION.productTypePreset)
+  const [productTypeDraft, setProductTypeDraft] = useState(() => localStorage.getItem(PRODUCT_TYPE_PRESET_STORAGE_KEY) || DEFAULT_UI_SELECTION.productTypePreset)
+  const [categoryPreset, setCategoryPreset] = useState(() => localStorage.getItem(CATEGORY_PRESET_STORAGE_KEY) || DEFAULT_UI_SELECTION.categoryPreset)
+  const [categoryDraft, setCategoryDraft] = useState(() => localStorage.getItem(CATEGORY_PRESET_STORAGE_KEY) || DEFAULT_UI_SELECTION.categoryPreset)
+  const [modeDraft, setModeDraft] = useState('all')
+  const [scenarioPreset, setScenarioPreset] = useState(() => normalizeScenarioId(localStorage.getItem(SCENARIO_PRESET_STORAGE_KEY)))
+  const [scenarioDraft, setScenarioDraft] = useState(() => normalizeScenarioId(localStorage.getItem(SCENARIO_PRESET_STORAGE_KEY)))
   const [openMenuKeys, setOpenMenuKeys] = useState(() => getOpenMenuKeys(window.location.pathname))
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', mode)
     localStorage.setItem('ui-theme', mode)
   }, [mode])
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-ui-style', stylePreset)
+    localStorage.setItem(STYLE_PRESET_STORAGE_KEY, stylePreset)
+  }, [stylePreset])
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-ui-palette', palettePreset)
+    localStorage.setItem(PALETTE_PRESET_STORAGE_KEY, palettePreset)
+  }, [palettePreset])
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-ui-product-type', productTypePreset)
+    localStorage.setItem(PRODUCT_TYPE_PRESET_STORAGE_KEY, productTypePreset)
+  }, [productTypePreset])
+
+  useEffect(() => {
+    localStorage.setItem(CATEGORY_PRESET_STORAGE_KEY, categoryPreset)
+  }, [categoryPreset])
+
+  useEffect(() => {
+    localStorage.setItem(SCENARIO_PRESET_STORAGE_KEY, scenarioPreset)
+  }, [scenarioPreset])
+
+  const styleTheme = useMemo(() => resolveStyleTheme(stylePreset), [stylePreset])
+  const styleFamily = useMemo(() => resolveStyleFamily(stylePreset), [stylePreset])
+  const paletteTheme = useMemo(() => resolvePaletteTheme(palettePreset), [palettePreset])
+  const productTypeTheme = useMemo(() => resolveProductTypeTheme(productTypePreset), [productTypePreset])
+  const mergedTheme = useMemo(() => ({
+    ...styleTheme,
+    primary: paletteTheme.primary,
+    warning: paletteTheme.warning,
+    bgA: paletteTheme.bgA,
+    bgB: paletteTheme.bgB,
+  }), [styleTheme, paletteTheme])
+
+  const categoryFont = useMemo(() => CATEGORY_PRESETS[categoryPreset]?.font || '', [categoryPreset])
+  const scenarioOptions = useMemo(() => {
+    const scoped = CATEGORY_SCENARIOS.filter((item) => categoryDraft === 'All' || item.category === categoryDraft)
+    if (modeDraft === 'all') return scoped
+    const filtered = scoped.filter((item) => item.mode === modeDraft)
+    return filtered.length > 0 ? filtered : scoped
+  }, [categoryDraft, modeDraft])
+  const selectedScenario = useMemo(() => {
+    return scenarioOptions.find((item) => item.id === scenarioDraft) || scenarioOptions[0] || null
+  }, [scenarioDraft, scenarioOptions])
+  const scenarioPreviewList = useMemo(() => {
+    return scenarioOptions.map((item) => {
+      const palette = resolvePaletteTheme(item.palette)
+      return {
+        ...item,
+        palette,
+      }
+    })
+  }, [scenarioOptions])
+
+  useEffect(() => {
+    document.documentElement.style.setProperty('--style-bg-a', mergedTheme.bgA)
+    document.documentElement.style.setProperty('--style-bg-b', mergedTheme.bgB)
+    document.documentElement.style.setProperty('--primary', mergedTheme.primary)
+    document.documentElement.style.setProperty('--accent', mergedTheme.warning)
+    document.documentElement.style.setProperty('--style-radius', `${mergedTheme.radius}px`)
+    document.documentElement.style.setProperty('--menu-radius', `${productTypeTheme.menuRadius}px`)
+    document.documentElement.style.setProperty('--menu-gap', `${productTypeTheme.menuGap}px`)
+    document.documentElement.style.setProperty('--sider-tint-opacity', `${productTypeTheme.tintOpacity}`)
+  }, [mergedTheme, productTypeTheme])
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-ui-style-family', styleFamily)
+  }, [styleFamily])
 
   useEffect(() => {
     if (!isAuthed) return
@@ -346,8 +720,73 @@ function App() {
   }, [isAuthed, location.pathname])
 
   useEffect(() => {
+    if (!isAuthed) return
+    fetchUiStyleSettings()
+      .then((saved) => {
+        if (!saved || typeof saved !== 'object') return
+        const nextStyle = asText(saved.stylePreset) || DEFAULT_UI_SELECTION.stylePreset
+        const nextPalette = asText(saved.palettePreset) || DEFAULT_UI_SELECTION.palettePreset
+        const nextProductType = asText(saved.productTypePreset) || DEFAULT_UI_SELECTION.productTypePreset
+        const nextCategory = asText(saved.categoryPreset) || DEFAULT_UI_SELECTION.categoryPreset
+        const nextScenario = normalizeScenarioId(saved.scenarioPreset)
+        const nextMode = asText(saved.mode)
+        setStylePreset(nextStyle)
+        setStyleDraft(nextStyle)
+        setPalettePreset(nextPalette)
+        setPaletteDraft(nextPalette)
+        setProductTypePreset(nextProductType)
+        setProductTypeDraft(nextProductType)
+        setCategoryPreset(nextCategory)
+        setCategoryDraft(nextCategory)
+        setScenarioPreset(nextScenario)
+        setScenarioDraft(nextScenario)
+        if (nextMode === 'light' || nextMode === 'dark') {
+          setMode(nextMode)
+          setModeDraft(nextMode)
+        }
+      })
+      .catch(() => {})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthed])
+
+  useEffect(() => {
     localStorage.setItem(MENU_VISIBILITY_STORAGE_KEY, JSON.stringify(visibleMenuIds))
   }, [visibleMenuIds])
+
+  useEffect(() => {
+    if (!isAuthed) return
+    fetchMenuVisibilitySettings()
+      .then((saved) => {
+        const normalized = normalizeVisibleIds(saved?.visibleMenuIds)
+        if (normalized.length > 0) {
+          setVisibleMenuIds(normalized)
+          setSavedMenuIds(normalized)
+          return
+        }
+        const fallback = normalizeVisibleIds(readVisibleMenuIds())
+        setSavedMenuIds(fallback)
+      })
+      .catch(() => {})
+  }, [isAuthed])
+
+  const hasUnsavedMenuChanges = useMemo(
+    () => JSON.stringify(normalizeVisibleIds(visibleMenuIds)) !== JSON.stringify(normalizeVisibleIds(savedMenuIds)),
+    [visibleMenuIds, savedMenuIds],
+  )
+
+  const handleSaveMenuSettings = async () => {
+    if (!isAuthed || menuSaving) return
+    setMenuSaving(true)
+    try {
+      const normalized = normalizeVisibleIds(visibleMenuIds)
+      await saveMenuVisibilitySettings({ visibleMenuIds: normalized })
+      setSavedMenuIds(normalized)
+    } catch {
+      // ignore persistence error to keep UI responsive
+    } finally {
+      setMenuSaving(false)
+    }
+  }
 
   const menuItems = useMemo(() => {
     return buildVisibleMenuItems(visibleMenuIds, recentSessions)
@@ -463,10 +902,10 @@ function App() {
       theme={{
         algorithm: mode === 'dark' ? theme.darkAlgorithm : theme.defaultAlgorithm,
         token: {
-          colorPrimary: '#3B82F6',
-          colorWarning: '#F97316',
-          borderRadius: 12,
-          fontFamily: '"Fira Sans","Segoe UI","PingFang SC","Microsoft YaHei",sans-serif',
+          colorPrimary: mergedTheme.primary,
+          colorWarning: mergedTheme.warning,
+          borderRadius: mergedTheme.radius,
+          fontFamily: categoryFont || mergedTheme.font,
         },
       }}
     >
@@ -474,7 +913,9 @@ function App() {
         <Sider className="app-sider" breakpoint="lg" collapsedWidth="0">
           <div className="brand-block">
             <Space align="center" size={10}>
-              <span className="brand-logo">Ma</span>
+              <span className="brand-logo" aria-label="新能源汽车图标">
+                <CarOutlined />
+              </span>
               <div>
                 <Title level={5} style={{ margin: 0 }}>
                   新能源汽车制造供应商管理
@@ -516,14 +957,16 @@ function App() {
                 <Button icon={<SettingOutlined />} onClick={() => setMenuSettingOpen(true)}>
                   菜单设置
                 </Button>
-                <Segmented
-                  value={mode}
-                  onChange={(value) => setMode(value)}
-                  options={[
-                    { value: 'light', label: <Space size={4}><BulbOutlined />浅色</Space> },
-                    { value: 'dark', label: <Space size={4}><MoonOutlined />深色</Space> },
-                  ]}
-                />
+                <Button className="app-theme-toggle-pill" icon={<BgColorsOutlined />} onClick={() => setStylePickerOpen(true)}>
+                  切换样式
+                </Button>
+                <Button
+                  className="app-theme-toggle-btn"
+                  icon={mode === 'light' ? <MoonOutlined /> : <BulbOutlined />}
+                  onClick={() => setMode((prev) => (prev === 'light' ? 'dark' : 'light'))}
+                >
+                  {mode === 'light' ? '深色' : '浅色'}
+                </Button>
                 <Button
                   icon={<LogoutOutlined />}
                   onClick={() => {
@@ -594,13 +1037,174 @@ function App() {
         </Layout>
       </Layout>
       <Modal
+        title="选择应用 Style（67 recommendations）"
+        open={stylePickerOpen}
+        onCancel={() => setStylePickerOpen(false)}
+        footer={null}
+      >
+        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          <Text className="muted">
+            参考：
+            <a href={STYLE_REFERENCE_URL} target="_blank" rel="noreferrer noopener">
+              {STYLE_REFERENCE_URL}
+            </a>
+          </Text>
+          <Text className="muted">Category</Text>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            {CATEGORY_OPTIONS.map((name) => (
+              <Button
+                key={name}
+                size="small"
+                type={categoryDraft === name ? 'primary' : 'default'}
+                onClick={() => {
+                  setCategoryDraft(name)
+                  const picked = pickScenario(name, modeDraft)
+                  if (picked) {
+                    setScenarioDraft(picked.id)
+                    setStyleDraft(picked.style)
+                    setPaletteDraft(picked.palette)
+                    setProductTypeDraft(picked.productType)
+                    setModeDraft(picked.mode || 'all')
+                  }
+                }}
+              >
+                {name}
+              </Button>
+            ))}
+          </div>
+          <Text className="muted">Mode</Text>
+          <Space wrap>
+            <Button size="small" type={modeDraft === 'all' ? 'primary' : 'default'} onClick={() => setModeDraft('all')}>All Modes</Button>
+            <Button size="small" type={modeDraft === 'light' ? 'primary' : 'default'} onClick={() => setModeDraft('light')}>Light</Button>
+            <Button size="small" type={modeDraft === 'dark' ? 'primary' : 'default'} onClick={() => setModeDraft('dark')}>Dark</Button>
+          </Space>
+          <Text className="muted">Scenario</Text>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 10, maxHeight: 380, overflowY: 'auto', paddingRight: 4 }}>
+            {scenarioPreviewList.map((item) => (
+              <Card
+                key={item.id}
+                hoverable
+                onClick={() => setScenarioDraft(item.id)}
+                className="app-elevated-card"
+                bodyStyle={{ padding: 10 }}
+                style={{
+                  cursor: 'pointer',
+                  borderColor: selectedScenario?.id === item.id ? 'var(--primary)' : undefined,
+                  boxShadow: selectedScenario?.id === item.id ? '0 0 0 1px var(--primary)' : undefined,
+                }}
+              >
+                <div
+                  style={{
+                    height: 72,
+                    borderRadius: 8,
+                    marginBottom: 8,
+                    background: `linear-gradient(135deg, ${item.palette.primary}, ${item.palette.warning})`,
+                  }}
+                />
+                <Text strong style={{ display: 'block' }}>{item.title}</Text>
+                <Text type="secondary" style={{ display: 'block', marginTop: 4 }}>
+                  {item.category} · {item.mode}
+                </Text>
+                <Text type="secondary" style={{ display: 'block' }}>
+                  {item.style}
+                </Text>
+              </Card>
+            ))}
+          </div>
+          <Text type="secondary">场景总数：{scenarioOptions.length}</Text>
+          <Text type="secondary">{scenarioOptions.length} demos available • {CATEGORY_OPTIONS.length - 1} categories • {CATEGORY_SCENARIOS.filter((item) => item.mode === 'light').length} light • {CATEGORY_SCENARIOS.filter((item) => item.mode === 'dark').length} dark</Text>
+          <div style={{ whiteSpace: 'nowrap', overflowX: 'auto', color: 'var(--text-subtle)', fontSize: 13 }}>
+            当前样式：{stylePreset} · 当前调色板：{palettePreset} · 当前类别：{categoryPreset} · 当前场景：{CATEGORY_SCENARIOS.find((item) => item.id === scenarioPreset)?.title || DEFAULT_SCENARIO?.title || '-'} · 当前产品类型：{productTypePreset}
+          </div>
+          <Space>
+            <Button
+              type="primary"
+              onClick={async () => {
+                const picked = pickScenario(categoryDraft, modeDraft, selectedScenario?.id)
+                if (picked) {
+                  setStylePreset(picked.style)
+                  setPalettePreset(picked.palette)
+                  setProductTypePreset(picked.productType)
+                  setCategoryPreset(picked.category)
+                  setScenarioPreset(picked.id)
+                  setScenarioDraft(picked.id)
+                  setStyleDraft(picked.style)
+                  setPaletteDraft(picked.palette)
+                  setProductTypeDraft(picked.productType)
+                  setMode(picked.mode)
+                  try {
+                    await saveUiStyleSettings({
+                      stylePreset: picked.style,
+                      palettePreset: picked.palette,
+                      productTypePreset: picked.productType,
+                      categoryPreset: picked.category,
+                      scenarioPreset: picked.id,
+                      mode: picked.mode,
+                    })
+                  } catch {
+                    // ignore persistence error to keep UI responsive
+                  }
+                }
+                setStylePickerOpen(false)
+              }}
+            >
+              切换
+            </Button>
+            <Button
+              onClick={async () => {
+                const defaultStyle = DEFAULT_UI_SELECTION.stylePreset
+                const defaultPalette = DEFAULT_UI_SELECTION.palettePreset
+                const defaultCategory = DEFAULT_UI_SELECTION.productTypePreset
+                const defaultBizCategory = DEFAULT_UI_SELECTION.categoryPreset
+                const firstScenario = pickScenario(defaultBizCategory, DEFAULT_UI_SELECTION.mode) || DEFAULT_SCENARIO
+                setStyleDraft(defaultStyle)
+                setPaletteDraft(defaultPalette)
+                setProductTypeDraft(defaultCategory)
+                setCategoryDraft(defaultBizCategory)
+                setModeDraft(DEFAULT_UI_SELECTION.mode)
+                setStylePreset(defaultStyle)
+                setPalettePreset(defaultPalette)
+                setProductTypePreset(defaultCategory)
+                setCategoryPreset(defaultBizCategory)
+                setScenarioPreset(firstScenario?.id || '')
+                setScenarioDraft(firstScenario?.id || '')
+                setMode(DEFAULT_UI_SELECTION.mode)
+                try {
+                  await saveUiStyleSettings({
+                    stylePreset: defaultStyle,
+                    palettePreset: defaultPalette,
+                    productTypePreset: defaultCategory,
+                    categoryPreset: defaultBizCategory,
+                    scenarioPreset: firstScenario?.id || '',
+                    mode: DEFAULT_UI_SELECTION.mode,
+                  })
+                } catch {
+                  // ignore persistence error
+                }
+              }}
+            >
+              重置默认
+            </Button>
+            <Button onClick={() => window.open(STYLE_REFERENCE_URL, '_blank', 'noopener,noreferrer')}>打开参考链接</Button>
+          </Space>
+        </Space>
+      </Modal>
+      <Modal
         title="菜单权限设置"
         open={menuSettingOpen}
         onCancel={() => setMenuSettingOpen(false)}
         footer={null}
       >
         <Space direction="vertical" size={16} style={{ width: '100%' }}>
-          <Text type="secondary">勾选后立即生效，用于控制左侧菜单显示或隐藏。当前设置仅保存在当前浏览器。</Text>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+            <Text type="secondary" style={{ marginRight: 8 }}>
+              勾选后立即生效用于预览，点击上角“保存”后才会入库并跨设备生效。
+              {hasUnsavedMenuChanges ? '（当前变更未保存）' : '（当前变更已保存）'}
+            </Text>
+            <Button type="primary" size="small" loading={menuSaving} onClick={handleSaveMenuSettings}>
+              保存
+            </Button>
+          </div>
           {menuPermissionSections.map((section, index) => (
             <div key={section.title}>
               {index > 0 ? <Divider style={{ margin: '8px 0 16px' }} /> : null}

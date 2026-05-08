@@ -40,3 +40,48 @@ export async function chatPreciseSourcingAgent(payload = {}) {
   return result.data
 }
 
+export async function chatPreciseSourcingAgentStream(payload = {}, handlers = {}) {
+  const { onStart, onTrace, onFinal, onError, onDone } = handlers || {}
+  const tokenHeaders = buildAuthHeaders()
+  const response = await requestWithFallback('/api/agents/precise-sourcing/chat-stream', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream', ...tokenHeaders },
+    body: JSON.stringify(payload || {}),
+  })
+  if (!response.ok || !response.body) {
+    const payloadJson = await response.json().catch(() => ({}))
+    throw new Error(payloadJson.message || `请求失败（HTTP ${response.status}）`)
+  }
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder('utf-8')
+  let buffer = ''
+  const emit = (event, data) => {
+    if (event === 'start' && typeof onStart === 'function') onStart(data)
+    if (event === 'trace' && typeof onTrace === 'function') onTrace(data)
+    if (event === 'final' && typeof onFinal === 'function') onFinal(data)
+    if (event === 'error' && typeof onError === 'function') onError(data)
+    if (event === 'done' && typeof onDone === 'function') onDone(data)
+  }
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const chunks = buffer.split('\n\n')
+    buffer = chunks.pop() || ''
+    for (const chunk of chunks) {
+      const lines = chunk.split('\n')
+      let eventName = 'message'
+      let dataText = ''
+      for (const line of lines) {
+        if (line.startsWith('event:')) eventName = line.slice(6).trim()
+        if (line.startsWith('data:')) dataText += line.slice(5).trim()
+      }
+      if (!dataText) continue
+      try {
+        emit(eventName, JSON.parse(dataText))
+      } catch {
+        emit(eventName, { raw: dataText })
+      }
+    }
+  }
+}

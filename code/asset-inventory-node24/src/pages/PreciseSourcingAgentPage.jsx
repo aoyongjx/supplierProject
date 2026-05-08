@@ -1,10 +1,13 @@
-import { AppstoreOutlined, MenuFoldOutlined, MenuUnfoldOutlined, MessageOutlined, UserOutlined } from '@ant-design/icons'
+import { AppstoreOutlined, DeploymentUnitOutlined, MenuFoldOutlined, MenuUnfoldOutlined, MessageOutlined, UserOutlined } from '@ant-design/icons'
 import { Avatar, Button, Card, Checkbox, Collapse, Empty, Input, Modal, Select, Slider, Space, Tabs, Tag, Typography, Upload, message } from 'antd'
+import { CanvasWidget, SelectionBoxLayerFactory } from '@projectstorm/react-canvas-core'
+import { DefaultDiagramState, DiagramEngine, DiagramModel, LinkLayerFactory, NodeLayerFactory } from '@projectstorm/react-diagrams-core'
+import { DefaultLinkFactory, DefaultLinkModel, DefaultNodeFactory, DefaultNodeModel, DefaultPortFactory } from '@projectstorm/react-diagrams-defaults'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { chatPreciseSourcingAgent } from '../api/agentApi'
+import { chatPreciseSourcingAgentStream } from '../api/agentApi'
 import { fetchKnowledgeBases } from '../api/knowledgeBaseApi'
-import { fetchLangchainSessionState, saveLangchainSessionState } from '../api/langchainShellApi'
-import { fetchInstalledSkills } from '../api/skillManagementApi'
+import { fetchLangchainSessionState, fetchLangchainTools, saveLangchainSessionState } from '../api/langchainShellApi'
+import { fetchModelProviders } from '../api/modelManagementApi'
 import assistantAvatarSrc from '../assets/chatchat_icon_blue_square_v2.png'
 
 const { Text } = Typography
@@ -21,9 +24,70 @@ const DB_OPTIONS = [
 ]
 
 const TEMPLATE_TYPE_OPTIONS = [
+  { label: '无', value: 'none' },
   { label: 'PPT 模板', value: 'ppt' },
   { label: 'Word 模板', value: 'word' },
   { label: 'Excel 模板', value: 'excel' },
+]
+const PRECISE_SOURCING_TOOL_KEYS = new Set(['db_chat', 'local_kb', 'web_search', 'image_gen', 'python_chart_generator', 'file_exporter'])
+const REQUIRED_PRECISE_TOOL_OPTIONS = [
+  { key: 'db_chat', label: '数据库检索' },
+  { key: 'local_kb', label: '知识库检索' },
+  { key: 'web_search', label: '互联网搜索' },
+  { key: 'image_gen', label: '图片生成' },
+  { key: 'python_chart_generator', label: '图表生成' },
+  { key: 'file_exporter', label: '文件导出' },
+]
+const TOOL_LABEL_MAP = {
+  db_chat: '数据库检索',
+  local_kb: '知识库检索',
+  web_search: '互联网搜索',
+  image_gen: '图片生成',
+  python_chart_generator: '图表生成',
+  file_exporter: '文件导出',
+}
+const MODEL_STORAGE_KEY = 'precise_sourcing_selected_model_v1'
+const FLOW_NODE_STYLE = {
+  border: '1px solid #dbeafe',
+  background: '#eff6ff',
+  borderRadius: 8,
+  padding: '8px 10px',
+}
+const DEFAULT_SYSTEM_PROMPT = `你是汽车供应链精准寻源助手。
+目标：基于数据库/知识库/互联网证据，为用户输出可执行的候选供应商建议。
+要求：
+1) 优先给结论，再给证据与下一步。
+2) 候选供应商默认输出Top3（必要时Top5），每条包含：名称、匹配理由、风险提示。
+3) 不编造；无证据时明确说明并给补充检索建议。
+4) 输出简洁、结构化，使用中文。`
+const PROMPT_PRESETS = [
+  {
+    key: 'default',
+    label: '默认平衡版',
+    prompt: DEFAULT_SYSTEM_PROMPT,
+  },
+  {
+    key: 'risk',
+    label: '严格采购风控版',
+    prompt: `你是汽车供应链采购风控助手。
+目标：优先控制风险，再推荐候选供应商。
+要求：
+1) 先给风险结论（高/中/低）与原因，再给候选。
+2) 每个候选包含：名称、匹配点、主要风险、建议核验项。
+3) 证据不足时必须标注“待核验”，禁止主观推断。
+4) 输出Top3，中文，简洁结构化。`,
+  },
+  {
+    key: 'fast',
+    label: '快速线索筛选版',
+    prompt: `你是汽车供应链线索筛选助手。
+目标：快速给出可跟进的供应商线索清单。
+要求：
+1) 先直接回答，再给Top3候选。
+2) 每个候选只写：名称 + 一句话理由 + 推荐动作。
+3) 控制篇幅，优先高相关结果；无命中就给替代关键词。
+4) 中文输出，节奏快，不展开冗长解释。`,
+  },
 ]
 
 export default function PreciseSourcingAgentPage() {
@@ -32,37 +96,69 @@ export default function PreciseSourcingAgentPage() {
   const [showSidebar, setShowSidebar] = useState(true)
   const [sessionStateHydrated, setSessionStateHydrated] = useState(false)
 
-  const [skills, setSkills] = useState([])
-  const [selectedSkills, setSelectedSkills] = useState([])
+  const [tools, setTools] = useState([])
+  const [selectedTools, setSelectedTools] = useState([])
   const [kbList, setKbList] = useState([])
   const [selectedKbIds, setSelectedKbIds] = useState([])
   const [selectedDbTables, setSelectedDbTables] = useState([])
   const [strictMode, setStrictMode] = useState(false)
-  const [templateType, setTemplateType] = useState('ppt')
+  const [templateType, setTemplateType] = useState('none')
   const [templateFile, setTemplateFile] = useState(null)
-  const [generateCharts, setGenerateCharts] = useState(true)
   const [kbTopK, setKbTopK] = useState(3)
   const [dbTopK, setDbTopK] = useState(10)
   const [temperature, setTemperature] = useState(0.7)
+  const [selectedModelName, setSelectedModelName] = useState('gpt-5.4')
+  const [systemPrompt, setSystemPrompt] = useState(DEFAULT_SYSTEM_PROMPT)
+  const [systemPromptEnabled, setSystemPromptEnabled] = useState(true)
+  const [systemPromptPresetKey, setSystemPromptPresetKey] = useState('default')
+  const [modelDialogOpen, setModelDialogOpen] = useState(false)
+  const [promptDialogOpen, setPromptDialogOpen] = useState(false)
+  const [modelDraft, setModelDraft] = useState('gpt-5.4')
+  const [modelProviderDraft, setModelProviderDraft] = useState('')
+  const [promptDraft, setPromptDraft] = useState('')
+  const [promptEnabledDraft, setPromptEnabledDraft] = useState(true)
+  const [promptPresetKeyDraft, setPromptPresetKeyDraft] = useState('default')
+  const [modelProviders, setModelProviders] = useState([])
+  const [flowDialogOpen, setFlowDialogOpen] = useState(false)
+  const [flowTabKey, setFlowTabKey] = useState('logic')
+  const [artifactPreviewOpen, setArtifactPreviewOpen] = useState(false)
+  const [artifactPreviewTitle, setArtifactPreviewTitle] = useState('')
+  const [artifactPreviewUrl, setArtifactPreviewUrl] = useState('')
 
   const [sessions, setSessions] = useState([{ name: 'default', messages: [] }])
   const [currentSession, setCurrentSession] = useState('default')
   const viewportRef = useRef(null)
 
   useEffect(() => {
-    fetchInstalledSkills()
+    try {
+      const savedModel = String(window.localStorage.getItem(MODEL_STORAGE_KEY) || '').trim()
+      if (savedModel) {
+        setSelectedModelName(savedModel)
+        setModelDraft(savedModel)
+      }
+    } catch (error) {
+      void error
+    }
+
+    fetchLangchainTools()
       .then((rows) => {
         const list = Array.isArray(rows) ? rows : []
-        setSkills(list)
+        setTools(list)
       })
-      .catch(() => setSkills([]))
+      .catch(() => setTools([]))
+
+    fetchModelProviders()
+      .then((rows) => setModelProviders(Array.isArray(rows) ? rows : []))
+      .catch(() => setModelProviders([]))
 
     fetchKnowledgeBases()
       .then((rows) => {
         const list = Array.isArray(rows) ? rows : []
         setKbList(list)
       })
-      .catch(() => setKbList([]))
+      .catch((error) => {
+        message.error(error?.message || '读取知识库失败，请稍后重试')
+      })
 
     fetchLangchainSessionState('precise_sourcing')
       .then((state) => {
@@ -79,6 +175,14 @@ export default function PreciseSourcingAgentPage() {
   }, [])
 
   useEffect(() => {
+    try {
+      if (selectedModelName) window.localStorage.setItem(MODEL_STORAGE_KEY, selectedModelName)
+    } catch (error) {
+      void error
+    }
+  }, [selectedModelName])
+
+  useEffect(() => {
     if (!sessionStateHydrated) return
     const timer = window.setTimeout(() => {
       void saveLangchainSessionState({ chatType: 'precise_sourcing', sessions, currentSession }).catch((error) => {
@@ -88,9 +192,25 @@ export default function PreciseSourcingAgentPage() {
     return () => window.clearTimeout(timer)
   }, [sessions, currentSession, sessionStateHydrated])
 
-  const skillOptions = useMemo(
-    () => (Array.isArray(skills) ? skills.map((item) => ({ label: item.name, value: item.name })) : []),
-    [skills],
+  const toolOptions = useMemo(
+    () => {
+      const base = (Array.isArray(tools)
+        ? tools
+          .filter((item) => item
+            && item.available !== false
+            && (
+              (Array.isArray(item.scopes) && item.scopes.includes('precise_sourcing'))
+              || PRECISE_SOURCING_TOOL_KEYS.has(String(item.key || ''))
+            ))
+          .map((item) => ({ label: item.label || item.key, value: item.key }))
+        : [])
+      const merged = new Map(base.map((item) => [item.value, item]))
+      for (const req of REQUIRED_PRECISE_TOOL_OPTIONS) {
+        if (!merged.has(req.key)) merged.set(req.key, { label: req.label, value: req.key })
+      }
+      return Array.from(merged.values())
+    },
+    [tools],
   )
   const kbOptions = useMemo(
     () => (Array.isArray(kbList) ? kbList.map((item) => ({ label: item.name, value: String(item.id) })) : []),
@@ -101,14 +221,219 @@ export default function PreciseSourcingAgentPage() {
     [sessions, currentSession],
   )
   const activeMessages = activeSession?.messages || []
+  const latestAssistantMessage = useMemo(
+    () => [...activeMessages].reverse().find((item) => item?.role === 'assistant') || null,
+    [activeMessages],
+  )
+  const promptPreviewText = systemPromptEnabled ? systemPrompt : ''
+  const providerOptions = useMemo(
+    () => (Array.isArray(modelProviders)
+      ? modelProviders.map((item) => ({ label: item.providerName, value: item.providerName }))
+      : []),
+    [modelProviders],
+  )
+  const modelNameOptions = useMemo(() => {
+    const provider = (Array.isArray(modelProviders) ? modelProviders : []).find((item) => item.providerName === modelProviderDraft)
+    const rows = Array.isArray(provider?.fetchedModels) && provider.fetchedModels.length > 0
+      ? provider.fetchedModels
+      : (Array.isArray(provider?.models) ? provider.models : [])
+    const names = rows.map((item) => String(item?.id || '').trim()).filter(Boolean)
+    return [...new Set(names)].map((name) => ({ label: name, value: name }))
+  }, [modelProviders, modelProviderDraft])
+  const activeFlowBranches = useMemo(() => {
+    const toolsSet = new Set(Array.isArray(selectedTools) ? selectedTools : [])
+    const evidence = latestAssistantMessage?.evidence || {}
+    const rounds = Array.isArray(latestAssistantMessage?.react?.rounds) ? latestAssistantMessage.react.rounds : []
+    const qs = latestAssistantMessage?.queryStatements && typeof latestAssistantMessage.queryStatements === 'object'
+      ? latestAssistantMessage.queryStatements
+      : {}
+    const usedWebByTrace = rounds.some((r) => {
+      const actionText = `${String(r?.action?.title || '')} ${String(r?.action?.detail || '')}`.toLowerCase()
+      return actionText.includes('web') || actionText.includes('互联网')
+    })
+    const usedWebByQuery = Boolean(String(qs?.web?.keyword || '').trim())
+    return {
+      db: (Array.isArray(evidence?.suppliers) && evidence.suppliers.length > 0) || (toolsSet.has('db_chat') && selectedDbTables.length > 0),
+      kb: (Array.isArray(evidence?.kbHits) && evidence.kbHits.length > 0) || (toolsSet.has('local_kb') && selectedKbIds.length > 0),
+      web: usedWebByTrace || usedWebByQuery || toolsSet.has('web_search'),
+      image: toolsSet.has('image_gen'),
+      chart: toolsSet.has('python_chart_generator'),
+      export: toolsSet.has('file_exporter') || templateType !== 'none',
+    }
+  }, [selectedTools, selectedDbTables, selectedKbIds, templateType, latestAssistantMessage])
+  const selectedToolLabels = useMemo(
+    () => (Array.isArray(selectedTools) ? selectedTools.map((key) => TOOL_LABEL_MAP[key] || key).filter(Boolean) : []),
+    [selectedTools],
+  )
+  const flowConfigSummary = useMemo(() => ({
+    tools: selectedToolLabels.length > 0 ? selectedToolLabels.join('、') : '未选择',
+    kb: selectedKbIds.length > 0 ? `${selectedKbIds.length} 个` : '未选择',
+    db: selectedDbTables.length > 0 ? `${selectedDbTables.length} 张表` : '未选择',
+    model: selectedModelName || '未设置',
+    prompt: systemPromptEnabled ? '启用' : '未启用',
+    template: templateType === 'none' ? '无' : templateType,
+  }), [selectedToolLabels, selectedKbIds, selectedDbTables, selectedModelName, systemPromptEnabled, templateType])
+  const flowLogicText = useMemo(() => [
+    `开始`,
+    ` -> 读取当前配置（工具=${flowConfigSummary.tools}；知识库=${flowConfigSummary.kb}；数据库=${flowConfigSummary.db}；模型=${flowConfigSummary.model}；提示词=${flowConfigSummary.prompt}）`,
+    ` -> 需求解析（关键词、意图、约束）`,
+    ` -> 自动编排（仅执行已启用分支）`,
+    ` -> 数据库检索（${activeFlowBranches.db ? `启用，${flowConfigSummary.db}` : '跳过'}）`,
+    ` -> 知识库检索（${activeFlowBranches.kb ? `启用，${flowConfigSummary.kb}` : '跳过'}）`,
+    ` -> 互联网检索（${activeFlowBranches.web ? '启用' : '跳过'}）`,
+    ` -> 证据融合（去重、相关性排序、风险归纳）`,
+    ` -> 大模型总结（候选、风险、下一步、查询语句）`,
+    ` -> 产出工具（图表=${activeFlowBranches.chart ? '启用' : '跳过'}；文件导出=${activeFlowBranches.export ? '启用' : '跳过'}）`,
+    ` -> 返回前端（答案 + 结构化结果 + artifacts）`,
+  ].join('\n'), [flowConfigSummary, activeFlowBranches])
+  const flowSequenceText = useMemo(() => [
+    `用户 -> 前端：输入问题 + 当前配置`,
+    `前端 -> 后端：/api/agents/precise-sourcing/chat（携带工具、知识库、数据库、模型、提示词）`,
+    `后端 -> LangGraph：plan`,
+    `LangGraph -> 工具层：按配置执行（DB=${activeFlowBranches.db ? '是' : '否'}，KB=${activeFlowBranches.kb ? '是' : '否'}，WEB=${activeFlowBranches.web ? '是' : '否'}）`,
+    `LangGraph -> LLM：使用模型 ${flowConfigSummary.model}`,
+    `LangGraph -> 产出工具：图表=${activeFlowBranches.chart ? '是' : '否'}，导出=${activeFlowBranches.export ? '是' : '否'}`,
+    `LangGraph -> 后端：answer + structured + artifacts + queryStatements`,
+    `后端 -> 前端：渲染结果`,
+  ].join('\n'), [activeFlowBranches, flowConfigSummary.model])
+  const sequenceDiagramEngine = useMemo(() => {
+    const engine = new DiagramEngine()
+    engine.getLayerFactories().registerFactory(new NodeLayerFactory())
+    engine.getLayerFactories().registerFactory(new LinkLayerFactory())
+    engine.getLayerFactories().registerFactory(new SelectionBoxLayerFactory())
+    engine.getNodeFactories().registerFactory(new DefaultNodeFactory())
+    engine.getLinkFactories().registerFactory(new DefaultLinkFactory())
+    engine.getPortFactories().registerFactory(new DefaultPortFactory())
+    engine.getStateMachine().pushState(new DefaultDiagramState())
+    const model = new DiagramModel()
+    const mkNode = (name, color, x, y) => {
+      const node = new DefaultNodeModel({ name, color })
+      node.setPosition(x, y)
+      return node
+    }
+    const mkLink = (source, target, color = '#111827') => {
+      const link = new DefaultLinkModel({ color, width: 2 })
+      link.setSourcePort(source)
+      link.setTargetPort(target)
+      return link
+    }
+
+    const readConfigNode = mkNode('读取用户配置', 'rgb(14, 165, 233)', 20, 150)
+    const parseNode = mkNode('需求解析', 'rgb(59, 130, 246)', 180, 150)
+    const orchestrateNode = mkNode('自动编排', 'rgb(37, 99, 235)', 340, 150)
+    const fusionNode = mkNode('证据融合与排序', 'rgb(126, 34, 206)', 540, 150)
+    const llmNode = mkNode(`模型输出 (${flowConfigSummary.model})`, 'rgb(101, 163, 13)', 730, 150)
+    const returnNode = mkNode('返回前端结果', 'rgb(2, 132, 199)', 1080, 150)
+
+    const readOut = readConfigNode.addOutPort('输出')
+    const parseIn = parseNode.addInPort('输入')
+    const parseOut = parseNode.addOutPort('输出')
+    const orchIn = orchestrateNode.addInPort('输入')
+    const orchOut = orchestrateNode.addOutPort('输出')
+    const fusionIn = fusionNode.addInPort('输入')
+    const fusionOut = fusionNode.addOutPort('输出')
+    const llmIn = llmNode.addInPort('输入')
+    const llmOut = llmNode.addOutPort('输出')
+    const retIn = returnNode.addInPort('输入')
+
+    const graphNodes = [readConfigNode, parseNode, orchestrateNode, fusionNode, llmNode, returnNode]
+    const graphLinks = [
+      mkLink(readOut, parseIn),
+      mkLink(parseOut, orchIn),
+      mkLink(orchOut, fusionIn),
+      mkLink(fusionOut, llmIn),
+    ]
+
+    const retrievalDefs = [
+      { enabled: activeFlowBranches.db, name: '数据库检索', color: 'rgb(180, 83, 9)' },
+      { enabled: activeFlowBranches.kb, name: '知识库检索', color: 'rgb(15, 118, 110)' },
+      { enabled: activeFlowBranches.web, name: '互联网搜索', color: 'rgb(14, 165, 164)' },
+    ].filter((item) => item.enabled)
+    const retrievalStartY = 20
+    retrievalDefs.forEach((item, idx) => {
+      const node = mkNode(item.name, item.color, 360, retrievalStartY + idx * 80)
+      const inPort = node.addInPort('输入')
+      const outPort = node.addOutPort('输出')
+      graphNodes.push(node)
+      graphLinks.push(mkLink(orchOut, inPort))
+      graphLinks.push(mkLink(outPort, fusionIn))
+    })
+
+    const outputDefs = [
+      { enabled: activeFlowBranches.image, name: '图片生成', color: 'rgb(217, 70, 239)' },
+      { enabled: activeFlowBranches.chart, name: '图表生成', color: 'rgb(245, 158, 11)' },
+      { enabled: activeFlowBranches.export, name: '文件导出', color: 'rgb(8, 145, 178)' },
+    ].filter((item) => item.enabled)
+    const outputStartY = 40
+    if (outputDefs.length === 0) {
+      graphLinks.push(mkLink(llmOut, retIn))
+    } else {
+      outputDefs.forEach((item, idx) => {
+        const node = mkNode(item.name, item.color, 900, outputStartY + idx * 80)
+        const inPort = node.addInPort('输入')
+        const outPort = node.addOutPort('输出')
+        graphNodes.push(node)
+        graphLinks.push(mkLink(llmOut, inPort))
+        graphLinks.push(mkLink(outPort, retIn))
+      })
+    }
+
+    model.addAll(...graphNodes, ...graphLinks)
+
+    engine.setModel(model)
+    return engine
+  }, [activeFlowBranches, flowConfigSummary.model])
+  useEffect(() => {
+    if (!flowDialogOpen || flowTabKey !== 'sequence') return
+    const timer = window.setTimeout(() => {
+      try {
+        sequenceDiagramEngine.repaintCanvas()
+        sequenceDiagramEngine.zoomToFit({ margin: 40, maxZoom: 1 })
+      } catch (error) {
+        void error
+      }
+    }, 80)
+    return () => window.clearTimeout(timer)
+  }, [flowDialogOpen, flowTabKey, sequenceDiagramEngine])
+
+  useEffect(() => {
+    if (!Array.isArray(modelProviders) || modelProviders.length === 0) return
+    if (modelProviderDraft) return
+    const firstProvider = modelProviders[0]
+    const rows = Array.isArray(firstProvider?.fetchedModels) && firstProvider.fetchedModels.length > 0
+      ? firstProvider.fetchedModels
+      : (Array.isArray(firstProvider?.models) ? firstProvider.models : [])
+    const firstModel = rows.map((item) => String(item?.id || '').trim()).filter(Boolean)[0] || selectedModelName
+    setModelProviderDraft(firstProvider.providerName || '')
+    if (!selectedModelName && firstModel) setSelectedModelName(firstModel)
+    if (!modelDraft && firstModel) setModelDraft(firstModel)
+  }, [modelProviders, modelProviderDraft, selectedModelName, modelDraft])
 
   useEffect(() => {
     if (!viewportRef.current) return
     viewportRef.current.scrollTop = viewportRef.current.scrollHeight
   }, [activeMessages])
+  useEffect(() => {
+    const validValues = new Set(toolOptions.map((item) => String(item.value)))
+    setSelectedTools((prev) => {
+      const next = (Array.isArray(prev) ? prev : []).filter((item) => validValues.has(String(item)))
+      return next.length === prev.length ? prev : next
+    })
+  }, [toolOptions])
 
   function patchActiveMessages(nextMessages) {
     setSessions((current) => current.map((item) => (item.name === currentSession ? { ...item, messages: nextMessages } : item)))
+  }
+
+  function patchLastAssistantMessage(mutator) {
+    setSessions((current) => current.map((item) => {
+      if (item.name !== currentSession) return item
+      const messages = Array.isArray(item.messages) ? [...item.messages] : []
+      const idx = messages.length - 1
+      if (idx < 0 || messages[idx]?.role !== 'assistant') return item
+      messages[idx] = mutator(messages[idx]) || messages[idx]
+      return { ...item, messages }
+    }))
   }
 
   function onCreateSession() {
@@ -207,6 +532,151 @@ export default function PreciseSourcingAgentPage() {
     return <div style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{String(text || '')}</div>
   }
 
+  function parseAnswerSections(text = '') {
+    const raw = String(text || '')
+    const keys = ['【直接回答】', '【结论】', '【意图】', '【命中统计】', '【候选供应商Top3】']
+    const result = {}
+    for (let i = 0; i < keys.length; i += 1) {
+      const key = keys[i]
+      const start = raw.indexOf(key)
+      if (start < 0) continue
+      const nextStarts = keys
+        .filter((k) => k !== key)
+        .map((k) => raw.indexOf(k, start + key.length))
+        .filter((idx) => idx > start)
+      const end = nextStarts.length > 0 ? Math.min(...nextStarts) : raw.length
+      result[key] = raw.slice(start + key.length, end).trim()
+    }
+    return result
+  }
+
+  function extractArtifactEntries(item) {
+    const selected = Array.isArray(item?.selectedTools) ? item.selectedTools.map((x) => String(x || '')) : []
+    const allowArtifactFallback = selected.includes('python_chart_generator') || selected.includes('file_exporter')
+    const fromArtifacts = Array.isArray(item?.artifacts)
+      ? item.artifacts
+        .map((artifact, idx) => ({
+          title: String(artifact?.title || artifact?.fileName || `文件${idx + 1}`),
+          url: String(artifact?.downloadUrl || ''),
+        }))
+        .filter((row) => row.url)
+      : []
+    if (fromArtifacts.length > 0) return fromArtifacts
+    if (!allowArtifactFallback) return []
+
+    const raw = String(item?.rawAnswer || item?.content || '')
+    const lines = raw.split(/\r?\n/)
+    const rows = []
+    let inBlock = false
+    for (const line of lines) {
+      const txt = String(line || '').trim()
+      if (!txt) continue
+      if (txt.includes('【产出文件】')) {
+        inBlock = true
+        continue
+      }
+      if (!inBlock) continue
+      if (/^【.+】/.test(txt)) break
+      const match = txt.match(/^\d+\.\s*(.+?)[:：]\s*(\/api\/\S+)$/)
+      if (match) rows.push({ title: match[1].trim(), url: match[2].trim() })
+    }
+    return rows
+  }
+
+  function renderAssistantExtraText(item) {
+    const text = String(item?.content || '')
+    if (!text) return null
+    const sections = ['【直接回答】', '【结论】', '【意图】', '【命中统计】', '【候选供应商Top3】']
+    if (!sections.some((k) => text.includes(k))) return renderMessageContent(text)
+    const keepLines = text
+      .split(/\r?\n/)
+      .filter((line) => {
+        const t = String(line || '').trim()
+        if (!t) return false
+        if (/^【(直接回答|结论|意图|命中统计|候选供应商Top3|产出文件)】/.test(t)) return false
+        if (/^\d+\.\s*.+[:：]\s*\/api\/\S+/.test(t)) return false
+        return t.startsWith('【自动编排】')
+          || t.startsWith('【查询语句】')
+          || t.startsWith('---')
+          || t.startsWith('命中统计：')
+          || t.startsWith('DB关键词：')
+          || t.startsWith('DB模板：')
+          || t.startsWith('DB选表：')
+          || t.startsWith('RAG关键词：')
+          || t.startsWith('Web关键词：')
+          || t.startsWith('工具：')
+          || t.startsWith('知识库：')
+          || t.startsWith('数据库表：')
+          || t.startsWith('报告模板：')
+      })
+      .join('\n')
+      .trim()
+    if (!keepLines) return null
+    return <div style={{ marginTop: 10, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{keepLines}</div>
+  }
+
+  function openArtifactPreview(title, url) {
+    setArtifactPreviewTitle(String(title || '产出文件'))
+    setArtifactPreviewUrl(String(url || ''))
+    setArtifactPreviewOpen(true)
+  }
+
+  function renderAssistantResultCard(item) {
+    const sections = parseAnswerSections(item?.rawAnswer || item?.content || '')
+    const hasSections = Object.keys(sections).length > 0
+    if (!hasSections) return null
+    return (
+      <div style={{ marginTop: 10, border: '1px solid #dbeafe', background: '#eff6ff', borderRadius: 8, padding: 10 }}>
+        {sections['【直接回答】'] ? <div style={{ marginBottom: 6 }}><Tag color="blue">直接回答</Tag>{sections['【直接回答】']}</div> : null}
+        {sections['【结论】'] ? <div style={{ marginBottom: 6 }}><Tag color="purple">结论</Tag>{sections['【结论】']}</div> : null}
+        {sections['【意图】'] ? <div style={{ marginBottom: 6 }}><Tag color="cyan">意图</Tag>{sections['【意图】']}</div> : null}
+        {sections['【命中统计】'] ? <div style={{ marginBottom: 6 }}><Tag color="gold">命中统计</Tag>{sections['【命中统计】']}</div> : null}
+        {sections['【候选供应商Top3】'] ? (
+          <div style={{ whiteSpace: 'pre-wrap' }}>
+            <Tag color="green">候选供应商Top3</Tag>
+            {sections['【候选供应商Top3】']}
+          </div>
+        ) : null}
+      </div>
+    )
+  }
+
+  function renderArtifactCard(item) {
+    const artifacts = extractArtifactEntries(item)
+    if (artifacts.length === 0) return null
+    return (
+      <div style={{ marginTop: 10, border: '1px solid #e5e7eb', background: '#fff', borderRadius: 8, padding: 10 }}>
+        <div style={{ marginBottom: 8, fontWeight: 600 }}>产出文件</div>
+        <Space direction="vertical" size={6} style={{ width: '100%' }}>
+          {artifacts.map((artifact, idx) => {
+            const title = String(artifact?.title || `文件${idx + 1}`)
+            const url = String(artifact?.url || '')
+            return (
+              <div key={`artifact-${idx}`} style={{ display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'space-between', border: '1px solid #f1f5f9', borderRadius: 6, padding: '6px 8px' }}>
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{idx + 1}. {title}</div>
+                  <a
+                    href={url}
+                    target="_blank"
+                    rel="noreferrer"
+                    style={{ display: 'block', marginTop: 2, fontSize: 12, color: '#2563eb', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                    title={url}
+                  >
+                    {url}
+                  </a>
+                </div>
+                <Space size={6}>
+                  <Button size="small" onClick={() => openArtifactPreview(title, url)}>预览</Button>
+                  <a href={url} target="_blank" rel="noreferrer">下载/打开</a>
+                </Space>
+              </div>
+            )
+          })}
+        </Space>
+      </div>
+    )
+  }
+
   function formatTime(value) {
     const ts = Number(value || 0)
     if (!ts) return ''
@@ -220,7 +690,21 @@ export default function PreciseSourcingAgentPage() {
   function renderExecutionProcess(item) {
     const rounds = Array.isArray(item?.react?.rounds) ? item.react.rounds : []
     const traces = Array.isArray(item?.traces) ? item.traces : []
-    if (rounds.length === 0 && traces.length === 0) return null
+    const fallbackLines = []
+    if (rounds.length === 0 && traces.length === 0) {
+      const content = String(item?.content || '')
+      const block = (label) => {
+        const idx = content.indexOf(label)
+        if (idx < 0) return ''
+        const tail = content.slice(idx + label.length)
+        return tail.split('\n').slice(0, 4).join('\n').trim()
+      }
+      const orchestration = block('【自动编排】')
+      const queries = block('【查询语句】')
+      if (orchestration) fallbackLines.push(`自动编排:\n${orchestration}`)
+      if (queries) fallbackLines.push(`查询语句:\n${queries}`)
+      if (fallbackLines.length === 0) return null
+    }
     const panels = rounds.length > 0
       ? rounds.map((round, idx) => ({
         key: `round-${idx + 1}`,
@@ -256,7 +740,12 @@ export default function PreciseSourcingAgentPage() {
         <div style={{ marginBottom: 6, color: '#64748b', fontSize: 12 }}>
           执行过程 {item?.intent ? `(意图: ${item.intent})` : ''}{item?.traceVersion ? ` · 版本: ${item.traceVersion}` : ''}
         </div>
-        <Collapse size="small" defaultActiveKey={panels.map((p) => p.key)} items={panels} />
+        {panels.length > 0 ? <Collapse size="small" defaultActiveKey={panels.map((p) => p.key)} items={panels} /> : null}
+        {panels.length === 0 && fallbackLines.length > 0 ? (
+          <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8, padding: 10, whiteSpace: 'pre-wrap', fontSize: 12, color: '#334155' }}>
+            {fallbackLines.join('\n\n')}
+          </div>
+        ) : null}
         {Array.isArray(item?.evidence?.suppliers) && item.evidence.suppliers.length > 0 ? (
           <div style={{ marginTop: 10, borderTop: '1px dashed #cbd5e1', paddingTop: 8 }}>
             <div style={{ color: '#64748b', fontSize: 12, marginBottom: 6 }}>DB 命中来源字段（Top 5）</div>
@@ -276,6 +765,128 @@ export default function PreciseSourcingAgentPage() {
             </Space>
           </div>
         ) : null}
+        {Array.isArray(item?.evidence?.kbHits) && item.evidence.kbHits.length > 0 ? (
+          <div style={{ marginTop: 10, borderTop: '1px dashed #cbd5e1', paddingTop: 8 }}>
+            <div style={{ color: '#64748b', fontSize: 12, marginBottom: 6 }}>知识库命中（Top 5）</div>
+            <Space direction="vertical" size={6} style={{ width: '100%' }}>
+              {item.evidence.kbHits.slice(0, 5).map((row, idx) => (
+                <div key={`kb-hit-${idx}`} style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8, padding: 8 }}>
+                  <div style={{ fontSize: 12, color: '#334155' }}>
+                    {idx + 1}. {String(row?.docName || row?.docId || '-')}
+                  </div>
+                  {row?.docUrl ? (
+                    <a
+                      href={String(row.docUrl)}
+                      target="_blank"
+                      rel="noreferrer"
+                      style={{
+                        fontSize: 12,
+                        display: 'block',
+                        whiteSpace: 'normal',
+                        wordBreak: 'break-all',
+                        overflowWrap: 'anywhere',
+                      }}
+                    >
+                      {String(row.docUrl)}
+                    </a>
+                  ) : null}
+                  {row?.chunkText ? (
+                    <div
+                      style={{
+                        marginTop: 4,
+                        fontSize: 12,
+                        color: '#64748b',
+                        whiteSpace: 'pre-wrap',
+                        wordBreak: 'break-word',
+                        overflowWrap: 'anywhere',
+                        maxHeight: 88,
+                        overflow: 'auto',
+                        paddingRight: 4,
+                      }}
+                    >
+                      {String(row.chunkText).slice(0, 120)}
+                    </div>
+                  ) : null}
+                </div>
+              ))}
+            </Space>
+          </div>
+        ) : null}
+        {Array.isArray(item?.evidence?.webHits) && item.evidence.webHits.length > 0 ? (
+          <div style={{ marginTop: 10, borderTop: '1px dashed #cbd5e1', paddingTop: 8 }}>
+            <div style={{ color: '#64748b', fontSize: 12, marginBottom: 6 }}>互联网命中（Top 5）</div>
+            <Space direction="vertical" size={6} style={{ width: '100%' }}>
+              {item.evidence.webHits.slice(0, 5).map((row, idx) => (
+                <div key={`web-hit-${idx}`} style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8, padding: 8 }}>
+                  <div style={{ fontSize: 12, color: '#334155' }}>{idx + 1}. {String(row?.title || row?.name || row?.url || '-')}</div>
+                  {row?.url ? (
+                    <a
+                      href={String(row.url)}
+                      target="_blank"
+                      rel="noreferrer"
+                      style={{
+                        fontSize: 12,
+                        display: 'block',
+                        whiteSpace: 'normal',
+                        wordBreak: 'break-all',
+                        overflowWrap: 'anywhere',
+                      }}
+                    >
+                      {String(row.url)}
+                    </a>
+                  ) : null}
+                  {Array.isArray(row?.supplierCandidates) && row.supplierCandidates.length > 0 ? (
+                    <div style={{ marginTop: 6, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                      {row.supplierCandidates.map((name) => (
+                        <Tag key={`${idx}-${name}`} color="geekblue">{String(name)}</Tag>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              ))}
+            </Space>
+          </div>
+        ) : null}
+        {Array.isArray(item?.evidence?.webDerivedSuppliers) && item.evidence.webDerivedSuppliers.length > 0 ? (
+          <div style={{ marginTop: 10, borderTop: '1px dashed #cbd5e1', paddingTop: 8 }}>
+            <div style={{ color: '#64748b', fontSize: 12, marginBottom: 6 }}>互联网提取供应商（Top 10）</div>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {item.evidence.webDerivedSuppliers.map((name) => (
+                <Tag key={`web-supplier-${name}`} color="blue">{String(name)}</Tag>
+              ))}
+            </div>
+          </div>
+        ) : null}
+        {Array.isArray(item?.evidence?.suppliers) && item.evidence.suppliers.length > 0 ? (
+          <div style={{ marginTop: 10, borderTop: '1px dashed #cbd5e1', paddingTop: 8 }}>
+            <div style={{ color: '#64748b', fontSize: 12, marginBottom: 6 }}>融合结果解释（Top 3）</div>
+            <Space direction="vertical" size={6} style={{ width: '100%' }}>
+              {item.evidence.suppliers.slice(0, 3).map((row, idx) => {
+                const name = String(row?.companyName || row?.company_name || row?.name || '-')
+                const dbScore = Number(row?._matchScore || 0)
+                const fusedScore = Number(row?._fusedScore || dbScore)
+                const webSupport = Number(row?._webSupportCount || 0)
+                const kbSupport = Array.isArray(item?.evidence?.kbHits)
+                  ? item.evidence.kbHits.filter((hit) => {
+                    const docName = String(hit?.docName || '')
+                    return !!name && (docName.includes(name) || name.includes(docName))
+                  }).length
+                  : 0
+                return (
+                  <div key={`fused-top-${idx}`} style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8, padding: 8 }}>
+                    <div style={{ fontSize: 12, color: '#334155' }}>{idx + 1}. {name}</div>
+                    <div style={{ marginTop: 6, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                      <Tag color="blue">DB分: {dbScore.toFixed(2)}</Tag>
+                      <Tag color="purple">WEB支撑: {webSupport}</Tag>
+                      <Tag color="cyan">KB关联: {kbSupport}</Tag>
+                      <Tag color="green">融合分: {fusedScore.toFixed(2)}</Tag>
+                    </div>
+                  </div>
+                )
+              })}
+            </Space>
+          </div>
+        ) : null}
       </div>
     )
   }
@@ -290,7 +901,7 @@ export default function PreciseSourcingAgentPage() {
     setLoading(true)
 
     try {
-      const reportTemplate = templateFile
+      const reportTemplate = templateType !== 'none' && templateFile
         ? {
           type: templateType,
           fileName: String(templateFile.name || ''),
@@ -298,37 +909,85 @@ export default function PreciseSourcingAgentPage() {
         }
         : null
 
-      const data = await chatPreciseSourcingAgent({
+      const pendingAssistant = {
+        role: 'assistant',
+        content: '执行中，请稍候...',
+        rawAnswer: '',
+        evidence: { suppliers: [], kbHits: [], webHits: [] },
+        artifacts: [],
+        queryStatements: {},
+        traces: [],
+        react: { rounds: [] },
+        intent: '',
+        traceVersion: '',
+        selectedTools: Array.isArray(selectedTools) ? [...selectedTools] : [],
+        ts: Date.now(),
+      }
+      patchActiveMessages([...nextHistory, pendingAssistant])
+
+      await chatPreciseSourcingAgentStream({
         message: question,
+        model: selectedModelName,
+        systemPrompt: systemPromptEnabled ? systemPrompt : '',
+        systemPromptPresetKey: systemPromptEnabled ? systemPromptPresetKey : '',
         kbId: selectedKbIds[0] || '',
         kbIds: selectedKbIds,
         topK: kbTopK,
         dbTopK,
-        selectedTools: selectedSkills,
-        selectedSkills,
+        selectedTools,
+        selectedSkills: selectedTools,
         selectedDbTables,
         strictMode,
-        generateCharts,
         temperature,
         reportTemplate,
         history: nextHistory.slice(-12),
-      })
-
-      const evidence = data?.evidence || {}
-      const metaSummary = `命中统计：知识库 ${Array.isArray(evidence?.kbHits) ? evidence.kbHits.length : 0} 条；数据库 ${Array.isArray(evidence?.suppliers) ? evidence.suppliers.length : 0} 条`
-      patchActiveMessages([
-        ...nextHistory,
-        {
-          role: 'assistant',
-          content: `${String(data?.answer || '未返回内容')}\n\n---\n${metaSummary}`,
-          evidence,
-          traces: Array.isArray(data?.traces) ? data.traces : [],
-          react: data?.react || { rounds: [] },
-          intent: String(data?.intent || ''),
-          traceVersion: String(data?.traceVersion || ''),
-          ts: Date.now(),
+      }, {
+        onTrace: (evt) => {
+          const trace = evt?.trace
+          if (!trace) return
+          patchLastAssistantMessage((last) => {
+            const traces = [...(Array.isArray(last?.traces) ? last.traces : []), trace]
+            return {
+              ...last,
+              traces,
+              react: { rounds: [] },
+              content: `执行中：${String(trace?.title || trace?.step || '')} - ${String(trace?.detail || '')}`,
+            }
+          })
         },
-      ])
+        onFinal: (data) => {
+          const evidence = data?.evidence || {}
+          const artifacts = Array.isArray(data?.artifacts) ? data.artifacts : []
+          const qs = data?.queryStatements && typeof data.queryStatements === 'object' ? data.queryStatements : {}
+          const orchestrationText = qs?.orchestration && typeof qs.orchestration === 'object'
+            ? `\n【自动编排】\n`
+              + `工具：${Array.isArray(qs.orchestration.selectedTools) ? qs.orchestration.selectedTools.join(', ') : ''}\n`
+              + `知识库：${Array.isArray(qs.orchestration.selectedKbIds) ? qs.orchestration.selectedKbIds.join(', ') : ''}\n`
+              + `数据库表：${Array.isArray(qs.orchestration.selectedDbTables) ? qs.orchestration.selectedDbTables.join(', ') : ''}\n`
+              + `报告模板：${String(qs.orchestration.reportTemplateType || 'none')}`
+            : ''
+          const queryText = `\n【查询语句】\n`
+            + `DB关键词：${String(qs?.db?.keyword || '')}\n`
+            + `DB模板：${String(qs?.db?.template || '')}\n`
+            + `DB选表：${Array.isArray(qs?.db?.selectedTables) ? qs.db.selectedTables.join(', ') : ''}\n`
+            + `RAG关键词：${String(qs?.rag?.keyword || '')}\n`
+            + `Web关键词：${String(qs?.web?.keyword || '')}`
+          const metaSummary = `命中统计：知识库 ${Array.isArray(evidence?.kbHits) ? evidence.kbHits.length : 0} 条；数据库 ${Array.isArray(evidence?.suppliers) ? evidence.suppliers.length : 0} 条；互联网 ${Array.isArray(evidence?.webHits) ? evidence.webHits.length : 0} 条`
+          patchLastAssistantMessage((last) => ({
+            ...last,
+            content: `${String(data?.answer || '未返回内容')}${orchestrationText}${queryText}\n\n---\n${metaSummary}`,
+            rawAnswer: String(data?.answer || ''),
+            evidence,
+            artifacts,
+            queryStatements: qs,
+            traces: Array.isArray(data?.traces) ? data.traces : (Array.isArray(last?.traces) ? last.traces : []),
+            react: data?.react || { rounds: [] },
+            intent: String(data?.intent || ''),
+            traceVersion: String(data?.traceVersion || ''),
+            ts: Date.now(),
+          }))
+        },
+      })
     } catch (error) {
       patchActiveMessages(activeMessages)
       message.error(error.message || '执行失败')
@@ -347,10 +1006,19 @@ export default function PreciseSourcingAgentPage() {
             </div>
 
             <div style={{ border: '1px solid #e5e7eb', borderRadius: 10, padding: 12, background: '#f8fafc' }}>
-              <Space align="center" size={8}>
-                <MessageOutlined style={{ color: '#2563eb' }} />
-                <Text strong style={{ color: '#1d4ed8' }}>精准寻源智能体</Text>
-              </Space>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Space align="center" size={8}>
+                  <MessageOutlined style={{ color: '#2563eb' }} />
+                  <Text strong style={{ color: '#1d4ed8' }}>精准寻源智能体</Text>
+                </Space>
+                <Button
+                  type="text"
+                  size="small"
+                  icon={<DeploymentUnitOutlined />}
+                  title="查看智能体流程图"
+                  onClick={() => setFlowDialogOpen(true)}
+                />
+              </div>
               <div style={{ marginTop: 6, color: '#64748b', fontSize: 12 }}>当前会话：{currentSession}</div>
             </div>
 
@@ -363,17 +1031,56 @@ export default function PreciseSourcingAgentPage() {
                   children: (
                     <Space direction="vertical" size={14} style={{ width: '100%' }}>
                       <div>
-                        <Text>选择技能:</Text>
+                        <Text>选择工具:</Text>
                         <Select
                           mode="multiple"
-                          value={selectedSkills}
-                          onChange={setSelectedSkills}
-                          options={skillOptions}
+                          value={selectedTools}
+                          onChange={setSelectedTools}
+                          options={toolOptions}
                           style={{ width: '100%', marginTop: 8 }}
-                          placeholder="请选择技能"
+                          placeholder="请选择工具"
                           allowClear
                           maxTagCount="responsive"
                         />
+                      </div>
+                      <div>
+                        <Text>模型设置:</Text>
+                        <Space style={{ width: '100%', justifyContent: 'space-between', marginTop: 8 }}>
+                          <Tag color="blue">{selectedModelName || '未设置'}</Tag>
+                          <Button
+                            size="small"
+                            onClick={() => {
+                              const providerWithModel = modelProviders.find((p) => {
+                                const rows = Array.isArray(p?.fetchedModels) && p.fetchedModels.length > 0 ? p.fetchedModels : (Array.isArray(p?.models) ? p.models : [])
+                                return rows.some((m) => String(m?.id || '').trim() === String(selectedModelName || '').trim())
+                              })
+                              setModelProviderDraft(providerWithModel?.providerName || modelProviders[0]?.providerName || '')
+                              setModelDraft(selectedModelName || '')
+                              setModelDialogOpen(true)
+                            }}
+                          >
+                            选择模型
+                          </Button>
+                        </Space>
+                      </div>
+                      <div>
+                        <Text>提示词设置:</Text>
+                        <Space style={{ width: '100%', justifyContent: 'space-between', marginTop: 8 }}>
+                          <Text type="secondary" style={{ maxWidth: 180 }} ellipsis>
+                            {promptPreviewText || '未设置'}
+                          </Text>
+                          <Button
+                            size="small"
+                            onClick={() => {
+                              setPromptDraft(systemPrompt || '')
+                              setPromptEnabledDraft(systemPromptEnabled)
+                              setPromptPresetKeyDraft(systemPromptPresetKey || 'default')
+                              setPromptDialogOpen(true)
+                            }}
+                          >
+                            编辑提示词
+                          </Button>
+                        </Space>
                       </div>
                       <div>
                         <Text>请选择知识库:</Text>
@@ -420,14 +1127,14 @@ export default function PreciseSourcingAgentPage() {
                           maxCount={1}
                           showUploadList
                           onChange={onTemplateUpload}
+                          disabled={templateType === 'none'}
                           accept={templateType === 'ppt' ? '.ppt,.pptx' : templateType === 'word' ? '.doc,.docx' : '.xls,.xlsx,.csv'}
                         >
-                          <Button style={{ marginTop: 8 }}>上传报告模板</Button>
+                          <Button style={{ marginTop: 8 }} disabled={templateType === 'none'}>
+                            上传报告模板
+                          </Button>
                         </Upload>
                       </div>
-                      <Checkbox checked={generateCharts} onChange={(e) => setGenerateCharts(e.target.checked)}>
-                        生成图表
-                      </Checkbox>
                       <div>
                         <Text>匹配知识条数:</Text>
                         <div style={{ marginTop: 8, border: '1px solid #e5e7eb', borderRadius: 10, height: 40, background: '#fff', display: 'grid', gridTemplateColumns: '1fr 36px 36px', alignItems: 'center' }}>
@@ -532,7 +1239,9 @@ export default function PreciseSourcingAgentPage() {
                         <Text type="secondary" style={{ fontSize: 12 }}>{formatTime(item?.ts)}</Text>
                       </div>
                       {item.role === 'assistant' ? renderExecutionProcess(item) : null}
-                      {renderMessageContent(item.content)}
+                      {item.role === 'assistant' ? renderAssistantResultCard(item) : null}
+                      {item.role === 'assistant' ? renderArtifactCard(item) : null}
+                      {item.role === 'assistant' ? renderAssistantExtraText(item) : renderMessageContent(item.content)}
                     </div>
                   </div>
                 </Card>
@@ -556,6 +1265,208 @@ export default function PreciseSourcingAgentPage() {
           <Button type="primary" icon={<AppstoreOutlined />} loading={loading} onClick={onSend}>发送</Button>
         </div>
       </Card>
+
+      <Modal
+        title="选择模型"
+        open={modelDialogOpen}
+        onCancel={() => setModelDialogOpen(false)}
+        onOk={() => {
+          const next = String(modelDraft || '').trim()
+          if (!next) {
+            message.warning('请选择模型')
+            return
+          }
+          setSelectedModelName(next)
+          setModelDialogOpen(false)
+          message.success(`已选择模型：${next}`)
+        }}
+        okText="确定"
+        cancelText="取消"
+      >
+        <Space direction="vertical" size={10} style={{ width: '100%' }}>
+          <div>
+            <Text>模型供应商</Text>
+            <Select
+              showSearch
+              value={modelProviderDraft || undefined}
+              onChange={(v) => {
+                const nextProvider = String(v || '')
+                setModelProviderDraft(nextProvider)
+                const provider = modelProviders.find((item) => item.providerName === nextProvider)
+                const rows = Array.isArray(provider?.fetchedModels) && provider.fetchedModels.length > 0
+                  ? provider.fetchedModels
+                  : (Array.isArray(provider?.models) ? provider.models : [])
+                const firstModel = rows.map((item) => String(item?.id || '').trim()).filter(Boolean)[0] || ''
+                setModelDraft(firstModel)
+              }}
+              options={providerOptions}
+              style={{ width: '100%', marginTop: 6 }}
+              placeholder="请选择模型供应商"
+              optionFilterProp="label"
+            />
+          </div>
+          <div>
+            <Text>模型名称</Text>
+            <Select
+              showSearch
+              value={modelDraft || undefined}
+              onChange={(v) => setModelDraft(String(v || ''))}
+              options={modelNameOptions}
+              style={{ width: '100%', marginTop: 6 }}
+              placeholder="请选择模型名称"
+              optionFilterProp="label"
+            />
+          </div>
+        </Space>
+      </Modal>
+
+      <Modal
+        title="编辑提示词"
+        open={promptDialogOpen}
+        onCancel={() => setPromptDialogOpen(false)}
+        onOk={() => {
+          setSystemPrompt(String(promptDraft || '').trim())
+          setSystemPromptEnabled(promptEnabledDraft)
+          setSystemPromptPresetKey(String(promptPresetKeyDraft || 'default'))
+          setPromptDialogOpen(false)
+          message.success(`提示词已更新（${promptEnabledDraft ? '启用' : '未启用'}）`)
+        }}
+        okText="保存"
+        cancelText="取消"
+      >
+        <Space direction="vertical" size={10} style={{ width: '100%' }}>
+          <div>
+            <Text>模板</Text>
+            <Space wrap style={{ marginTop: 8 }}>
+              {PROMPT_PRESETS.map((item) => (
+                <Button
+                  key={item.key}
+                  size="small"
+                  type={promptPresetKeyDraft === item.key ? 'primary' : 'default'}
+                  onClick={() => {
+                    setPromptPresetKeyDraft(item.key)
+                    setPromptDraft(item.prompt)
+                  }}
+                >
+                  {item.label}
+                </Button>
+              ))}
+            </Space>
+          </div>
+          <div>
+            <Text>启用提示词</Text>
+            <div style={{ marginTop: 8 }}>
+              <Checkbox checked={promptEnabledDraft} onChange={(e) => setPromptEnabledDraft(e.target.checked)}>
+                启用
+              </Checkbox>
+            </div>
+          </div>
+          <Input.TextArea
+            rows={8}
+            value={promptDraft}
+            onChange={(e) => setPromptDraft(e.target.value)}
+            placeholder="输入系统提示词（多行）"
+          />
+        </Space>
+      </Modal>
+
+      <Modal
+        title="智能体流程图"
+        open={flowDialogOpen}
+        onCancel={() => {
+          setFlowDialogOpen(false)
+          setFlowTabKey('logic')
+        }}
+        footer={null}
+        width={760}
+      >
+        <Tabs
+          activeKey={flowTabKey}
+          onChange={setFlowTabKey}
+          items={[
+            {
+              key: 'logic',
+              label: '逻辑流程图',
+              children: (
+                <Space direction="vertical" size={10} style={{ width: '100%' }}>
+                  <div style={{ background: '#f8fafc', border: '1px solid #e5e7eb', borderRadius: 8, padding: 10, fontSize: 12, color: '#475569' }}>
+                    实时配置：工具 {flowConfigSummary.tools}；知识库 {flowConfigSummary.kb}；数据库 {flowConfigSummary.db}；模型 {flowConfigSummary.model}；提示词 {flowConfigSummary.prompt}；模板 {flowConfigSummary.template}
+                  </div>
+                  <div style={{ ...FLOW_NODE_STYLE, borderColor: '#bfdbfe', background: '#f8fafc' }}>开始：读取用户配置（工具/知识库/数据库/模型/提示词）</div>
+                  <div style={{ textAlign: 'center', color: '#94a3b8' }}>↓</div>
+                  <div style={FLOW_NODE_STYLE}>需求解析：提取关键词、业务约束与目标</div>
+                  <div style={{ textAlign: 'center', color: '#94a3b8' }}>↓</div>
+                  <div style={FLOW_NODE_STYLE}>自动编排：按你已选择的工具决定执行分支</div>
+                  <Space wrap size={8}>
+                    <Tag color={activeFlowBranches.db ? 'blue' : 'default'}>数据库检索 {activeFlowBranches.db ? '启用' : '未启用'}</Tag>
+                    <Tag color={activeFlowBranches.kb ? 'blue' : 'default'}>知识库检索 {activeFlowBranches.kb ? '启用' : '未启用'}</Tag>
+                    <Tag color={activeFlowBranches.web ? 'blue' : 'default'}>互联网搜索 {activeFlowBranches.web ? '启用' : '未启用'}</Tag>
+                    <Tag color={activeFlowBranches.image ? 'blue' : 'default'}>图片生成 {activeFlowBranches.image ? '启用' : '未启用'}</Tag>
+                    <Tag color={activeFlowBranches.chart ? 'blue' : 'default'}>图表生成 {activeFlowBranches.chart ? '启用' : '未启用'}</Tag>
+                    <Tag color={activeFlowBranches.export ? 'blue' : 'default'}>文件导出 {activeFlowBranches.export ? '启用' : '未启用'}</Tag>
+                  </Space>
+                  <div style={{ textAlign: 'center', color: '#94a3b8' }}>↓</div>
+                  <div style={FLOW_NODE_STYLE}>证据融合：去重、相关性排序、风险归纳</div>
+                  <div style={{ textAlign: 'center', color: '#94a3b8' }}>↓</div>
+                  <div style={FLOW_NODE_STYLE}>模型输出：候选供应商 + 风险等级 + 下一步动作 + 查询语句</div>
+                  <div style={{ textAlign: 'center', color: '#94a3b8' }}>↓</div>
+                  <div style={FLOW_NODE_STYLE}>返回前端：答案、结构化结果、可下载产物（如图表/文件）</div>
+                  <pre style={{ whiteSpace: 'pre-wrap', margin: 0, background: '#f8fafc', border: '1px solid #e5e7eb', borderRadius: 8, padding: 12 }}>
+                    {flowLogicText}
+                  </pre>
+                </Space>
+              ),
+            },
+            {
+              key: 'sequence',
+              label: '时序图',
+              children: (
+                <Space direction="vertical" size={10} style={{ width: '100%' }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
+                    <div style={{ border: '1px solid #dbeafe', background: '#eff6ff', borderRadius: 8, padding: '6px 10px', fontSize: 12, color: '#1e40af' }}>数据源层：数据库 / 知识库 / 互联网</div>
+                    <div style={{ border: '1px solid #bbf7d0', background: '#f0fdf4', borderRadius: 8, padding: '6px 10px', fontSize: 12, color: '#166534' }}>融合层：证据融合与相关性排序</div>
+                    <div style={{ border: '1px solid #ddd6fe', background: '#f5f3ff', borderRadius: 8, padding: '6px 10px', fontSize: 12, color: '#5b21b6' }}>决策输出层：模型总结与结果返回</div>
+                  </div>
+                  <div className="precise-sequence-diagram" style={{ height: 340, borderRadius: 12, border: '1px solid #1f2937', overflow: 'hidden', background: '#2f3136' }}>
+                    <CanvasWidget engine={sequenceDiagramEngine} className="precise-sequence-canvas" />
+                  </div>
+                  <Space wrap size={8}>
+                    <Tag color={activeFlowBranches.db ? 'blue' : 'default'}>DB {activeFlowBranches.db ? '启用' : '未启用'}</Tag>
+                    <Tag color={activeFlowBranches.kb ? 'blue' : 'default'}>KB {activeFlowBranches.kb ? '启用' : '未启用'}</Tag>
+                    <Tag color={activeFlowBranches.web ? 'blue' : 'default'}>WEB {activeFlowBranches.web ? '启用' : '未启用'}</Tag>
+                    <Tag color={activeFlowBranches.chart ? 'blue' : 'default'}>图表 {activeFlowBranches.chart ? '启用' : '未启用'}</Tag>
+                    <Tag color={activeFlowBranches.export ? 'blue' : 'default'}>导出 {activeFlowBranches.export ? '启用' : '未启用'}</Tag>
+                  </Space>
+                  <pre style={{ whiteSpace: 'pre-wrap', margin: 0, background: '#f8fafc', border: '1px solid #e5e7eb', borderRadius: 8, padding: 12 }}>
+                    {flowSequenceText}
+                  </pre>
+                </Space>
+              ),
+            },
+          ]}
+        />
+      </Modal>
+
+      <Modal
+        title={`文件预览：${artifactPreviewTitle}`}
+        open={artifactPreviewOpen}
+        onCancel={() => setArtifactPreviewOpen(false)}
+        footer={null}
+        width={920}
+      >
+        {artifactPreviewUrl && /\.html?(\?|$)/i.test(artifactPreviewUrl) ? (
+          <iframe
+            src={artifactPreviewUrl}
+            title={artifactPreviewTitle || 'preview'}
+            style={{ width: '100%', height: 520, border: '1px solid #e5e7eb', borderRadius: 8, background: '#fff' }}
+          />
+        ) : (
+          <Space direction="vertical" size={10}>
+            <div>当前文件类型暂不支持内嵌预览，请点击下方链接打开。</div>
+            <a href={artifactPreviewUrl} target="_blank" rel="noreferrer">{artifactPreviewUrl}</a>
+          </Space>
+        )}
+      </Modal>
     </div>
   )
 }

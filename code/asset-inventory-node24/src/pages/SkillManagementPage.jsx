@@ -1,11 +1,24 @@
-import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons'
-import { Button, Card, Col, Form, Input, Modal, Popconfirm, Progress, Row, Space, Switch, Tag, Typography, message } from 'antd'
+import { BgColorsOutlined, DeleteOutlined, EditOutlined, GithubOutlined, PlusOutlined } from '@ant-design/icons'
+import { Button, Card, Col, Form, Input, Modal, Popconfirm, Progress, Row, Select, Space, Switch, Tag, Typography, message } from 'antd'
 import { useEffect, useMemo, useState } from 'react'
 import { fetchInstalledSkills, installSkill, uninstallSkill } from '../api/skillManagementApi'
 
 const { Paragraph, Text, Title } = Typography
 
 const STORAGE_KEY = 'capability-skill-management-data-v1'
+const UI_UX_PRO_MAX_REPO_URL = 'https://github.com/nextlevelbuilder/ui-ux-pro-max-skill'
+const UI_STYLE_OPTIONS = [
+  { value: 'minimalism', label: 'minimalism - 极简风（留白与层次）' },
+  { value: 'glassmorphism', label: 'glassmorphism - 玻璃拟态（通透卡片）' },
+  { value: 'brutalism', label: 'brutalism - 野兽派（强对比粗线条）' },
+  { value: 'neumorphism', label: 'neumorphism - 新拟物（柔和浮雕）' },
+  { value: 'bento-grid', label: 'bento-grid - 模块拼贴（信息分区）' },
+  { value: 'claymorphism', label: 'claymorphism - 黏土风（圆润体块）' },
+  { value: 'skeuomorphism', label: 'skeuomorphism - 拟物化（真实材质感）' },
+  { value: 'flat-design', label: 'flat-design - 扁平化（简洁高效）' },
+  { value: 'cyberpunk', label: 'cyberpunk - 赛博风（霓虹科技感）' },
+  { value: 'editorial', label: 'editorial - 杂志风（强排版表达）' },
+]
 
 const defaultSkills = [
   { name: 'agent-security-boundary', source: 'C:\\Users\\aoyon\\.codex\\skills\\agent-security-boundary', installPath: 'C:\\Users\\aoyon\\.codex\\skills\\agent-security-boundary', description: '外部输入与网络访问的安全边界控制。', enabled: true },
@@ -88,6 +101,8 @@ export default function SkillManagementPage() {
   const [installing, setInstalling] = useState(false)
   const [installProgress, setInstallProgress] = useState(0)
   const [installLog, setInstallLog] = useState('')
+  const [styleModalOpen, setStyleModalOpen] = useState(false)
+  const [selectedUiStyle, setSelectedUiStyle] = useState(UI_STYLE_OPTIONS[0].value)
   const [form] = Form.useForm()
 
   const stat = useMemo(() => {
@@ -210,6 +225,17 @@ export default function SkillManagementPage() {
     }
   }
 
+  const openUiStyleModal = () => {
+    setStyleModalOpen(true)
+  }
+
+  const openUiUxRepoWithStyle = () => {
+    const nextUrl = new URL(UI_UX_PRO_MAX_REPO_URL)
+    nextUrl.searchParams.set('style', selectedUiStyle)
+    window.open(nextUrl.toString(), '_blank', 'noopener,noreferrer')
+    setStyleModalOpen(false)
+  }
+
   return (
     <Space direction="vertical" size={14} style={{ width: '100%' }}>
       <Card className="hero-card">
@@ -240,6 +266,11 @@ export default function SkillManagementPage() {
                 <Text code style={{ whiteSpace: 'pre-wrap' }}>安装路径：{item.installPath || item.source || '-'}</Text>
                 <Space size={8}>
                   <Button size="small" icon={<EditOutlined />} onClick={() => onEdit(item)}>修改</Button>
+                  {item.name === 'ui-ux-pro-max' ? (
+                    <Button size="small" icon={<GithubOutlined />} onClick={openUiStyleModal}>
+                      选择UI风格
+                    </Button>
+                  ) : null}
                   <Popconfirm title="确认卸载该技能吗？将真实删除目录。" onConfirm={() => onDelete(item)} okText="卸载" cancelText="取消">
                     <Button size="small" danger icon={<DeleteOutlined />}>卸载</Button>
                   </Popconfirm>
@@ -249,6 +280,26 @@ export default function SkillManagementPage() {
           </Col>
         ))}
       </Row>
+
+      <Modal
+        title={<Space size={8}><BgColorsOutlined /><span>选择 UI 风格</span></Space>}
+        open={styleModalOpen}
+        onOk={openUiUxRepoWithStyle}
+        onCancel={() => setStyleModalOpen(false)}
+        okText="打开技能仓库"
+        cancelText="取消"
+      >
+        <Space direction="vertical" size={10} style={{ width: '100%' }}>
+          <Text className="muted">样式参考仓库：{UI_UX_PRO_MAX_REPO_URL}</Text>
+          <Select
+            style={{ width: '100%' }}
+            value={selectedUiStyle}
+            onChange={setSelectedUiStyle}
+            options={UI_STYLE_OPTIONS}
+            placeholder="请选择 UI 风格"
+          />
+        </Space>
+      </Modal>
 
       <Modal
         title={editingName ? '修改技能' : '新增技能'}

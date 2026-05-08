@@ -44,8 +44,8 @@ body {
   font-family: 'Fira Sans', 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
   color: var(--text-main);
   background:
-    radial-gradient(circle at 12% 0%, rgba(59, 130, 246, 0.1), transparent 38%),
-    radial-gradient(circle at 95% 4%, rgba(249, 115, 22, 0.08), transparent 28%),
+    radial-gradient(circle at 12% 0%, var(--style-bg-a, rgba(59, 130, 246, 0.1)), transparent 38%),
+    radial-gradient(circle at 95% 4%, var(--style-bg-b, rgba(249, 115, 22, 0.08)), transparent 28%),
     var(--bg-page);
 }
 
@@ -57,11 +57,24 @@ body {
 .app-sider {
   background: var(--sider-bg) !important;
   border-right: 1px solid var(--border-color);
+  position: relative;
+}
+
+.app-sider::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(160deg, color-mix(in srgb, var(--primary) calc(var(--sider-tint-opacity, 0.10) * 100%), transparent), transparent 45%),
+    linear-gradient(20deg, color-mix(in srgb, var(--accent) calc(var(--sider-tint-opacity, 0.10) * 80%), transparent), transparent 40%);
 }
 
 .app-sider .ant-menu {
   background: transparent !important;
   color: var(--text-main);
+  padding: 6px;
+  gap: var(--menu-gap, 8px);
 }
 
 .app-sider .ant-menu-item-selected {
@@ -69,10 +82,97 @@ body {
   color: var(--primary) !important;
 }
 
+.app-sider .ant-menu-item,
+.app-sider .ant-menu-submenu-title {
+  border-radius: var(--menu-radius, 12px) !important;
+  margin-block: calc(var(--menu-gap, 8px) / 2) !important;
+}
+
+html[data-ui-style-family='minimal'] .app-header,
+html[data-ui-style-family='minimal'] .app-elevated-card {
+  backdrop-filter: none;
+  box-shadow: 0 6px 20px rgba(15, 23, 42, 0.08);
+}
+
+html[data-ui-style-family='glass'] .app-header,
+html[data-ui-style-family='glass'] .app-elevated-card,
+html[data-ui-style-family='glass'] .hero-card {
+  backdrop-filter: blur(12px) saturate(125%);
+  background: color-mix(in srgb, var(--bg-panel) 78%, transparent) !important;
+  box-shadow: 0 14px 36px rgba(15, 23, 42, 0.12);
+}
+
+html[data-ui-style-family='brutal'] .app-elevated-card,
+html[data-ui-style-family='brutal'] .hero-card,
+html[data-ui-style-family='brutal'] .ant-btn {
+  border-width: 2px !important;
+  border-radius: 4px !important;
+  box-shadow: 4px 4px 0 color-mix(in srgb, var(--primary) 55%, #000) !important;
+}
+
+html[data-ui-style-family='brutal'] .app-sider .ant-menu-item-selected {
+  background: color-mix(in srgb, var(--primary) 22%, transparent) !important;
+}
+
+html[data-ui-style-family='soft'] .app-elevated-card,
+html[data-ui-style-family='soft'] .hero-card {
+  box-shadow:
+    8px 8px 18px color-mix(in srgb, #0f172a 10%, transparent),
+    -8px -8px 18px color-mix(in srgb, #ffffff 70%, transparent) !important;
+}
+
+html[data-ui-style-family='soft'] .ant-btn {
+  border-radius: 14px !important;
+}
+
+html[data-ui-style-family='cyber'] .app-header,
+html[data-ui-style-family='cyber'] .app-sider {
+  border-color: color-mix(in srgb, var(--primary) 55%, var(--border-color)) !important;
+}
+
+html[data-ui-style-family='cyber'] .app-elevated-card,
+html[data-ui-style-family='cyber'] .hero-card {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--primary) 55%, transparent), 0 0 26px color-mix(in srgb, var(--accent) 30%, transparent) !important;
+}
+
+html[data-ui-style-family='cyber'] .ant-btn-primary {
+  box-shadow: 0 0 12px color-mix(in srgb, var(--primary) 60%, transparent);
+}
+
+html[data-ui-style-family='editorial'] .app-header-title-wrap .ant-typography h4,
+html[data-ui-style-family='editorial'] .brand-block .ant-typography {
+  letter-spacing: 0.03em;
+}
+
+html[data-ui-style-family='editorial'] .app-sider .ant-menu-item,
+html[data-ui-style-family='editorial'] .app-sider .ant-menu-submenu-title {
+  border-left: 3px solid transparent;
+  border-radius: 2px !important;
+}
+
+html[data-ui-style-family='editorial'] .app-sider .ant-menu-item-selected {
+  border-left-color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 12%, transparent) !important;
+}
+
+html[data-ui-style-family='bento'] .app-content {
+  display: grid;
+  gap: 14px;
+}
+
+html[data-ui-style-family='bento'] .app-elevated-card,
+html[data-ui-style-family='bento'] .hero-card {
+  border-radius: 18px !important;
+  box-shadow: 0 8px 28px rgba(15, 23, 42, 0.1);
+}
+
 .brand-block {
-  padding: 18px 16px;
+  padding: 12px 14px;
   border-bottom: 1px solid var(--border-color);
-  margin-bottom: 8px;
+  margin-bottom: 4px;
+  min-height: 72px;
+  display: flex;
+  align-items: center;
 }
 
 .brand-logo {
@@ -81,7 +181,7 @@ body {
   border-radius: 10px;
   display: grid;
   place-items: center;
-  font-size: 12px;
+  font-size: 16px;
   font-family: 'Fira Code', monospace;
   color: #fff;
   background: linear-gradient(145deg, #3b82f6, #2563eb);
@@ -104,15 +204,19 @@ body {
   backdrop-filter: blur(6px);
   border-bottom: 1px solid var(--border-color);
   height: auto;
+  min-height: 72px;
   line-height: normal;
-  padding: 12px 18px;
+  padding: 8px 14px;
+  display: flex;
+  align-items: center;
 }
 
 .app-header-row {
   display: flex;
   justify-content: space-between;
-  align-items: flex-start;
+  align-items: center;
   gap: 12px;
+  width: 100%;
 }
 
 .app-header-row .ant-space {
@@ -123,8 +227,17 @@ body {
   color: var(--text-main) !important;
 }
 
+.app-header-title-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+}
+
 .app-header-breadcrumb {
-  margin-top: 5px;
+  margin-top: 0;
+  line-height: 1.2;
 }
 
 .app-header-breadcrumb .ant-breadcrumb-link,
@@ -158,7 +271,7 @@ body {
   border: 1px solid var(--border-color) !important;
   background: var(--bg-panel) !important;
   box-shadow: var(--shadow);
-  border-radius: 14px !important;
+  border-radius: var(--style-radius, 14px) !important;
 }
 
 .hero-card {
@@ -307,6 +420,40 @@ body {
 
 .ant-btn-primary {
   background: var(--primary);
+}
+
+.app-theme-toggle-btn.ant-btn {
+  border-radius: 999px;
+  border-color: var(--border-color);
+  min-width: 84px;
+  height: 34px;
+  padding-inline: 14px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.app-theme-toggle-btn.ant-btn:hover {
+  border-color: #93c5fd;
+  color: var(--primary);
+  box-shadow: 0 4px 14px rgba(59, 130, 246, 0.16);
+}
+
+.app-theme-toggle-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 34px;
+  padding-inline: 14px;
+  border-radius: 999px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-panel);
+  color: var(--text-main);
+  font-weight: 500;
+  line-height: 1;
 }
 
 .ant-btn-dangerous.ant-btn-color-dangerous {
@@ -553,4 +700,56 @@ body {
   .kb-layout {
     grid-template-columns: 1fr;
   }
+}
+
+.precise-sequence-diagram .srd-diagram {
+  background: #2f3136 !important;
+  width: 100% !important;
+  height: 100% !important;
+}
+
+.precise-sequence-canvas {
+  width: 100% !important;
+  height: 100% !important;
+  display: block;
+}
+
+.precise-sequence-diagram .srd-default-node {
+  border-radius: 6px !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.15) !important;
+  overflow: hidden;
+}
+
+.precise-sequence-diagram .srd-default-node__title {
+  color: #ffffff !important;
+  font-weight: 600;
+  font-size: 12px;
+  padding: 6px 10px !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.precise-sequence-diagram .srd-default-node__ports {
+  background: rgba(0, 0, 0, 0.15) !important;
+  padding: 2px 8px !important;
+}
+
+.precise-sequence-diagram .srd-default-port {
+  padding: 2px 0 !important;
+  color: #e5e7eb !important;
+  font-size: 11px !important;
+}
+
+.precise-sequence-diagram .srd-default-port label,
+.precise-sequence-diagram .srd-default-port__label {
+  display: inline !important;
+  color: #e5e7eb !important;
+  font-size: 11px !important;
+}
+
+.precise-sequence-diagram .srd-port {
+  width: 7px !important;
+  height: 7px !important;
+  background: #111827 !important;
+  border: 1px solid #9ca3af !important;
 }

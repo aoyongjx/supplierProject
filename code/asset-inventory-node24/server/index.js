@@ -2,13 +2,16 @@ import cors from 'cors'
 import { execFile as execFileCallback } from 'child_process'
 import dotenv from 'dotenv'
 import express from 'express'
+import { ChatPromptTemplate } from '@langchain/core/prompts'
 import { Annotation, END, START, StateGraph } from '@langchain/langgraph'
+import { ChatOpenAI } from '@langchain/openai'
+import ExcelJS from 'exceljs'
 import { promises as fs } from 'fs'
 import path from 'path'
 import pg from 'pg'
 import { promisify } from 'util'
 import { createPreciseSourcingLangGraph } from './agents/preciseSourcingLangGraph.js'
-import { buildLangChainToolbox, normalizeToolJsonResult } from './integrations/langchainTools.js'
+import { buildLangChainToolbox, getLangchainToolCatalog, normalizeToolJsonResult } from './integrations/langchainTools.js'
 
 dotenv.config()
 
@@ -739,6 +742,7 @@ const gasSupplierPortraitSettingTable = `"${schemaName}"."gas_supplier_portrait_
 const chatSessionTable = `"${schemaName}"."chat_session"`
 const chatMessageTable = `"${schemaName}"."chat_message"`
 const langchainSessionStateTable = `"${schemaName}"."langchain_multi_chat_state"`
+const preciseSourcingRunTable = `"${schemaName}"."precise_sourcing_run_log"`
 const modelProviderTable = `"${schemaName}"."model_provider_config"`
 const modelProviderModelTable = `"${schemaName}"."model_provider_model"`
 const knowledgeBaseTable = `"${schemaName}"."knowledge_base"`
@@ -746,6 +750,85 @@ const knowledgeBaseDocumentTable = `"${schemaName}"."knowledge_base_document"`
 const knowledgeBaseVectorTable = `"${schemaName}"."knowledge_base_vector"`
 const supplierOpinionVectorTable = `"${schemaName}"."supplier_opinion_vector"`
 const crawlExportDir = path.join(process.cwd(), 'crawl_exports')
+
+function sanitizeFilePart(input = '') {
+  return toText(input)
+    .replace(/[<>:"/\\|?*\u0000-\u001f]+/g, '_')
+    .replace(/\s+/g, '_')
+    .slice(0, 64) || 'export'
+}
+
+async function generateSourcingChartFile({ chartType = 'bar', title = '候选供应商匹配分布', labels = [], values = [] } = {}) {
+  await fs.mkdir(crawlExportDir, { recursive: true })
+  const ts = Date.now()
+  const safeTitle = sanitizeFilePart(title)
+  const fileName = `chart_${safeTitle}_${ts}.html`
+  const absPath = path.join(crawlExportDir, fileName)
+  const chartData = {
+    type: /line/i.test(toText(chartType)) ? 'line' : 'bar',
+    x: Array.isArray(labels) ? labels : [],
+    y: Array.isArray(values) ? values : [],
+    marker: { color: '#2563eb' },
+  }
+  const html = `<!doctype html><html><head><meta charset="utf-8"/><title>${title}</title><script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script></head><body><div id="chart" style="width:100%;height:90vh;"></div><script>const data=[${JSON.stringify(chartData)}];const layout={title:${JSON.stringify(title)},paper_bgcolor:'#fff',plot_bgcolor:'#fff'};Plotly.newPlot('chart',data,layout,{responsive:true});</script></body></html>`
+  await fs.writeFile(absPath, html, 'utf8')
+  return {
+    ok: true,
+    title: toText(title) || 'chart',
+    fileName,
+    downloadUrl: `/api/crawl-exports/${encodeURIComponent(fileName)}`,
+    format: 'html',
+  }
+}
+
+function toCsvCell(value) {
+  const text = String(value ?? '')
+  if (/[",\r\n]/.test(text)) return `"${text.replace(/"/g, '""')}"`
+  return text
+}
+
+async function exportSourcingFile({ format = 'md', title = '精准寻源报告', rows = [], summary = '' } = {}) {
+  await fs.mkdir(crawlExportDir, { recursive: true })
+  const ts = Date.now()
+  const safeTitle = sanitizeFilePart(title)
+  const normalizedRows = Array.isArray(rows) ? rows : []
+  let fileName = ''
+  let absPath = ''
+  if (format === 'xlsx') {
+    fileName = `report_${safeTitle}_${ts}.xlsx`
+    absPath = path.join(crawlExportDir, fileName)
+    const wb = new ExcelJS.Workbook()
+    const ws = wb.addWorksheet('report')
+    const headers = normalizedRows.length > 0 ? Object.keys(normalizedRows[0]) : ['message']
+    ws.addRow(headers)
+    for (const row of normalizedRows) ws.addRow(headers.map((h) => row?.[h] ?? ''))
+    ws.columns.forEach((col) => { col.width = Math.min(40, Math.max(12, Number(col.header?.length || 12) + 2)) })
+    await wb.xlsx.writeFile(absPath)
+  } else if (format === 'csv') {
+    fileName = `report_${safeTitle}_${ts}.csv`
+    absPath = path.join(crawlExportDir, fileName)
+    const headers = normalizedRows.length > 0 ? Object.keys(normalizedRows[0]) : ['message']
+    const lines = [headers.join(',')]
+    for (const row of normalizedRows) lines.push(headers.map((h) => toCsvCell(row?.[h] ?? '')).join(','))
+    await fs.writeFile(absPath, lines.join('\n'), 'utf8')
+  } else {
+    fileName = `report_${safeTitle}_${ts}.md`
+    absPath = path.join(crawlExportDir, fileName)
+    const headers = normalizedRows.length > 0 ? Object.keys(normalizedRows[0]) : []
+    const tableHead = headers.length > 0 ? `| ${headers.join(' | ')} |\n| ${headers.map(() => '---').join(' | ')} |` : ''
+    const tableRows = headers.length > 0
+      ? normalizedRows.map((row) => `| ${headers.map((h) => String(row?.[h] ?? '')).join(' | ')} |`).join('\n')
+      : ''
+    const md = `# ${title}\n\n${summary ? `${summary}\n\n` : ''}${tableHead}${tableRows ? `\n${tableRows}\n` : '\n'}`
+    await fs.writeFile(absPath, md, 'utf8')
+  }
+  return {
+    ok: true,
+    fileName,
+    format,
+    downloadUrl: `/api/crawl-exports/${encodeURIComponent(fileName)}`,
+  }
+}
 const supplyChainRootTitle = '新能源汽车制造供应链'
 const supplierCrawlTaskStore = new Map()
 const supplierTaskStoreFile = path.join(process.cwd(), 'logs', 'supplier-crawl-tasks.json')
@@ -2392,6 +2475,27 @@ async function initDatabase() {
       current_session VARCHAR(128) NOT NULL DEFAULT '',
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+    CREATE TABLE IF NOT EXISTS ${preciseSourcingRunTable} (
+      id BIGSERIAL PRIMARY KEY,
+      owner VARCHAR(128) NOT NULL,
+      trace_version VARCHAR(64) NOT NULL DEFAULT '',
+      user_input TEXT NOT NULL DEFAULT '',
+      selected_tools JSONB NOT NULL DEFAULT '[]',
+      selected_kb_ids JSONB NOT NULL DEFAULT '[]',
+      selected_db_tables JSONB NOT NULL DEFAULT '[]',
+      model_name VARCHAR(255) NOT NULL DEFAULT '',
+      answer TEXT NOT NULL DEFAULT '',
+      query_statements JSONB NOT NULL DEFAULT '{}',
+      evidence JSONB NOT NULL DEFAULT '{}',
+      traces JSONB NOT NULL DEFAULT '[]',
+      react JSONB NOT NULL DEFAULT '{}',
+      artifacts JSONB NOT NULL DEFAULT '[]',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_precise_sourcing_run_owner_created
+      ON ${preciseSourcingRunTable}(owner, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_precise_sourcing_run_trace_version
+      ON ${preciseSourcingRunTable}(trace_version);
     CREATE TABLE IF NOT EXISTS ${modelProviderTable} (
       id BIGSERIAL PRIMARY KEY,
       provider_name VARCHAR(64) NOT NULL UNIQUE,
@@ -16322,6 +16426,68 @@ app.put('/api/gas-supplier-portrait-settings', authMiddleware, async (req, res) 
   }
 })
 
+app.get('/api/ui-style-settings', authMiddleware, async (_req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT settings_json AS "settingsJson" FROM ${gasSupplierPortraitSettingTable} WHERE setting_key = $1 LIMIT 1`,
+      ['ui_style_v1'],
+    )
+    const settings = result.rows[0]?.settingsJson || {}
+    return res.json({ code: 200, message: 'success', data: settings })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `读取UI样式设置失败: ${error.message}`, data: null })
+  }
+})
+
+app.put('/api/ui-style-settings', authMiddleware, async (req, res) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {}
+    await pool.query(
+      `
+      INSERT INTO ${gasSupplierPortraitSettingTable} (setting_key, settings_json, updated_at)
+      VALUES ($1, $2::jsonb, NOW())
+      ON CONFLICT (setting_key)
+      DO UPDATE SET settings_json = EXCLUDED.settings_json, updated_at = NOW()
+      `,
+      ['ui_style_v1', JSON.stringify(body || {})],
+    )
+    return res.json({ code: 200, message: 'success', data: body })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `保存UI样式设置失败: ${error.message}`, data: null })
+  }
+})
+
+app.get('/api/menu-visibility-settings', authMiddleware, async (_req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT settings_json AS "settingsJson" FROM ${gasSupplierPortraitSettingTable} WHERE setting_key = $1 LIMIT 1`,
+      ['menu_visibility_v1'],
+    )
+    const settings = result.rows[0]?.settingsJson || {}
+    return res.json({ code: 200, message: 'success', data: settings })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `读取菜单设置失败: ${error.message}`, data: null })
+  }
+})
+
+app.put('/api/menu-visibility-settings', authMiddleware, async (req, res) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {}
+    await pool.query(
+      `
+      INSERT INTO ${gasSupplierPortraitSettingTable} (setting_key, settings_json, updated_at)
+      VALUES ($1, $2::jsonb, NOW())
+      ON CONFLICT (setting_key)
+      DO UPDATE SET settings_json = EXCLUDED.settings_json, updated_at = NOW()
+      `,
+      ['menu_visibility_v1', JSON.stringify(body || {})],
+    )
+    return res.json({ code: 200, message: 'success', data: body })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `保存菜单设置失败: ${error.message}`, data: null })
+  }
+})
+
 app.get('/api/stocks/overview', authMiddleware, async (req, res) => {
   const limit = Math.min(Math.max(Number(req.query.limit || 500), 1), 2000)
   try {
@@ -16410,11 +16576,19 @@ app.get('/api/stocks/kline', authMiddleware, async (req, res) => {
 })
 
 async function callPreciseSourcingLlm(state) {
-  const apiKey = toText(process.env.OPENAI_API_KEY || process.env.QWEN_API_KEY)
+  const apiKey = toText(process.env.OPENAI_API_KEY || process.env.LLM_API_KEY || process.env.QWEN_API_KEY)
   if (!apiKey) return ''
 
-  const model = toText(process.env.OPENAI_CHAT_MODEL || process.env.DEFAULT_LLM_MODEL || 'gpt-4.1-mini')
-  const baseUrl = toText(process.env.OPENAI_BASE_URL || 'https://api.openai.com')
+  const model = toText(state?.model || process.env.OPENAI_CHAT_MODEL || process.env.LANGCHAIN_CHAT_MODEL || process.env.DEFAULT_LLM_MODEL || 'gpt-4.1-mini')
+  const baseUrl = toText(process.env.OPENAI_BASE_URL || process.env.LLM_BASE_URL || 'https://api.openai.com')
+  const customSystemPrompt = toText(state?.systemPrompt)
+  const presetKey = toText(state?.systemPromptPresetKey || 'default')
+  const promptPresetMap = {
+    default: '你是汽车供应链精准寻源助手。目标：基于数据库/知识库/互联网证据输出可执行候选建议。要求：先结论后证据；默认Top3；每条含名称、匹配理由、风险提示；无证据要明确说明；中文简洁结构化输出。',
+    risk: '你是汽车供应链采购风控助手。目标：优先识别风险再推荐候选。要求：先给风险等级与原因，再给Top3候选；每条包含匹配点、主要风险、核验项；证据不足必须标注“待核验”；中文简洁输出。',
+    fast: '你是汽车供应链线索筛选助手。目标：快速给出可跟进线索。要求：先直接回答，再给Top3；每条只写名称+一句理由+推荐动作；控制篇幅；无命中给替代关键词；中文输出。',
+  }
+  const resolvedSystemPrompt = customSystemPrompt || promptPresetMap[presetKey] || promptPresetMap.default
   const resolveSupplierDisplayName = (item = {}) => toText(
     item?.companyName
     || item?.company_name
@@ -16454,47 +16628,60 @@ async function callPreciseSourcingLlm(state) {
       cosineDistance: Number(item.cosineDistance || 0),
       snippet: toText(item.chunkText).slice(0, 80),
     })),
+    webHits: (state.webHits || []).slice(0, 5).map((item) => ({
+      title: toText(item.title || item.name || ''),
+      url: toText(item.url || item.link || ''),
+      snippet: toText(item.snippet || item.content || '').slice(0, 100),
+    })),
   }
-  const response = await fetchByNetworkPolicy(`${baseUrl.replace(/\/+$/, '')}/v1/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model,
-      temperature: Math.max(0, Math.min(1, Number(state?.temperature ?? 0.2))),
-      messages: [
-        { role: 'system', content: '你是精准寻源智能体。只输出简洁业务结论，禁止输出推理过程。' },
-        {
-          role: 'user',
-          content: `请基于证据输出中文简洁结果，严格使用以下模板（不超过12行）：
+  try {
+    const prompt = ChatPromptTemplate.fromMessages([
+      ['system', '{systemPrompt}'],
+      ['human', `请基于证据输出中文简洁结果，严格使用以下模板（不超过12行）：
 【直接回答】先正面回答用户问题（一句话）
 【结论】一句话
 【意图】一句话
-【命中统计】DB x条，RAG y条
+【命中统计】DB x条，RAG y条，WEB z条
 【候选供应商Top3】每行“序号. 名称 | 理由(不超过20字)”
 【下一步】1-3条可执行动作
 ${state?.generateCharts === false ? '【图表】不生成图表。' : '【图表】给出建议图表类型（如柱状图/雷达图）及字段。'}
 ${toText(state?.reportTemplate?.type) ? `【报告模板】按 ${toText(state.reportTemplate.type)} 模板组织章节。` : ''}
 
 证据JSON：
-${JSON.stringify(evidencePayload)}`,
-        },
-      ],
-    }),
-  })
-  const payload = await response.json().catch(() => ({}))
-  const answer = toText(payload?.choices?.[0]?.message?.content)
-  if (answer) return answer
-  const errMsg = toText(payload?.error?.message || payload?.message || '')
-  if (/not supported when using Codex with a ChatGPT account/i.test(errMsg)) {
-    return ''
+{evidenceJson}`],
+    ])
+
+    const llm = new ChatOpenAI({
+      apiKey,
+      model,
+      temperature: Math.max(0, Math.min(1, Number(state?.temperature ?? 0.2))),
+      configuration: {
+        baseURL: /\/v\d+$/i.test(baseUrl.replace(/\/+$/, '')) ? baseUrl.replace(/\/+$/, '') : `${baseUrl.replace(/\/+$/, '')}/v1`,
+      },
+    })
+
+    const chain = prompt.pipe(llm)
+    const result = await chain.invoke({
+      systemPrompt: resolvedSystemPrompt,
+      evidenceJson: JSON.stringify(evidencePayload),
+    })
+
+    const text = (() => {
+      if (typeof result?.content === 'string') return toText(result.content)
+      if (Array.isArray(result?.content)) {
+        return result.content
+          .map((part) => toText(part?.text || part?.content || (typeof part === 'string' ? part : '')))
+          .filter(Boolean)
+          .join('\n')
+      }
+      return ''
+    })()
+    return text
+  } catch (error) {
+    const errMsg = toText(error?.message || '')
+    if (/not supported when using Codex with a ChatGPT account/i.test(errMsg)) return ''
+    return errMsg ? `模型调用失败：${errMsg}` : ''
   }
-  if (!response.ok) {
-    return `模型调用失败（HTTP ${response.status}）：${errMsg || 'unknown error'}`
-  }
-  return ''
 }
 
 function buildPreciseSourcingFallbackAnswer(state) {
@@ -16637,13 +16824,16 @@ const preciseSourcingLangGraph = createPreciseSourcingLangGraph({
     const strictMode = options?.strictMode === true
     const rows = []
     try {
-      const dbToolRaw = await preciseSourcingToolbox.byName.sqlSearchSuppliers.invoke({
+      const dbToolRaw = await invokeRunnableTool(preciseSourcingToolbox.byName.sqlSearchSuppliers, {
         query: toText(userInput),
         limit: dbTopK,
-      })
+        selectedDbTables: Array.isArray(options?.selectedDbTables) ? options.selectedDbTables : [],
+        strictMode: options?.strictMode === true,
+      }, { tool: 'sql_search_suppliers' })
       const dbToolResult = normalizeToolJsonResult(dbToolRaw)
-      if (dbToolResult?.ok && Array.isArray(dbToolResult.rows)) {
-        rows.push(...dbToolResult.rows.map((r, idx) => ({
+      const dbRows = Array.isArray(dbToolResult?.data?.rows) ? dbToolResult.data.rows : []
+      if (dbToolResult?.ok && dbRows.length > 0) {
+        rows.push(...dbRows.map((r, idx) => ({
           ...r,
           _fromTable: toText(r?._fromTable || 'supplier_base_info'),
           _rowId: toText(r?.id || r?.company_name || r?.companyName || `tool-supplier-${idx}`),
@@ -16885,15 +17075,16 @@ const preciseSourcingLangGraph = createPreciseSourcingLangGraph({
     const targets = Array.isArray(kbIds) ? kbIds.map((x) => toText(x)).filter(Boolean) : [toText(kbIds)].filter(Boolean)
     const rows = []
     try {
-      const ragToolRaw = await preciseSourcingToolbox.byName.ragSearchEvidence.invoke({
+      const ragToolRaw = await invokeRunnableTool(preciseSourcingToolbox.byName.ragSearchEvidence, {
         kbIds: targets,
         query: toText(userInput),
         topK: Math.min(Number(topK || 20), 20),
         strictKeyword: true,
-      })
+      }, { tool: 'rag_search_evidence' })
       const ragToolResult = normalizeToolJsonResult(ragToolRaw)
-      if (ragToolResult?.ok && Array.isArray(ragToolResult.hits) && ragToolResult.hits.length > 0) {
-        rows.push(...ragToolResult.hits)
+      const ragHits = Array.isArray(ragToolResult?.data?.hits) ? ragToolResult.data.hits : []
+      if (ragToolResult?.ok && ragHits.length > 0) {
+        rows.push(...ragHits)
       }
     } catch {
       // Toolbox RAG 失败时回退到既有 HTTP 查询链路
@@ -16936,7 +17127,7 @@ const preciseSourcingLangGraph = createPreciseSourcingLangGraph({
   },
   async traceStep(step = '', payload = {}) {
     try {
-      await preciseSourcingToolbox.byName.traceTool.invoke({ step: toText(step), payload })
+      await invokeRunnableTool(preciseSourcingToolbox.byName.traceTool, { step: toText(step), payload }, { tool: 'trace_agent_step' })
     } catch {
       // ignore trace failure
     }
@@ -16945,20 +17136,63 @@ const preciseSourcingLangGraph = createPreciseSourcingLangGraph({
     const supplierRows = Array.isArray(state?.supplierRows) ? state.supplierRows : []
     const kbHits = Array.isArray(state?.kbHits) ? state.kbHits : []
     const webHits = Array.isArray(state?.webHits) ? state.webHits : []
+    const llmCandidates = await extractSupplierCandidatesByLlmBatch(webHits, 6, toText(state?.model), { query: toText(state?.userInput) })
+    const webSuppliers = Array.from(new Set(
+      webHits
+        .flatMap((item, idx) => {
+          const fromLlm = Array.isArray(llmCandidates?.[idx]) ? llmCandidates[idx] : []
+          const fromRule = extractSupplierCandidatesFromText(`${toText(item?.title)} ${toText(item?.snippet || item?.content)}`, 6, { query: toText(state?.userInput) })
+          return [...fromLlm, ...fromRule]
+        })
+        .map((x) => toText(x))
+        .filter(Boolean),
+    ))
+    const fusedSuppliers = supplierRows
+      .map((row) => {
+        const name = toText(
+          row?.companyName
+          || row?.company_name
+          || row?.name
+          || row?.supplier_name
+          || '',
+        )
+        const webSupportCount = name
+          ? webSuppliers.filter((candidate) => candidate.includes(name) || name.includes(candidate)).length
+          : 0
+        return {
+          ...row,
+          _webSupportCount: webSupportCount,
+          _fusedScore: Number((Number(row?._matchScore || 0) + webSupportCount * 1.2).toFixed(3)),
+        }
+      })
+      .sort((a, b) => Number(b?._fusedScore || 0) - Number(a?._fusedScore || 0))
     return {
-      suppliers: supplierRows.slice(0, 20),
+      suppliers: fusedSuppliers.slice(0, 20),
       kbHits: kbHits.slice(0, 20),
       webHits: webHits.slice(0, 20),
+      webDerivedSuppliers: webSuppliers.slice(0, 10),
     }
   },
   async searchWeb(query = '', topK = 5) {
-    const raw = await preciseSourcingToolbox.byName.webSearchTool.invoke({
+    const raw = await invokeRunnableTool(preciseSourcingToolbox.byName.webSearchTool, {
       query: toText(query),
       topK: Math.min(Math.max(Number(topK || 5), 1), 10),
-    })
+    }, { tool: 'web_search_supplier_signals' })
     const parsed = normalizeToolJsonResult(raw)
     if (!parsed?.ok) throw new Error(toText(parsed?.error || 'web_search_failed'))
-    return Array.isArray(parsed.results) ? parsed.results : []
+    return Array.isArray(parsed?.data?.results) ? parsed.data.results : []
+  },
+  async generateChart(params = {}) {
+    const raw = await invokeRunnableTool(preciseSourcingToolbox.byName.chartGeneratorTool, params, { tool: 'python_chart_generator' })
+    const parsed = normalizeToolJsonResult(raw)
+    if (!parsed?.ok) throw new Error(toText(parsed?.error || 'chart_generate_failed'))
+    return parsed?.artifact || parsed?.data || parsed
+  },
+  async exportReport(params = {}) {
+    const raw = await invokeRunnableTool(preciseSourcingToolbox.byName.fileExporterTool, params, { tool: 'file_exporter' })
+    const parsed = normalizeToolJsonResult(raw)
+    if (!parsed?.ok) throw new Error(toText(parsed?.error || 'file_export_failed'))
+    return parsed?.artifact || parsed?.data || parsed
   },
   async generateAnswer(state) {
     let answer = await callPreciseSourcingLlm(state)
@@ -16971,22 +17205,45 @@ const preciseSourcingLangGraph = createPreciseSourcingLangGraph({
 
 app.post('/api/agents/precise-sourcing/chat', authMiddleware, async (req, res) => {
   const traceVersion = 'ps-v20260506-04'
+  const owner = toText(req.authUser?.userName || req.authUser?.username || 'unknown')
   const userInput = toText(req.body?.message)
   const authHeader = toText(req.headers.authorization)
   const kbIdInput = toText(req.body?.kbId)
   const kbIdsInput = Array.isArray(req.body?.kbIds) ? req.body.kbIds.map((x) => toText(x)).filter(Boolean) : []
   const selectedDbTables = Array.isArray(req.body?.selectedDbTables) ? req.body.selectedDbTables.map((x) => toText(x)).filter(Boolean) : []
-  const selectedSkills = Array.isArray(req.body?.selectedSkills)
+  const selectedToolsRaw = Array.isArray(req.body?.selectedTools)
+    ? req.body.selectedTools.map((x) => toText(x)).filter(Boolean)
+    : []
+  const selectedSkillsRaw = Array.isArray(req.body?.selectedSkills)
     ? req.body.selectedSkills.map((x) => toText(x)).filter(Boolean)
-    : (Array.isArray(req.body?.selectedTools) ? req.body.selectedTools.map((x) => toText(x)).filter(Boolean) : [])
+    : []
+  const selectedTools = [...new Set([...selectedToolsRaw, ...selectedSkillsRaw])]
   const topK = Math.min(Math.max(Number(req.body?.topK || 20), 5), 50)
   const dbTopK = Math.min(Math.max(Number(req.body?.dbTopK || 10), 1), 100)
   const generateCharts = req.body?.generateCharts !== false
   const temperature = Math.max(0, Math.min(1, Number(req.body?.temperature ?? 0.2)))
   const reportTemplate = req.body?.reportTemplate && typeof req.body.reportTemplate === 'object' ? req.body.reportTemplate : null
   const strictMode = req.body?.strictMode === true
+  const selectedModel = toText(req.body?.model)
+  const systemPrompt = toText(req.body?.systemPrompt)
+  const systemPromptPresetKey = toText(req.body?.systemPromptPresetKey || 'default')
   if (!userInput) {
     return res.status(400).json({ code: 400, message: '缺少参数：message', data: null })
+  }
+  const toolCatalog = getLangchainToolCatalog()
+  const allowedToolKeys = new Set(toolCatalog.map((item) => item.key))
+  const unavailableTools = selectedTools.filter((key) => {
+    const item = toolCatalog.find((tool) => tool.key === key)
+    return item && item.available === false
+  })
+  const invalidTools = selectedTools.filter((key) => !allowedToolKeys.has(key))
+  if (invalidTools.length > 0) {
+    return res.status(400).json({ code: 400, message: `存在未知工具: ${invalidTools.join(', ')}`, data: null })
+  }
+  if (unavailableTools.length > 0) {
+    const reasonMap = new Map(toolCatalog.map((item) => [item.key, item.reason || '工具当前不可用']))
+    const reasonText = unavailableTools.map((key) => `${key}(${reasonMap.get(key) || '不可用'})`).join(', ')
+    return res.status(400).json({ code: 400, message: `所选工具不可用: ${reasonText}`, data: null })
   }
   const targetKbId = kbIdInput || kbIdsInput[0] || toText(knowledgeBaseStore.keys().next()?.value)
   const targetKbIds = kbIdsInput.length > 0 ? kbIdsInput : (targetKbId ? [targetKbId] : [])
@@ -17001,39 +17258,39 @@ app.post('/api/agents/precise-sourcing/chat', authMiddleware, async (req, res) =
       dbTopK,
       selectedDbTables,
       strictMode,
-      selectedSkills,
+      selectedSkills: selectedTools,
+      selectedTools,
+      model: selectedModel,
+      systemPrompt,
+      systemPromptPresetKey,
       generateCharts,
       temperature,
       reportTemplate,
     })
-    const safeSuppliers = toJsonSafe(Array.isArray(graphResult.supplierRows) ? graphResult.supplierRows.slice(0, 20) : [])
-    const safeKbHits = toJsonSafe(
-      Array.isArray(graphResult.kbHits)
-        ? graphResult.kbHits.slice(0, 20).map((item) => toCompactKbHit(item))
-        : [],
-    )
-
-    const tracesWithVersion = Array.isArray(graphResult.traces)
-      ? graphResult.traces.map((item) => ({ ...item, traceVersion }))
-      : []
+    const payload = await buildPreciseSourcingResponsePayload({
+      graphResult,
+      traceVersion,
+      userInput,
+      selectedTools,
+      targetKbId,
+      targetKbIds,
+      selectedDbTables,
+      reportTemplate,
+      modelName: selectedModel,
+    })
+    await persistPreciseSourcingRun({
+      owner,
+      userInput,
+      payload,
+      selectedTools,
+      targetKbIds,
+      selectedDbTables,
+      modelName: selectedModel,
+    }).catch(() => {})
     return res.json({
       code: 200,
       message: 'success',
-      data: {
-        traceVersion,
-        agent: 'precise-sourcing',
-        kbId: targetKbId || '',
-        kbIds: targetKbIds,
-        intent: toText(graphResult.intent || 'supplier_search'),
-        demand: graphResult.demand || {},
-        answer: toText(graphResult.answer),
-        traces: tracesWithVersion,
-        react: graphResult.react || { rounds: [] },
-        evidence: {
-          suppliers: safeSuppliers,
-          kbHits: safeKbHits,
-        },
-      },
+      data: payload,
     })
   } catch (error) {
     return res.status(500).json({ code: 500, message: `精准寻源智能体执行失败: ${error.message}`, data: null })
@@ -17045,6 +17302,168 @@ function normalizeImageDataUrl(input) {
   if (!value) return ''
   const ok = /^data:image\/(png|jpeg|jpg|gif|webp|bmp);base64,[a-z0-9+/=\r\n]+$/i.test(value)
   return ok ? value : ''
+}
+
+async function invokeRunnableTool(tool, input, metadata = {}) {
+  if (!tool || typeof tool.invoke !== 'function') {
+    throw new Error(`tool_not_invokable:${toText(metadata?.tool || 'unknown')}`)
+  }
+  try {
+    if (typeof tool.withRetry === 'function') {
+      return await tool
+        .withRetry({
+          stopAfterAttempt: 2,
+        })
+        .withConfig({
+          tags: ['precise-sourcing', 'tool'],
+          metadata,
+        })
+        .invoke(input)
+    }
+  } catch {
+    // fallback to plain invoke
+  }
+  return await tool.invoke(input)
+}
+
+function parsePreciseSourcingStructuredOutput(answer = '') {
+  const text = toText(answer)
+  const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+  const pickAfter = (label) => {
+    const row = lines.find((line) => line.startsWith(label))
+    return row ? toText(row.replace(label, '')) : ''
+  }
+  const top3 = lines
+    .filter((line) => /^\d+\.\s/.test(line))
+    .slice(0, 5)
+    .map((line) => line.replace(/^\d+\.\s*/, '').trim())
+  const riskLevel = (() => {
+    const low = text.match(/(低风险|低)/)
+    const high = text.match(/(高风险|高)/)
+    const mid = text.match(/(中风险|中)/)
+    if (high) return 'high'
+    if (mid) return 'medium'
+    if (low) return 'low'
+    return ''
+  })()
+  return {
+    summary: pickAfter('【结论】') || pickAfter('结论：'),
+    directAnswer: pickAfter('【直接回答】') || '',
+    intent: pickAfter('【意图】') || '',
+    riskLevel,
+    topCandidates: top3,
+    nextSteps: lines.filter((line) => /^(\d+\.)/.test(line)).slice(0, 3),
+    rawText: text,
+  }
+}
+
+function extractSupplierCandidatesFromText(text = '', limit = 5, options = {}) {
+  const content = toText(text)
+  if (!content) return []
+  const queryText = toText(options?.query || '')
+  const queryTargets = Array.from(new Set(
+    queryText
+      .split(/[\s,，。；;、|/]+|请|帮我|帮忙|搜索|查找|寻找|找出|匹配|推荐|筛选|关于|有关|针对|相关|以及|和|与|的|供应商|配套|企业/g)
+      .map((x) => toText(x))
+      .filter((x) => x.length >= 2),
+  ))
+  const pattern = /([\u4e00-\u9fa5A-Za-z0-9（）()·\-]{2,40}(?:股份有限公司|有限责任公司|有限公司|集团有限公司|集团|公司))/g
+  const stopPrefix = /^(在|还在|并在|并于|尽管|同时|预计|预测|此外|另外|其中|以及|与|和|对|将|已|为|被|由|于|至于|关于)/
+  const stopContains = /(公告|新闻|财经|报道|日讯|今日|昨日|今年|明年|季度|年度|项目|合作|会议|发布|消息|称|表示|指出|认为|证券|银行|保险|基金|期货|交易所|传媒|电视台|报社|研究院|人民政府|委员会|合计|控制公司|截至|万元|亿元|月公司|年公司)/
+  const invalidChars = /[\s"'“”‘’《》【】\[\]{}<>|/\\]/
+  const normalizeCompany = (raw = '') => toText(raw)
+    .replace(/[，,。；;:：、!！?？]+$/g, '')
+    .replace(/^[：:，,。；;、\-\s]+/g, '')
+    .trim()
+  const isValidCompany = (name = '') => {
+    const value = normalizeCompany(name)
+    if (!value) return false
+    if (value.length < 4 || value.length > 36) return false
+    if (invalidChars.test(value)) return false
+    if (stopPrefix.test(value)) return false
+    if (stopContains.test(value)) return false
+    if (!/(股份有限公司|有限责任公司|有限公司|集团有限公司|集团|公司)$/.test(value)) return false
+    if (/(供应商|互联网|证券|首页|点击|http|www\.)/i.test(value)) return false
+    if (queryTargets.some((target) => target && value.includes(target) && value.length <= target.length + 4)) return false
+    if (/(汽车股份有限公司|汽车集团有限公司|汽车有限公司)$/.test(value) && queryTargets.some((target) => value.includes(target))) return false
+    return true
+  }
+  const list = []
+  const seen = new Set()
+  let match = null
+  while ((match = pattern.exec(content)) !== null) {
+    const name = normalizeCompany(match?.[1] || '')
+    if (!isValidCompany(name)) continue
+    if (seen.has(name)) continue
+    seen.add(name)
+    list.push(name)
+    if (list.length >= Math.max(1, Number(limit || 5))) break
+  }
+  return list
+}
+
+async function extractSupplierCandidatesByLlmBatch(items = [], perItemLimit = 5, modelName = '', options = {}) {
+  const rows = Array.isArray(items) ? items : []
+  if (rows.length === 0) return []
+  const apiKey = toText(process.env.OPENAI_API_KEY || process.env.LLM_API_KEY || process.env.QWEN_API_KEY)
+  if (!apiKey) return []
+  const baseUrl = toText(process.env.OPENAI_BASE_URL || process.env.LLM_BASE_URL || 'https://api.openai.com')
+  const model = toText(modelName || process.env.LANGCHAIN_CHAT_MODEL || process.env.OPENAI_CHAT_MODEL || process.env.DEFAULT_LLM_MODEL || 'gpt-4.1-mini')
+  const apiBase = /\/v\d+$/i.test(baseUrl.replace(/\/+$/, '')) ? baseUrl.replace(/\/+$/, '') : `${baseUrl.replace(/\/+$/, '')}/v1`
+  const queryText = toText(options?.query || '')
+  const packed = rows.slice(0, 8).map((row, idx) => ({
+    index: idx,
+    title: toText(row?.title || row?.name || ''),
+    snippet: toText(row?.snippet || row?.content || '').slice(0, 400),
+    url: toText(row?.url || row?.link || ''),
+  }))
+  const prompt = [
+    '你是企业实体抽取器。目标：从每条文本中抽取“供应商企业名称”。',
+    '规则：',
+    '1) 只返回公司/集团等组织实体，不要返回句子片段。',
+    '2) 排除媒体、证券、金融机构、政府机构、整车厂名称本体。',
+    '3) 单条最多返回 5 个。',
+    '4) 若无可用实体返回空数组。',
+    '5) 仅输出 JSON，格式：{"items":[{"index":0,"companies":["A公司","B有限公司"]}]}',
+    '',
+    `用户查询：${queryText}`,
+    `输入：${JSON.stringify(packed)}`,
+  ].join('\n')
+  try {
+    const resp = await fetchByNetworkPolicy(`${apiBase}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        temperature: 0,
+        messages: [
+          { role: 'system', content: '你只输出JSON，不要解释。' },
+          { role: 'user', content: prompt },
+        ],
+      }),
+    })
+    const payload = await resp.json().catch(() => ({}))
+    if (!resp.ok) return []
+    const raw = toText(payload?.choices?.[0]?.message?.content || '')
+    const first = raw.indexOf('{')
+    const last = raw.lastIndexOf('}')
+    if (first < 0 || last <= first) return []
+    const obj = JSON.parse(raw.slice(first, last + 1))
+    const itemRows = Array.isArray(obj?.items) ? obj.items : []
+    const result = Array.from({ length: packed.length }, () => [])
+    for (const row of itemRows) {
+      const idx = Number(row?.index)
+      if (!Number.isInteger(idx) || idx < 0 || idx >= result.length) continue
+      const arr = Array.isArray(row?.companies) ? row.companies : []
+      result[idx] = arr.map((x) => toText(x)).filter(Boolean).slice(0, Math.max(1, Number(perItemLimit || 5)))
+    }
+    return result
+  } catch {
+    return []
+  }
 }
 
 function toLangchainMessages(history = [], userMessage = '', userImageDataUrl = '') {
@@ -17166,7 +17585,141 @@ const preciseSourcingToolbox = buildLangChainToolbox({
   async trace({ step, payload }) {
     console.log(`[precise-sourcing.trace] ${toText(step)}`, payload || {})
   },
+  async generateChart({ chartType, title, labels, values }) {
+    return await generateSourcingChartFile({ chartType, title, labels, values })
+  },
+  async exportFile({ format, title, rows, summary }) {
+    return await exportSourcingFile({ format, title, rows, summary })
+  },
 })
+
+async function buildPreciseSourcingResponsePayload({
+  graphResult,
+  traceVersion,
+  userInput,
+  selectedTools,
+  targetKbId,
+  targetKbIds,
+  selectedDbTables,
+  reportTemplate,
+  modelName,
+}) {
+  const safeSuppliers = toJsonSafe(Array.isArray(graphResult.supplierRows) ? graphResult.supplierRows.slice(0, 20) : [])
+  const safeKbHits = toJsonSafe(
+    Array.isArray(graphResult.kbHits)
+      ? graphResult.kbHits.slice(0, 20).map((item) => toCompactKbHit(item))
+      : [],
+  )
+  const rawWebHits = (Array.isArray(graphResult.webHits) ? graphResult.webHits : []).slice(0, 20)
+  const llmCandidates = await extractSupplierCandidatesByLlmBatch(rawWebHits, 5, toText(modelName), { query: toText(userInput) })
+  const safeWebHits = toJsonSafe(
+    rawWebHits.map((item, idx) => {
+      const title = toText(item?.title || item?.name || '')
+      const snippet = toText(item?.snippet || item?.content || '')
+      const fromLlm = Array.isArray(llmCandidates?.[idx]) ? llmCandidates[idx] : []
+      const fromRule = extractSupplierCandidatesFromText(`${title} ${snippet}`, 5, { query: toText(userInput) })
+      const suppliers = Array.from(new Set([...fromLlm, ...fromRule].map((x) => toText(x)).filter(Boolean))).slice(0, 5)
+      return {
+        ...item,
+        supplierCandidates: suppliers,
+      }
+    }),
+  )
+  const webDerivedSuppliers = Array.from(new Set(
+    (Array.isArray(safeWebHits) ? safeWebHits : [])
+      .flatMap((item) => (Array.isArray(item?.supplierCandidates) ? item.supplierCandidates : []))
+      .map((x) => toText(x))
+      .filter(Boolean),
+  )).slice(0, 10)
+  const tracesWithVersion = Array.isArray(graphResult.traces)
+    ? graphResult.traces.map((item) => ({ ...item, traceVersion }))
+    : []
+  const artifacts = Array.isArray(graphResult.artifacts) ? graphResult.artifacts : []
+  const structured = parsePreciseSourcingStructuredOutput(toText(graphResult.answer))
+  const queryStatements = {
+    orchestration: {
+      selectedTools,
+      selectedKbIds: targetKbIds,
+      selectedDbTables: Array.isArray(selectedDbTables) ? selectedDbTables : [],
+      reportTemplateType: toText(reportTemplate?.type || 'none'),
+    },
+    db: {
+      keyword: toText(graphResult?.executionPlan?.dbQuery || userInput),
+      template: 'SELECT * FROM <schema>.<selected_table> AS t WHERE to_jsonb(t)::text ILIKE %keyword% LIMIT <n>',
+      selectedTables: Array.isArray(selectedDbTables) ? selectedDbTables : [],
+    },
+    rag: {
+      keyword: toText(graphResult?.executionPlan?.ragQuery || userInput),
+      endpoint: '/api/knowledge-bases/:id/search',
+    },
+    web: {
+      keyword: toText(graphResult?.executionPlan?.webQuery || ''),
+      provider: 'tavily',
+    },
+    fusion: {
+      strategy: '按相关度聚合DB/RAG/WEB并去重，保留Top证据',
+      dbHits: Array.isArray(safeSuppliers) ? safeSuppliers.length : 0,
+      ragHits: Array.isArray(safeKbHits) ? safeKbHits.length : 0,
+      webHits: Array.isArray(safeWebHits) ? safeWebHits.length : 0,
+      webDerivedSuppliers,
+    },
+  }
+  return {
+    traceVersion,
+    agent: 'precise-sourcing',
+    kbId: targetKbId || '',
+    kbIds: targetKbIds,
+    intent: toText(graphResult.intent || 'supplier_search'),
+    demand: graphResult.demand || {},
+    answer: toText(graphResult.answer),
+    structured,
+    queryStatements,
+    traces: tracesWithVersion,
+    react: graphResult.react || { rounds: [] },
+    artifacts,
+    evidence: {
+      suppliers: safeSuppliers,
+      kbHits: safeKbHits,
+      webHits: safeWebHits,
+      webDerivedSuppliers,
+    },
+  }
+}
+
+async function persistPreciseSourcingRun({
+  owner = '',
+  userInput = '',
+  payload = {},
+  selectedTools = [],
+  targetKbIds = [],
+  selectedDbTables = [],
+  modelName = '',
+} = {}) {
+  const safeOwner = toText(owner || 'unknown')
+  const safePayload = payload && typeof payload === 'object' ? payload : {}
+  await pool.query(
+    `
+    INSERT INTO ${preciseSourcingRunTable}
+    (owner, trace_version, user_input, selected_tools, selected_kb_ids, selected_db_tables, model_name, answer, query_statements, evidence, traces, react, artifacts, created_at)
+    VALUES ($1,$2,$3,$4::jsonb,$5::jsonb,$6::jsonb,$7,$8,$9::jsonb,$10::jsonb,$11::jsonb,$12::jsonb,$13::jsonb,NOW())
+    `,
+    [
+      safeOwner,
+      toText(safePayload.traceVersion),
+      toText(userInput),
+      JSON.stringify(Array.isArray(selectedTools) ? selectedTools : []),
+      JSON.stringify(Array.isArray(targetKbIds) ? targetKbIds : []),
+      JSON.stringify(Array.isArray(selectedDbTables) ? selectedDbTables : []),
+      toText(modelName),
+      toText(safePayload.answer),
+      JSON.stringify(safePayload.queryStatements || {}),
+      JSON.stringify(safePayload.evidence || {}),
+      JSON.stringify(Array.isArray(safePayload.traces) ? safePayload.traces : []),
+      JSON.stringify(safePayload.react || {}),
+      JSON.stringify(Array.isArray(safePayload.artifacts) ? safePayload.artifacts : []),
+    ],
+  )
+}
 
 async function callLangchainCompatibleChat(messages, options = {}) {
   const apiKey = toText(process.env.OPENAI_API_KEY || process.env.LLM_API_KEY || process.env.CODEX_API_KEY)
@@ -17402,6 +17955,36 @@ function createLangchainShellGraph() {
 const langchainShellGraph = createLangchainShellGraph()
 
 function normalizeLangchainSessionState(input = {}) {
+  const toJsonSafe = (value, fallback) => {
+    try {
+      const text = JSON.stringify(value)
+      if (typeof text !== 'string') return fallback
+      return JSON.parse(text)
+    } catch {
+      return fallback
+    }
+  }
+  const normalizeSessionMessage = (msg = {}) => {
+    const role = toText(msg.role) === 'assistant' ? 'assistant' : 'user'
+    const content = toText(msg.content)
+    const imageDataUrl = normalizeImageDataUrl(msg.imageDataUrl)
+    const normalized = { role, content, imageDataUrl }
+    if (role === 'assistant') {
+      normalized.ts = Number.isFinite(Number(msg.ts)) ? Number(msg.ts) : Date.now()
+      normalized.rawAnswer = toText(msg.rawAnswer)
+      normalized.intent = toText(msg.intent)
+      normalized.traceVersion = toText(msg.traceVersion)
+      normalized.selectedTools = Array.isArray(msg.selectedTools) ? msg.selectedTools.map((x) => toText(x)).filter(Boolean).slice(0, 50) : []
+      normalized.evidence = toJsonSafe(msg.evidence, { suppliers: [], kbHits: [], webHits: [] })
+      normalized.artifacts = Array.isArray(msg.artifacts) ? toJsonSafe(msg.artifacts, []).slice(0, 50) : []
+      normalized.queryStatements = toJsonSafe(msg.queryStatements, {})
+      normalized.traces = Array.isArray(msg.traces) ? toJsonSafe(msg.traces, []).slice(0, 200) : []
+      normalized.react = toJsonSafe(msg.react, { rounds: [] })
+    } else {
+      normalized.ts = Number.isFinite(Number(msg.ts)) ? Number(msg.ts) : Date.now()
+    }
+    return normalized
+  }
   const rawSessions = Array.isArray(input?.sessions) ? input.sessions : []
   const sessions = rawSessions
     .filter((item) => item && typeof item === 'object')
@@ -17410,11 +17993,7 @@ function normalizeLangchainSessionState(input = {}) {
       messages: Array.isArray(item.messages)
         ? item.messages
           .filter((msg) => msg && typeof msg === 'object')
-          .map((msg) => ({
-            role: toText(msg.role) === 'assistant' ? 'assistant' : 'user',
-            content: toText(msg.content),
-            imageDataUrl: normalizeImageDataUrl(msg.imageDataUrl),
-          }))
+          .map((msg) => normalizeSessionMessage(msg))
           .slice(-200)
         : [],
     }))
@@ -17541,6 +18120,104 @@ app.get('/api/langchain/session-state', authMiddleware, async (req, res) => {
   }
 })
 
+app.post('/api/agents/precise-sourcing/chat-stream', authMiddleware, async (req, res) => {
+  const traceVersion = 'ps-v20260506-04'
+  const owner = toText(req.authUser?.userName || req.authUser?.username || 'unknown')
+  const userInput = toText(req.body?.message)
+  if (!userInput) {
+    return res.status(400).json({ code: 400, message: '缺少参数：message', data: null })
+  }
+  const authHeader = toText(req.headers.authorization)
+  const kbIdInput = toText(req.body?.kbId)
+  const kbIdsInput = Array.isArray(req.body?.kbIds) ? req.body.kbIds.map((x) => toText(x)).filter(Boolean) : []
+  const selectedDbTables = Array.isArray(req.body?.selectedDbTables) ? req.body.selectedDbTables.map((x) => toText(x)).filter(Boolean) : []
+  const selectedToolsRaw = Array.isArray(req.body?.selectedTools)
+    ? req.body.selectedTools.map((x) => toText(x)).filter(Boolean)
+    : []
+  const selectedSkillsRaw = Array.isArray(req.body?.selectedSkills)
+    ? req.body.selectedSkills.map((x) => toText(x)).filter(Boolean)
+    : []
+  const selectedTools = [...new Set([...selectedToolsRaw, ...selectedSkillsRaw])]
+  const topK = Math.min(Math.max(Number(req.body?.topK || 20), 5), 50)
+  const dbTopK = Math.min(Math.max(Number(req.body?.dbTopK || 10), 1), 100)
+  const generateCharts = req.body?.generateCharts !== false
+  const temperature = Math.max(0, Math.min(1, Number(req.body?.temperature ?? 0.2)))
+  const reportTemplate = req.body?.reportTemplate && typeof req.body.reportTemplate === 'object' ? req.body.reportTemplate : null
+  const strictMode = req.body?.strictMode === true
+  const selectedModel = toText(req.body?.model)
+  const systemPrompt = toText(req.body?.systemPrompt)
+  const systemPromptPresetKey = toText(req.body?.systemPromptPresetKey || 'default')
+  const targetKbId = kbIdInput || kbIdsInput[0] || toText(knowledgeBaseStore.keys().next()?.value)
+  const targetKbIds = kbIdsInput.length > 0 ? kbIdsInput : (targetKbId ? [targetKbId] : [])
+
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8')
+  res.setHeader('Cache-Control', 'no-cache, no-transform')
+  res.setHeader('Connection', 'keep-alive')
+  res.setHeader('X-Accel-Buffering', 'no')
+
+  const sendEvent = (event, data) => {
+    try {
+      res.write(`event: ${event}\n`)
+      res.write(`data: ${JSON.stringify(data)}\n\n`)
+    } catch {
+      // ignore broken pipe
+    }
+  }
+  sendEvent('start', { traceVersion, message: '开始执行' })
+
+  try {
+    const graphResult = await preciseSourcingLangGraph.run({
+      onEvent: (evt) => {
+        if (evt?.type === 'trace' && evt?.trace) {
+          sendEvent('trace', { traceVersion, trace: evt.trace })
+        }
+      },
+      userInput,
+      authHeader,
+      kbId: targetKbId || '',
+      kbIds: targetKbIds,
+      topK: Math.min(topK, 20),
+      dbTopK,
+      selectedDbTables,
+      strictMode,
+      selectedSkills: selectedTools,
+      selectedTools,
+      model: selectedModel,
+      systemPrompt,
+      systemPromptPresetKey,
+      generateCharts,
+      temperature,
+      reportTemplate,
+    })
+    const payload = await buildPreciseSourcingResponsePayload({
+      graphResult,
+      traceVersion,
+      userInput,
+      selectedTools,
+      targetKbId,
+      targetKbIds,
+      selectedDbTables,
+      reportTemplate,
+      modelName: selectedModel,
+    })
+    await persistPreciseSourcingRun({
+      owner,
+      userInput,
+      payload,
+      selectedTools,
+      targetKbIds,
+      selectedDbTables,
+      modelName: selectedModel,
+    }).catch(() => {})
+    sendEvent('final', payload)
+    sendEvent('done', { ok: true })
+    res.end()
+  } catch (error) {
+    sendEvent('error', { message: `精准寻源智能体执行失败: ${toText(error?.message || error)}` })
+    res.end()
+  }
+})
+
 app.put('/api/langchain/session-state', authMiddleware, async (req, res) => {
   const owner = toText(req.authUser?.userName || req.authUser?.username || 'unknown')
   const chatType = normalizeLangchainChatType(req.body?.chatType)
@@ -17641,16 +18318,7 @@ app.get('/api/langchain/tools', authMiddleware, async (_req, res) => {
   return res.json({
     code: 200,
     message: 'success',
-    data: [
-      { key: 'arxiv', label: 'ARXIV论文' },
-      { key: 'calculator', label: '数学计算器' },
-      { key: 'web_search', label: '互联网搜索' },
-      { key: 'local_kb', label: '本地知识库' },
-      { key: 'youtube', label: '油管视频' },
-      { key: 'shell', label: '系统命令' },
-      { key: 'image_gen', label: '文本生成图片工具' },
-      { key: 'db_chat', label: '数据库对话' },
-    ],
+    data: getLangchainToolCatalog(),
   })
 })
 

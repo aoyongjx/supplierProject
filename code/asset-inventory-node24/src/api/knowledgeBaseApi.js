@@ -5,17 +5,31 @@ function buildAuthHeaders() {
   return token ? { Authorization: `Bearer ${token}` } : {}
 }
 
-const directApiBase = (import.meta.env.VITE_API_DIRECT_BASE || 'http://localhost:3000').replace(/\/+$/, '')
+const directApiBaseRaw = String(import.meta.env.VITE_API_DIRECT_BASE || '').trim()
+const directApiBase = directApiBaseRaw.replace(/\/+$/, '')
+
+function shouldUseDirectFallback() {
+  if (!directApiBase) return false
+  try {
+    const current = new URL(window.location.origin)
+    const direct = new URL(directApiBase)
+    return current.origin !== direct.origin
+  } catch {
+    return false
+  }
+}
 
 async function requestWithFallback(path, init = {}) {
   const primary = async () => fetch(path, init)
   const fallback = async () => fetch(`${directApiBase}${path}`, init)
+  const enableFallback = shouldUseDirectFallback()
   try {
     const response = await primary()
-    if (response.status === 502) return await fallback()
+    if (enableFallback && response.status === 502) return await fallback()
     return response
   } catch {
-    return await fallback()
+    if (enableFallback) return await fallback()
+    throw new Error('知识库请求失败：主服务不可达')
   }
 }
 
