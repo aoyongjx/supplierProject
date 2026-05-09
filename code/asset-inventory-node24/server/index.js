@@ -17420,6 +17420,7 @@ app.post('/api/agents/precise-sourcing/chat', authMiddleware, async (req, res) =
   const systemPrompt = toText(req.body?.systemPrompt)
   const systemPromptPresetKey = toText(req.body?.systemPromptPresetKey || 'default')
   const enableSecondaryWebVerification = req.body?.enableSecondaryWebVerification === true
+  const enablePostEnrichment = req.body?.enablePostEnrichment === true
   if (!userInput) {
     return res.status(400).json({ code: 400, message: '缺少参数：message', data: null })
   }
@@ -17471,6 +17472,7 @@ app.post('/api/agents/precise-sourcing/chat', authMiddleware, async (req, res) =
       reportTemplate,
       modelName: selectedModel,
       enableSecondaryWebVerification,
+      enablePostEnrichment,
     })
     await persistPreciseSourcingRun({
       owner,
@@ -17655,6 +17657,8 @@ function isLikelySupplierCompanyName(name = '', query = '') {
   if (!value) return false
   if (value.length < 2 || value.length > 64) return false
   if (/[\r\n\t]/.test(value)) return false
+  if (/(产品|系统|方案|赛道|领域|业务|材料|技术|工艺|设备|平台|品牌|车型|零部件).{0,8}(公司|集团)$/.test(value)) return false
+  if (/(为公司|属公司|是公司|该公司产品|产品为)/.test(value)) return false
   if (/(目前公司|现阶段公司|调整期内公司|近年来公司|公司与同行业可比公司|近期.*公司|影响.*公司|这几家公司|该公司|某公司|担任公司|任公司)/i.test(value)) return false
   if (/^\d{4}年.*公司$/.test(value)) return false
   if (/^\d{1,2}月.*公司$/.test(value)) return false
@@ -17778,11 +17782,12 @@ async function extractSupplierCandidatesByLlmBatch(items = [], perItemLimit = 5,
   const prompt = [
     '你是企业实体抽取器。目标：从每条文本中抽取“供应商企业名称”。',
     '规则：',
-    '1) 只返回公司/集团等组织实体，不要返回句子片段。',
-    '2) 排除媒体、证券、金融机构、政府机构、整车厂名称本体。',
-    '3) 单条最多返回 5 个。',
-    '4) 若无可用实体返回空数组。',
-    '5) 仅输出 JSON，格式：{"items":[{"index":0,"companies":["A公司","B有限公司"]}]}',
+    '1) 只返回可工商注册的法人/组织主体（如 XX有限公司/XX股份有限公司/XX集团）。',
+    '2) 排除产品名、技术名、系统名、材料名、业务描述、句子片段（如“温控类产品为公司”）。',
+    '3) 排除媒体、证券、金融机构、政府机构、整车厂名称本体。',
+    '4) 如果名称包含“产品/系统/方案/技术/材料/设备/平台/赛道/领域”等描述词，默认判为非企业名。',
+    '5) 单条最多返回 5 个；无可用实体返回空数组。',
+    '6) 仅输出 JSON，格式：{"items":[{"index":0,"companies":["A公司","B有限公司"]}]}',
     '',
     `用户查询：${queryText}`,
     `输入：${JSON.stringify(packed)}`,
@@ -17990,6 +17995,7 @@ async function buildPreciseSourcingResponsePayload({
   reportTemplate,
   modelName,
   enableSecondaryWebVerification = false,
+  enablePostEnrichment = false,
 }) {
   const oemNameSet = await loadGasOemNameSet()
   const buildCandidateAudit = (seed = [], contextPassed = [], webVerified = [], source = '') => {
@@ -18026,6 +18032,105 @@ async function buildPreciseSourcingResponsePayload({
       ? graphResult.kbHits.slice(0, 8).map((item) => toCompactKbHit(item))
       : [],
   )
+  if (!enablePostEnrichment) {
+    const safeKbHits = safeKbHitsRaw.map((hit) => {
+      const seed = extractSupplierCandidatesFromText(`${toText(hit?.docName)} ${toText(hit?.chunkText)}`, 6, { query: toText(userInput) })
+      const supplierCandidates = Array.from(new Set(
+        seed
+          .map((x) => normalizeSupplierCandidateName(x))
+          .filter((x) => isLikelySupplierCompanyName(x, toText(userInput))),
+      )).slice(0, 5)
+      return {
+        ...hit,
+        supplierCandidates,
+        candidateAudit: {
+          source: 'kb',
+          seed: supplierCandidates,
+          contextPassed: supplierCandidates,
+          webVerified: [],
+          droppedByContext: [],
+          droppedByVerify: [],
+          keepReasons: supplierCandidates.map((name) => ({ name, reasons: ['文本命中企业名称'] })),
+          dropReasons: [],
+        },
+      }
+    })
+    const safeKbHitsEffective = safeKbHits.filter((hit) => Array.isArray(hit?.supplierCandidates) && hit.supplierCandidates.length > 0)
+    const safeWebHits = toJsonSafe((Array.isArray(graphResult.webHits) ? graphResult.webHits : []).slice(0, 8)).map((hit) => ({
+      ...hit,
+      supplierCandidates: [],
+      candidateAudit: {
+        source: 'web',
+        seed: [],
+        contextPassed: [],
+        webVerified: [],
+        droppedByContext: [],
+        droppedByVerify: [],
+        keepReasons: [],
+        dropReasons: [],
+      },
+    }))
+    const tracesWithVersion = Array.isArray(graphResult.traces)
+      ? graphResult.traces.map((item) => ({ ...item, traceVersion }))
+      : []
+    const artifacts = Array.isArray(graphResult.artifacts) ? graphResult.artifacts : []
+    const queryStatements = {
+      orchestration: {
+        selectedTools,
+        selectedKbIds: targetKbIds,
+        selectedDbTables: Array.isArray(selectedDbTables) ? selectedDbTables : [],
+        reportTemplateType: toText(reportTemplate?.type || 'none'),
+      },
+      db: {
+        keyword: toText(graphResult?.executionPlan?.dbQuery || userInput),
+        template: 'SELECT * FROM <schema>.<selected_table> AS t WHERE to_jsonb(t)::text ILIKE %keyword% LIMIT <n>',
+        selectedTables: Array.isArray(selectedDbTables) ? selectedDbTables : [],
+      },
+      rag: {
+        keyword: toText(graphResult?.executionPlan?.ragQuery || userInput),
+        endpoint: '/api/knowledge-bases/:id/search',
+      },
+      web: {
+        keyword: toText(graphResult?.executionPlan?.webQuery || ''),
+        provider: 'tavily -> openclaw-grok-search(fallback)',
+      },
+      fusion: {
+        filterVersion: 'v4-fast-no-enrichment',
+        strategy: '快速模式：返回主流程证据，跳过重型后处理',
+        dbHits: Array.isArray(safeSuppliers) ? safeSuppliers.length : 0,
+        ragHits: Array.isArray(safeKbHitsEffective) ? safeKbHitsEffective.length : 0,
+        webHits: Array.isArray(safeWebHits) ? safeWebHits.length : 0,
+        webDerivedSuppliers: [],
+      },
+    }
+    const statLine = `【命中统计】DB ${Array.isArray(safeSuppliers) ? safeSuppliers.length : 0}条，RAG ${Array.isArray(safeKbHitsEffective) ? safeKbHitsEffective.length : 0}条，WEB ${Array.isArray(safeWebHits) ? safeWebHits.length : 0}条`
+    const normalizedAnswer = isDirectAnswer
+      ? toText(graphResult.answer).replace(/【命中统计】[^\n\r]*/g, '').trim()
+      : (/【命中统计】[^\n\r]*/.test(toText(graphResult.answer))
+        ? toText(graphResult.answer).replace(/【命中统计】[^\n\r]*/g, statLine)
+        : `${statLine}\n${toText(graphResult.answer)}`)
+    const structured = parsePreciseSourcingStructuredOutput(normalizedAnswer)
+    return {
+      traceVersion,
+      agent: 'precise-sourcing',
+      kbId: targetKbId || '',
+      kbIds: targetKbIds,
+      intent: toText(graphResult.intent || 'supplier_search'),
+      demand: graphResult.demand || {},
+      answer: normalizedAnswer,
+      structured,
+      queryStatements,
+      traces: tracesWithVersion,
+      react: graphResult.react || { rounds: [] },
+      artifacts,
+      evidence: {
+        suppliers: safeSuppliers,
+        kbHits: safeKbHitsEffective,
+        webHits: safeWebHits,
+        webDerivedSuppliers: [],
+      },
+    }
+  }
   const safeKbHits = []
   for (const hit of safeKbHitsRaw) {
     const seed = extractSupplierCandidatesFromText(`${toText(hit?.docName)} ${toText(hit?.chunkText)}`, 6, { query: toText(userInput) })
@@ -18576,6 +18681,7 @@ app.get('/api/langchain/session-state', authMiddleware, async (req, res) => {
 })
 
 app.post('/api/agents/precise-sourcing/chat-stream', authMiddleware, async (req, res) => {
+  const reqStart = Date.now()
   const traceVersion = 'ps-v20260506-04'
   const owner = toText(req.authUser?.userName || req.authUser?.username || 'unknown')
   const userInput = toText(req.body?.message)
@@ -18593,6 +18699,7 @@ app.post('/api/agents/precise-sourcing/chat-stream', authMiddleware, async (req,
     ? req.body.selectedSkills.map((x) => toText(x)).filter(Boolean)
     : []
   const selectedTools = [...new Set([...selectedToolsRaw, ...selectedSkillsRaw])]
+  const fastWebAsync = req.body?.fastWebAsync !== false
   const topK = Math.min(Math.max(Number(req.body?.topK || 20), 5), 50)
   const dbTopK = Math.min(Math.max(Number(req.body?.dbTopK || 10), 1), 100)
   const generateCharts = req.body?.generateCharts !== false
@@ -18603,6 +18710,7 @@ app.post('/api/agents/precise-sourcing/chat-stream', authMiddleware, async (req,
   const systemPrompt = toText(req.body?.systemPrompt)
   const systemPromptPresetKey = toText(req.body?.systemPromptPresetKey || 'default')
   const enableSecondaryWebVerification = req.body?.enableSecondaryWebVerification === true
+  const enablePostEnrichment = req.body?.enablePostEnrichment === true
   const targetKbId = kbIdInput || kbIdsInput[0] || toText(knowledgeBaseStore.keys().next()?.value)
   const targetKbIds = kbIdsInput.length > 0 ? kbIdsInput : (targetKbId ? [targetKbId] : [])
 
@@ -18622,6 +18730,10 @@ app.post('/api/agents/precise-sourcing/chat-stream', authMiddleware, async (req,
   sendEvent('start', { traceVersion, message: '开始执行' })
 
   try {
+    const primaryTools = fastWebAsync
+      ? selectedTools.filter((x) => toText(x) !== 'web_search')
+      : selectedTools
+    const graphStart = Date.now()
     const graphResult = await withTimeout(preciseSourcingLangGraph.run({
       onEvent: (evt) => {
         if (evt?.type === 'trace' && evt?.trace) {
@@ -18638,8 +18750,8 @@ app.post('/api/agents/precise-sourcing/chat-stream', authMiddleware, async (req,
       dbTopK,
       selectedDbTables,
       strictMode,
-      selectedSkills: selectedTools,
-      selectedTools,
+      selectedSkills: primaryTools,
+      selectedTools: primaryTools,
       model: selectedModel,
       systemPrompt,
       systemPromptPresetKey,
@@ -18648,18 +18760,22 @@ app.post('/api/agents/precise-sourcing/chat-stream', authMiddleware, async (req,
       reportTemplate,
       streamTokens: true,
     }), 120000, 'precise_sourcing_stream_timeout')
+    sendEvent('heartbeat', { message: `graph完成，耗时 ${Date.now() - graphStart}ms` })
+    const postStart = Date.now()
     const payload = await buildPreciseSourcingResponsePayload({
       graphResult,
       traceVersion,
       userInput,
-      selectedTools,
+      selectedTools: primaryTools,
       targetKbId,
       targetKbIds,
       selectedDbTables,
       reportTemplate,
       modelName: selectedModel,
       enableSecondaryWebVerification,
+      enablePostEnrichment,
     })
+    sendEvent('heartbeat', { message: `postprocess完成，耗时 ${Date.now() - postStart}ms，总耗时 ${Date.now() - reqStart}ms` })
     await persistPreciseSourcingRun({
       owner,
       userInput,
@@ -18670,6 +18786,47 @@ app.post('/api/agents/precise-sourcing/chat-stream', authMiddleware, async (req,
       modelName: selectedModel,
     }).catch(() => {})
     sendEvent('final', payload)
+    if (fastWebAsync && selectedTools.includes('web_search')) {
+      sendEvent('heartbeat', { message: '开始WEB后台补全...' })
+      try {
+        const webRaw = await invokeRunnableTool(preciseSourcingToolbox.byName.webSearchTool, {
+          query: toText(graphResult?.executionPlan?.webQuery || userInput),
+          topK: 5,
+        }, { tool: 'web_search_supplier_signals_async' })
+        const webParsed = normalizeToolJsonResult(webRaw)
+        const webHitsRaw = Array.isArray(webParsed?.data?.results) ? webParsed.data.results.slice(0, 8) : []
+        const llmCandidates = await extractSupplierCandidatesByLlmBatch(webHitsRaw, 5, toText(selectedModel), { query: toText(userInput) })
+        const webHits = webHitsRaw.map((item, idx) => {
+          const fromLlm = Array.isArray(llmCandidates?.[idx]) ? llmCandidates[idx] : []
+          const fromRule = extractSupplierCandidatesFromText(`${toText(item?.title || '')} ${toText(item?.snippet || item?.content || '')}`, 5, { query: toText(userInput) })
+          const supplierCandidates = Array.from(new Set([...fromLlm, ...fromRule]
+            .map((x) => normalizeSupplierCandidateName(x))
+            .filter((x) => isLikelySupplierCompanyName(x, toText(userInput))))).slice(0, 5)
+          return {
+            ...item,
+            supplierCandidates,
+          }
+        })
+        const uniqueCandidates = Array.from(new Set(
+          webHits
+            .flatMap((x) => (Array.isArray(x?.supplierCandidates) ? x.supplierCandidates : []))
+            .map((x) => normalizeSupplierCandidateName(x))
+            .filter(Boolean),
+        ))
+        const webDerivedSuppliers = await refineSupplierCandidatesByContext(uniqueCandidates, {
+          query: toText(userInput),
+          model: toText(selectedModel),
+          context: webHits.map((x) => `${toText(x?.title || '')} ${toText(x?.snippet || x?.content || '')}`).join('\n').slice(0, 3000),
+        })
+        sendEvent('enrich', {
+          webHits,
+          webDerivedSuppliers: Array.isArray(webDerivedSuppliers) ? webDerivedSuppliers.slice(0, 12) : [],
+          note: `已完成WEB补全：新增线索 ${webHits.length} 条，提取供应商候选 ${webDerivedSuppliers.length} 个。`,
+        })
+      } catch (error) {
+        sendEvent('heartbeat', { message: `WEB补全失败：${toText(error?.message || error)}` })
+      }
+    }
     sendEvent('done', { ok: true })
     res.end()
   } catch (error) {

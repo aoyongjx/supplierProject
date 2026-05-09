@@ -41,7 +41,7 @@ export async function chatPreciseSourcingAgent(payload = {}) {
 }
 
 export async function chatPreciseSourcingAgentStream(payload = {}, handlers = {}) {
-  const { onStart, onTrace, onFinal, onError, onDone, onHeartbeat, onDelta } = handlers || {}
+  const { onStart, onTrace, onFinal, onError, onDone, onHeartbeat, onDelta, onEnrich } = handlers || {}
   const tokenHeaders = buildAuthHeaders()
   const response = await requestWithFallback('/api/agents/precise-sourcing/chat-stream', {
     method: 'POST',
@@ -64,6 +64,7 @@ export async function chatPreciseSourcingAgentStream(payload = {}, handlers = {}
     if (event === 'start' && typeof onStart === 'function') onStart(data)
     if (event === 'trace' && typeof onTrace === 'function') onTrace(data)
     if (event === 'delta' && typeof onDelta === 'function') onDelta(data)
+    if (event === 'enrich' && typeof onEnrich === 'function') onEnrich(data)
     if (event === 'final' && typeof onFinal === 'function') onFinal(data)
     if (event === 'error' && typeof onError === 'function') onError(data)
     if (event === 'heartbeat' && typeof onHeartbeat === 'function') onHeartbeat(data)

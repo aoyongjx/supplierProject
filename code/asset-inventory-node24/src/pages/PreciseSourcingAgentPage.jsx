@@ -767,6 +767,8 @@ export default function PreciseSourcingAgentPage() {
       const mapped = cands.filter((name) => fusedSupplierNames.includes(name))
       return mapped.length > 0
     })
+    const kbHitsFallback = Array.isArray(item?.evidence?.kbHits) ? item.evidence.kbHits : []
+    const kbHitsVisible = kbHitsMapped.length > 0 ? kbHitsMapped : kbHitsFallback
     const webHitsMapped = (Array.isArray(item?.evidence?.webHits) ? item.evidence.webHits : []).filter((row) => Array.isArray(row?.supplierCandidates) && row.supplierCandidates.length > 0)
     const topN = Number(item?.queryStatements?.fusion?.requestedTopN || 10)
     const intentDecision = item?.intentDecision && typeof item.intentDecision === 'object' ? item.intentDecision : null
@@ -868,13 +870,27 @@ export default function PreciseSourcingAgentPage() {
         ),
       })
     }
-    // 默认隐藏 ReAct 细粒度链路，避免执行面板噪音过大影响阅读。
+    // 展示 ReAct 细粒度链路，便于用户核查 Plan -> ReAct 实际执行过程。
     return (
       <div style={{ marginTop: 10 }}>
         <div style={{ marginBottom: 6, color: '#64748b', fontSize: 12 }}>
           执行过程 {item?.intent ? `(意图: ${item.intent})` : ''}{item?.traceVersion ? ` · 版本: ${item.traceVersion}` : ''}
         </div>
         {lifecyclePanels.length > 0 ? <Collapse size="small" defaultActiveKey={lifecyclePanels.map((p) => p.key)} items={lifecyclePanels} /> : null}
+        {reactPanels.length > 0 ? (
+          <div style={{ marginTop: 10 }}>
+            <Collapse size="small" defaultActiveKey={[]} items={[{
+              key: 'react-rounds',
+              label: (
+                <Space size={8}>
+                  <Tag color="blue">ReAct</Tag>
+                  <span>Thought / Action / Observation</span>
+                </Space>
+              ),
+              children: <Collapse size="small" items={reactPanels} />,
+            }]} />
+          </div>
+        ) : null}
         {lifecyclePanels.length === 0 && fallbackLines.length > 0 ? (
           <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8, padding: 10, whiteSpace: 'pre-wrap', fontSize: 12, color: '#334155' }}>
             {fallbackLines.join('\n\n')}
@@ -899,11 +915,11 @@ export default function PreciseSourcingAgentPage() {
             </Space>
           </div>
         ) : null}
-        {kbHitsMapped.length > 0 ? (
+        {kbHitsVisible.length > 0 ? (
           <div style={{ marginTop: 10, borderTop: '1px dashed #cbd5e1', paddingTop: 8 }}>
-            <div style={{ color: '#64748b', fontSize: 12, marginBottom: 6 }}>知识库命中（Top {Math.min(topN, kbHitsMapped.length)}）</div>
+            <div style={{ color: '#64748b', fontSize: 12, marginBottom: 6 }}>知识库命中（Top {Math.min(topN, kbHitsVisible.length)}）</div>
             <Space direction="vertical" size={6} style={{ width: '100%' }}>
-              {kbHitsMapped.slice(0, topN).map((row, idx) => (
+              {kbHitsVisible.slice(0, topN).map((row, idx) => (
                 <div key={`kb-hit-${idx}`} style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8, padding: 8, minWidth: 0, maxWidth: '100%', overflowX: 'hidden' }}>
                   {Array.isArray(row?.supplierCandidates) && row.supplierCandidates.length > 0 ? (
                     <div style={{ marginBottom: 6, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
@@ -1215,6 +1231,31 @@ export default function PreciseSourcingAgentPage() {
             traceVersion: String(data?.traceVersion || ''),
             ts: Date.now(),
           }))
+        },
+        onEnrich: (data) => {
+          const extraWebHits = Array.isArray(data?.webHits) ? data.webHits : []
+          const extraSuppliers = Array.isArray(data?.webDerivedSuppliers) ? data.webDerivedSuppliers : []
+          const enrichNote = String(data?.note || '').trim()
+          patchLastAssistantMessage((last) => {
+            const prevEvidence = last?.evidence && typeof last.evidence === 'object' ? last.evidence : { suppliers: [], kbHits: [], webHits: [] }
+            const mergedWebHits = [...(Array.isArray(prevEvidence.webHits) ? prevEvidence.webHits : []), ...extraWebHits]
+            const dedupWebHits = Array.from(new Map(mergedWebHits.map((x, i) => [String(x?.url || x?.link || x?.title || `row-${i}`), x])).values())
+            const mergedDerived = [...(Array.isArray(prevEvidence.webDerivedSuppliers) ? prevEvidence.webDerivedSuppliers : []), ...extraSuppliers]
+            const dedupDerived = Array.from(new Set(mergedDerived.map((x) => String(x || '').trim()).filter(Boolean)))
+            const base = String(last?.rawAnswer || last?.content || '')
+            const nextContent = enrichNote ? `${base}\n\n---\n[WEB补全]\n${enrichNote}` : base
+            return {
+              ...last,
+              content: nextContent,
+              rawAnswer: nextContent,
+              evidence: {
+                ...prevEvidence,
+                webHits: dedupWebHits,
+                webDerivedSuppliers: dedupDerived,
+              },
+              ts: Date.now(),
+            }
+          })
         },
       })
     } catch (error) {
