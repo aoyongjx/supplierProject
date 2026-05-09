@@ -16792,6 +16792,9 @@ const preciseSourcingLangGraph = createPreciseSourcingLangGraph({
     const raw = toText(userInput).trim()
     const text = raw.toLowerCase()
     if (!text) return 'direct_answer'
+    if (/(你使用什么模型|你用什么模型|当前模型|默认模型|model|llm|gpt[-\s]?5\.4)/i.test(raw)) {
+      return 'direct_answer'
+    }
     // 问候/闲聊/身份类短句直接回答，不走检索流程
     if (/^(你好|您好|hi|hello|hey|在吗|你是谁|你能做什么|你会什么|介绍下你自己|自我介绍)[!！。,.?\s]*$/i.test(raw)) {
       return 'direct_answer'
@@ -16803,6 +16806,71 @@ const preciseSourcingLangGraph = createPreciseSourcingLangGraph({
     if (/只查知识库|仅知识库|只看知识库|仅rag|只用rag|rag only/.test(text)) return 'kb_qa'
     if (/报告|汇报|ppt|word|excel|模板/.test(text)) return 'report_generate'
     return 'supplier_search'
+  },
+  async routeRequest(input = {}) {
+    const userInput = toText(input?.userInput).trim()
+    if (!userInput) {
+      return {
+        intent: 'direct_answer',
+        needDb: false,
+        needRag: false,
+        needWeb: false,
+        reason: '空输入，直接回答。',
+        directAnswer: '',
+      }
+    }
+    if (/(你使用什么模型|你用什么模型|当前模型|默认模型|model|llm|gpt[-\s]?5\.4)/i.test(userInput)) {
+      return {
+        intent: 'direct_answer',
+        needDb: false,
+        needRag: false,
+        needWeb: false,
+        reason: '问题是模型/能力说明类，不需要检索链路。',
+        directAnswer: '',
+      }
+    }
+    try {
+      const routed = await callLangchainCompatibleChat([
+        {
+          role: 'system',
+          content: [
+            '你是请求路由器。你只输出 JSON，不要输出任何其他文字。',
+            '目标：判断当前问题是普通问答还是需要 LangChain 检索执行。',
+            '规则：',
+            '1) 仅当用户明确需要供应商检索、数据库查询、知识库检索、互联网检索时，needDb/needRag/needWeb 才能为 true。',
+            '2) 对模型说明、能力说明、问候、闲聊、解释类问题，必须 direct_answer，且 needDb/needRag/needWeb 全为 false。',
+            '3) 返回字段必须完整：intent, needDb, needRag, needWeb, reason, directAnswer。',
+          ].join('\n'),
+        },
+        {
+          role: 'user',
+          content: `用户问题：${userInput}`,
+        },
+      ], {
+        model: toText(input?.model) || 'gpt-5.4',
+        temperature: 0,
+      })
+      const raw = toText(routed?.answer)
+      const matched = raw.match(/\{[\s\S]*\}/)
+      const parsed = matched ? JSON.parse(matched[0]) : JSON.parse(raw)
+      return {
+        intent: toText(parsed?.intent) || 'direct_answer',
+        needDb: parsed?.needDb === true,
+        needRag: parsed?.needRag === true,
+        needWeb: parsed?.needWeb === true,
+        reason: toText(parsed?.reason) || '',
+        directAnswer: toText(parsed?.directAnswer) || '',
+      }
+    } catch {
+      return {
+        intent: 'direct_answer',
+        needDb: false,
+        needRag: false,
+        needWeb: false,
+        reason: '路由模型不可用，回退为普通直答。',
+        directAnswer: '',
+      }
+    }
   },
   async parseDemand(userInput = '') {
     const text = toText(userInput)
