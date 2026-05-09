@@ -16634,10 +16634,7 @@ async function callPreciseSourcingLlm(state) {
       snippet: toText(item.snippet || item.content || '').slice(0, 100),
     })),
   }
-  try {
-    const prompt = ChatPromptTemplate.fromMessages([
-      ['system', '{systemPrompt}'],
-      ['human', `请基于证据输出中文简洁结果，严格使用以下模板（不超过12行）：
+  const humanPrompt = `请基于证据输出中文简洁结果，严格使用以下模板（不超过12行）：
 【直接回答】先正面回答用户问题（一句话）
 【结论】一句话
 【意图】一句话
@@ -16648,7 +16645,60 @@ ${state?.generateCharts === false ? '【图表】不生成图表。' : '【图�
 ${toText(state?.reportTemplate?.type) ? `【报告模板】按 ${toText(state.reportTemplate.type)} 模板组织章节。` : ''}
 
 证据JSON：
-{evidenceJson}`],
+{evidenceJson}`
+
+  try {
+    if (typeof state?.onDelta === 'function' && state?.streamTokens === true) {
+      const normalizedBase = baseUrl.replace(/\/+$/, '')
+      const apiBase = /\/v\d+$/i.test(normalizedBase) ? normalizedBase : `${normalizedBase}/v1`
+      const response = await fetchByNetworkPolicy(`${apiBase}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model,
+          temperature: Math.max(0, Math.min(1, Number(state?.temperature ?? 0.2))),
+          stream: true,
+          messages: [
+            { role: 'system', content: resolvedSystemPrompt },
+            { role: 'user', content: humanPrompt.replace('{evidenceJson}', JSON.stringify(evidencePayload)) },
+          ],
+        }),
+      })
+      if (!response.ok || !response.body) {
+        const text = await response.text().catch(() => '')
+        throw new Error(`流式模型调用失败（HTTP ${response.status}）${text ? `: ${text.slice(0, 240)}` : ''}`)
+      }
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder('utf-8')
+      let buffer = ''
+      let fullText = ''
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() || ''
+        for (const line of lines) {
+          const trimmed = line.trim()
+          if (!trimmed.startsWith('data:')) continue
+          const dataText = trimmed.slice(5).trim()
+          if (!dataText || dataText === '[DONE]') continue
+          let payload = null
+          try { payload = JSON.parse(dataText) } catch { payload = null }
+          const delta = toText(payload?.choices?.[0]?.delta?.content || '')
+          if (!delta) continue
+          fullText += delta
+          state.onDelta(delta)
+        }
+      }
+      return toText(fullText)
+    }
+    const prompt = ChatPromptTemplate.fromMessages([
+      ['system', '{systemPrompt}'],
+      ['human', humanPrompt],
     ])
 
     const llm = new ChatOpenAI({
@@ -16792,9 +16842,6 @@ const preciseSourcingLangGraph = createPreciseSourcingLangGraph({
     const raw = toText(userInput).trim()
     const text = raw.toLowerCase()
     if (!text) return 'direct_answer'
-    if (/(你使用什么模型|你用什么模型|当前模型|默认模型|model|llm|gpt[-\s]?5\.4)/i.test(raw)) {
-      return 'direct_answer'
-    }
     // 问候/闲聊/身份类短句直接回答，不走检索流程
     if (/^(你好|您好|hi|hello|hey|在吗|你是谁|你能做什么|你会什么|介绍下你自己|自我介绍)[!！。,.?\s]*$/i.test(raw)) {
       return 'direct_answer'
@@ -16816,16 +16863,6 @@ const preciseSourcingLangGraph = createPreciseSourcingLangGraph({
         needRag: false,
         needWeb: false,
         reason: '空输入，直接回答。',
-        directAnswer: '',
-      }
-    }
-    if (/(你使用什么模型|你用什么模型|当前模型|默认模型|model|llm|gpt[-\s]?5\.4)/i.test(userInput)) {
-      return {
-        intent: 'direct_answer',
-        needDb: false,
-        needRag: false,
-        needWeb: false,
-        reason: '问题是模型/能力说明类，不需要检索链路。',
         directAnswer: '',
       }
     }
@@ -16871,6 +16908,58 @@ const preciseSourcingLangGraph = createPreciseSourcingLangGraph({
         directAnswer: '',
       }
     }
+  },
+  async generateDirectAnswer(state = {}) {
+    const userInput = toText(state?.userInput).trim()
+    const modelName = toText(state?.model) || 'gpt-5.4'
+    if (!userInput) return ''
+    const now = new Date()
+    const weekdayMap = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六']
+    const weekdayText = weekdayMap[now.getDay()]
+    const dateText = now.toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' })
+    const timeText = now.toLocaleTimeString('zh-CN', { hour12: false, timeZone: 'Asia/Shanghai' })
+    const selectedTools = Array.isArray(state?.selectedTools) ? state.selectedTools.map((x) => toText(x)).filter(Boolean) : []
+    const selectedDbTables = Array.isArray(state?.selectedDbTables) ? state.selectedDbTables.map((x) => toText(x)).filter(Boolean) : []
+    const kbIds = Array.isArray(state?.kbIds) ? state.kbIds.map((x) => toText(x)).filter(Boolean) : []
+    const runtimeContext = {
+      roleName: '汽车供应链精准寻源智能体',
+      selectedModel: modelName,
+      selectedTools,
+      selectedDbTables,
+      selectedKnowledgeBaseIds: kbIds.length > 0 ? kbIds : (toText(state?.kbId) ? [toText(state?.kbId)] : []),
+      systemPromptPresetKey: toText(state?.systemPromptPresetKey || ''),
+      systemPrompt: toText(state?.systemPrompt || ''),
+      strictMode: state?.strictMode === true,
+      routeReason: toText(state?.routeReason || ''),
+      directAnswerHint: toText(state?.directAnswer || ''),
+      now: {
+        timezone: 'Asia/Shanghai',
+        date: dateText,
+        time: timeText,
+        weekday: weekdayText,
+      },
+    }
+    const system = [
+      '你是一个上下文驱动的直答模型，不要套固定模板，不要说空话。',
+      '先理解用户意图，再根据运行时上下文组织回答。',
+      '当用户询问“你是谁/你能做什么/你用什么模型”时，必须结合当前上下文（角色、模型、工具、知识库、数据表、提示词）给出具体回答。',
+      '当用户询问日期、星期时，必须使用上下文中的 now 字段，禁止猜测。',
+      '回答简洁、真实、可落地，禁止编造未启用的工具或能力。',
+      '输出语言：中文。',
+    ].join('\n')
+    try {
+      const result = await callLangchainCompatibleChat([
+        { role: 'system', content: system },
+        { role: 'system', content: `运行时上下文(JSON): ${JSON.stringify(runtimeContext)}` },
+        { role: 'user', content: userInput },
+      ], {
+        model: modelName,
+        temperature: 0.2,
+      })
+      const answer = toText(result?.answer).trim()
+      if (answer) return answer
+    } catch {}
+    return `当前使用模型是 ${modelName}。`
   },
   async parseDemand(userInput = '') {
     const text = toText(userInput)
@@ -17330,6 +17419,7 @@ app.post('/api/agents/precise-sourcing/chat', authMiddleware, async (req, res) =
   const selectedModel = toText(req.body?.model)
   const systemPrompt = toText(req.body?.systemPrompt)
   const systemPromptPresetKey = toText(req.body?.systemPromptPresetKey || 'default')
+  const enableSecondaryWebVerification = req.body?.enableSecondaryWebVerification === true
   if (!userInput) {
     return res.status(400).json({ code: 400, message: '缺少参数：message', data: null })
   }
@@ -17380,6 +17470,7 @@ app.post('/api/agents/precise-sourcing/chat', authMiddleware, async (req, res) =
       selectedDbTables,
       reportTemplate,
       modelName: selectedModel,
+      enableSecondaryWebVerification,
     })
     await persistPreciseSourcingRun({
       owner,
@@ -17898,6 +17989,7 @@ async function buildPreciseSourcingResponsePayload({
   selectedDbTables,
   reportTemplate,
   modelName,
+  enableSecondaryWebVerification = false,
 }) {
   const oemNameSet = await loadGasOemNameSet()
   const buildCandidateAudit = (seed = [], contextPassed = [], webVerified = [], source = '') => {
@@ -17931,19 +18023,21 @@ async function buildPreciseSourcingResponsePayload({
     })
   const safeKbHitsRaw = toJsonSafe(
     Array.isArray(graphResult.kbHits)
-      ? graphResult.kbHits.slice(0, 20).map((item) => toCompactKbHit(item))
+      ? graphResult.kbHits.slice(0, 8).map((item) => toCompactKbHit(item))
       : [],
   )
   const safeKbHits = []
   for (const hit of safeKbHitsRaw) {
     const seed = extractSupplierCandidatesFromText(`${toText(hit?.docName)} ${toText(hit?.chunkText)}`, 6, { query: toText(userInput) })
     const ctx = await refineSupplierCandidatesByContext(seed, { query: toText(userInput), model: toText(modelName), context: `${toText(hit?.docName)} ${toText(hit?.chunkText)}` })
-    const verified = await verifySupplierCandidatesViaWeb(ctx, { query: toText(userInput) })
+    const verified = enableSecondaryWebVerification
+      ? await verifySupplierCandidatesViaWeb(ctx, { query: toText(userInput) })
+      : ctx
     const verifiedFiltered = verified.filter((name) => !isNameInOemSet(name, oemNameSet))
     const candidateAudit = buildCandidateAudit(seed, ctx, verifiedFiltered, 'kb')
     if (verifiedFiltered.length > 0) safeKbHits.push({ ...hit, supplierCandidates: verifiedFiltered.slice(0, 5), candidateAudit })
   }
-  const rawWebHits = (Array.isArray(graphResult.webHits) ? graphResult.webHits : []).slice(0, 20)
+  const rawWebHits = (Array.isArray(graphResult.webHits) ? graphResult.webHits : []).slice(0, 8)
   const llmCandidates = await extractSupplierCandidatesByLlmBatch(rawWebHits, 5, toText(modelName), { query: toText(userInput) })
   const safeWebHitsDraft = toJsonSafe(
     rawWebHits.map((item, idx) => {
@@ -17968,7 +18062,9 @@ async function buildPreciseSourcingResponsePayload({
       model: toText(modelName),
       context: `${toText(hit?.title || hit?.name)} ${toText(hit?.snippet || hit?.content)}`,
     })
-    const verified = await verifySupplierCandidatesViaWeb(ctx, { query: toText(userInput) })
+    const verified = enableSecondaryWebVerification
+      ? await verifySupplierCandidatesViaWeb(ctx, { query: toText(userInput) })
+      : ctx
     const verifiedFiltered = verified.filter((name) => !isNameInOemSet(name, oemNameSet))
     const candidateAudit = buildCandidateAudit(seed, ctx, verifiedFiltered, 'web')
     if (verifiedFiltered.length > 0) safeWebHits.push({ ...hit, supplierCandidates: verifiedFiltered.slice(0, 5), candidateAudit })
@@ -18006,8 +18102,10 @@ async function buildPreciseSourcingResponsePayload({
       provider: 'tavily -> openclaw-grok-search(fallback)',
     },
     fusion: {
-      filterVersion: 'v2-context-verify',
-      strategy: '按相关度聚合DB/RAG/WEB并去重，保留Top证据',
+      filterVersion: enableSecondaryWebVerification ? 'v2-context-verify' : 'v3-context-first',
+      strategy: enableSecondaryWebVerification
+        ? '按相关度聚合DB/RAG/WEB并去重，语义判定+联网验真'
+        : '按相关度聚合DB/RAG/WEB并去重，语义判定优先（关闭二次联网验真）',
       dbHits: Array.isArray(safeSuppliers) ? safeSuppliers.length : 0,
       ragHits: safeKbHitsEffective.length,
       webHits: safeWebHitsEffective.length,
@@ -18504,6 +18602,7 @@ app.post('/api/agents/precise-sourcing/chat-stream', authMiddleware, async (req,
   const selectedModel = toText(req.body?.model)
   const systemPrompt = toText(req.body?.systemPrompt)
   const systemPromptPresetKey = toText(req.body?.systemPromptPresetKey || 'default')
+  const enableSecondaryWebVerification = req.body?.enableSecondaryWebVerification === true
   const targetKbId = kbIdInput || kbIdsInput[0] || toText(knowledgeBaseStore.keys().next()?.value)
   const targetKbIds = kbIdsInput.length > 0 ? kbIdsInput : (targetKbId ? [targetKbId] : [])
 
@@ -18527,6 +18626,8 @@ app.post('/api/agents/precise-sourcing/chat-stream', authMiddleware, async (req,
       onEvent: (evt) => {
         if (evt?.type === 'trace' && evt?.trace) {
           sendEvent('trace', { traceVersion, trace: evt.trace })
+        } else if (evt?.type === 'delta' && evt?.delta) {
+          sendEvent('delta', { text: String(evt.delta) })
         }
       },
       userInput,
@@ -18545,6 +18646,7 @@ app.post('/api/agents/precise-sourcing/chat-stream', authMiddleware, async (req,
       generateCharts,
       temperature,
       reportTemplate,
+      streamTokens: true,
     }), 120000, 'precise_sourcing_stream_timeout')
     const payload = await buildPreciseSourcingResponsePayload({
       graphResult,
@@ -18556,6 +18658,7 @@ app.post('/api/agents/precise-sourcing/chat-stream', authMiddleware, async (req,
       selectedDbTables,
       reportTemplate,
       modelName: selectedModel,
+      enableSecondaryWebVerification,
     })
     await persistPreciseSourcingRun({
       owner,

@@ -19,6 +19,7 @@ const GraphState = Annotation.Root({
   reportTemplate: Annotation(),
   temperature: Annotation(),
   fusionWeights: Annotation(),
+  streamTokens: Annotation({ reducer: (_x, y) => y, default: () => false }),
   intent: Annotation({ reducer: (_x, y) => y, default: () => 'supplier_search' }),
   demand: Annotation({ reducer: (_x, y) => y, default: () => ({}) }),
   executionPlan: Annotation({ reducer: (_x, y) => y, default: () => ({}) }),
@@ -263,6 +264,13 @@ export function createPreciseSourcingLangGraph(tools) {
           model: state.model,
           directAnswer: state.executionPlan?.directAnswer,
           routeReason: state.executionPlan?.routeReason,
+          selectedTools: Array.isArray(state.selectedTools) ? state.selectedTools : [],
+          selectedDbTables: Array.isArray(state.selectedDbTables) ? state.selectedDbTables : [],
+          kbId: state.kbId || '',
+          kbIds: Array.isArray(state.kbIds) ? state.kbIds : [],
+          systemPrompt: state.systemPrompt || '',
+          systemPromptPresetKey: state.systemPromptPresetKey || '',
+          strictMode: state.strictMode === true,
         })
         : String(state.executionPlan?.directAnswer || '')
       const answer = String(rawAnswer || '').trim() || '你好，我是精准寻源智能体。你可以告诉我想查询的主机厂、品类或供应商线索，我会按你选的工具执行。'
@@ -461,6 +469,10 @@ export function createPreciseSourcingLangGraph(tools) {
         temperature: state.temperature,
         reportTemplate: state.reportTemplate,
         generateCharts: state.generateCharts,
+        streamTokens: state.streamTokens === true,
+        onDelta: typeof state.onEvent === 'function'
+          ? (delta) => state.onEvent({ type: 'delta', delta: String(delta || '') })
+          : null,
       })
       return {
         answer,
@@ -563,6 +575,7 @@ export function createPreciseSourcingLangGraph(tools) {
         reportTemplate: input.reportTemplate || null,
         temperature: Number(input.temperature || 0.2),
         fusionWeights: input.fusionWeights && typeof input.fusionWeights === 'object' ? input.fusionWeights : {},
+        streamTokens: input.streamTokens === true,
         intent: 'supplier_search',
         demand: {},
         executionPlan: {},

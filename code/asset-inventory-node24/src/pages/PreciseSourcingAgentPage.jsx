@@ -1183,6 +1183,19 @@ export default function PreciseSourcingAgentPage() {
             content: `执行中：${String(evt?.message || '正在执行中，请稍候...')}`,
           }))
         },
+        onDelta: (evt) => {
+          const delta = String(evt?.text || '')
+          if (!delta) return
+          patchLastAssistantMessage((last) => {
+            const prev = String(last?.rawAnswer || '')
+            const next = `${prev}${delta}`
+            return {
+              ...last,
+              rawAnswer: next,
+              content: next,
+            }
+          })
+        },
         onFinal: (data) => {
           const evidence = data?.evidence || {}
           const artifacts = Array.isArray(data?.artifacts) ? data.artifacts : []
