@@ -12,7 +12,7 @@ async function requestWithFallback(path, init = {}) {
   const fallback = async () => fetch(`${directApiBase}${path}`, init)
   try {
     const response = await primary()
-    if (response.status === 502) return await fallback()
+    if (response.status === 502 || response.status === 503 || response.status === 504) return await fallback()
     return response
   } catch {
     return await fallback()
@@ -41,7 +41,7 @@ export async function chatPreciseSourcingAgent(payload = {}) {
 }
 
 export async function chatPreciseSourcingAgentStream(payload = {}, handlers = {}) {
-  const { onStart, onTrace, onFinal, onError, onDone } = handlers || {}
+  const { onStart, onTrace, onFinal, onError, onDone, onHeartbeat } = handlers || {}
   const tokenHeaders = buildAuthHeaders()
   const response = await requestWithFallback('/api/agents/precise-sourcing/chat-stream', {
     method: 'POST',
@@ -50,7 +50,12 @@ export async function chatPreciseSourcingAgentStream(payload = {}, handlers = {}
   })
   if (!response.ok || !response.body) {
     const payloadJson = await response.json().catch(() => ({}))
-    throw new Error(payloadJson.message || `请求失败（HTTP ${response.status}）`)
+    // 流式入口失败时也降级到非流式，避免直接抛 502
+    const fallback = await chatPreciseSourcingAgent(payload).catch(() => null)
+    if (fallback && typeof onFinal === 'function') onFinal(fallback)
+    if (typeof onDone === 'function') onDone({ ok: Boolean(fallback), degraded: true, reason: payloadJson.message || `HTTP ${response.status}` })
+    if (!fallback) throw new Error(payloadJson.message || `请求失败（HTTP ${response.status}）`)
+    return
   }
   const reader = response.body.getReader()
   const decoder = new TextDecoder('utf-8')
@@ -60,28 +65,37 @@ export async function chatPreciseSourcingAgentStream(payload = {}, handlers = {}
     if (event === 'trace' && typeof onTrace === 'function') onTrace(data)
     if (event === 'final' && typeof onFinal === 'function') onFinal(data)
     if (event === 'error' && typeof onError === 'function') onError(data)
+    if (event === 'heartbeat' && typeof onHeartbeat === 'function') onHeartbeat(data)
     if (event === 'done' && typeof onDone === 'function') onDone(data)
   }
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    buffer += decoder.decode(value, { stream: true })
-    const chunks = buffer.split('\n\n')
-    buffer = chunks.pop() || ''
-    for (const chunk of chunks) {
-      const lines = chunk.split('\n')
-      let eventName = 'message'
-      let dataText = ''
-      for (const line of lines) {
-        if (line.startsWith('event:')) eventName = line.slice(6).trim()
-        if (line.startsWith('data:')) dataText += line.slice(5).trim()
-      }
-      if (!dataText) continue
-      try {
-        emit(eventName, JSON.parse(dataText))
-      } catch {
-        emit(eventName, { raw: dataText })
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const chunks = buffer.split('\n\n')
+      buffer = chunks.pop() || ''
+      for (const chunk of chunks) {
+        const lines = chunk.split('\n')
+        let eventName = 'message'
+        let dataText = ''
+        for (const line of lines) {
+          if (line.startsWith('event:')) eventName = line.slice(6).trim()
+          if (line.startsWith('data:')) dataText += line.slice(5).trim()
+        }
+        if (!dataText) continue
+        try {
+          emit(eventName, JSON.parse(dataText))
+        } catch {
+          emit(eventName, { raw: dataText })
+        }
       }
     }
+  } catch (error) {
+    if (typeof onError === 'function') onError({ message: `流式连接中断：${error?.message || 'unknown error'}` })
+    // 流式失败时降级到非流式，避免用户只看到 502/断流
+    const fallback = await chatPreciseSourcingAgent(payload).catch(() => null)
+    if (fallback && typeof onFinal === 'function') onFinal(fallback)
+    if (typeof onDone === 'function') onDone({ ok: Boolean(fallback), degraded: true })
   }
 }

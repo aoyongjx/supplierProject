@@ -8,6 +8,7 @@ import { chatPreciseSourcingAgentStream } from '../api/agentApi'
 import { fetchKnowledgeBases } from '../api/knowledgeBaseApi'
 import { fetchLangchainSessionState, fetchLangchainTools, saveLangchainSessionState } from '../api/langchainShellApi'
 import { fetchModelProviders } from '../api/modelManagementApi'
+import { testModelProvider } from '../api/modelManagementApi'
 import assistantAvatarSrc from '../assets/chatchat_icon_blue_square_v2.png'
 
 const { Text } = Typography
@@ -57,7 +58,7 @@ const DEFAULT_SYSTEM_PROMPT = `你是汽车供应链精准寻源助手。
 目标：基于数据库/知识库/互联网证据，为用户输出可执行的候选供应商建议。
 要求：
 1) 优先给结论，再给证据与下一步。
-2) 候选供应商默认输出Top3（必要时Top5），每条包含：名称、匹配理由、风险提示。
+2) 候选供应商输出TopN（由证据质量决定），每条包含：名称、匹配理由、风险提示。
 3) 不编造；无证据时明确说明并给补充检索建议。
 4) 输出简洁、结构化，使用中文。`
 const PROMPT_PRESETS = [
@@ -75,7 +76,7 @@ const PROMPT_PRESETS = [
 1) 先给风险结论（高/中/低）与原因，再给候选。
 2) 每个候选包含：名称、匹配点、主要风险、建议核验项。
 3) 证据不足时必须标注“待核验”，禁止主观推断。
-4) 输出Top3，中文，简洁结构化。`,
+4) 输出TopN，中文，简洁结构化。`,
   },
   {
     key: 'fast',
@@ -83,7 +84,7 @@ const PROMPT_PRESETS = [
     prompt: `你是汽车供应链线索筛选助手。
 目标：快速给出可跟进的供应商线索清单。
 要求：
-1) 先直接回答，再给Top3候选。
+1) 先直接回答，再给TopN候选。
 2) 每个候选只写：名称 + 一句话理由 + 推荐动作。
 3) 控制篇幅，优先高相关结果；无命中就给替代关键词。
 4) 中文输出，节奏快，不展开冗长解释。`,
@@ -107,6 +108,9 @@ export default function PreciseSourcingAgentPage() {
   const [kbTopK, setKbTopK] = useState(3)
   const [dbTopK, setDbTopK] = useState(10)
   const [temperature, setTemperature] = useState(0.7)
+  const [fusionWeightDb, setFusionWeightDb] = useState(1)
+  const [fusionWeightKb, setFusionWeightKb] = useState(0.8)
+  const [fusionWeightWeb, setFusionWeightWeb] = useState(1.2)
   const [selectedModelName, setSelectedModelName] = useState('gpt-5.4')
   const [systemPrompt, setSystemPrompt] = useState(DEFAULT_SYSTEM_PROMPT)
   const [systemPromptEnabled, setSystemPromptEnabled] = useState(true)
@@ -119,6 +123,8 @@ export default function PreciseSourcingAgentPage() {
   const [promptEnabledDraft, setPromptEnabledDraft] = useState(true)
   const [promptPresetKeyDraft, setPromptPresetKeyDraft] = useState('default')
   const [modelProviders, setModelProviders] = useState([])
+  const [modelTestLoading, setModelTestLoading] = useState(false)
+  const [modelTestResult, setModelTestResult] = useState(null)
   const [flowDialogOpen, setFlowDialogOpen] = useState(false)
   const [flowTabKey, setFlowTabKey] = useState('logic')
   const [artifactPreviewOpen, setArtifactPreviewOpen] = useState(false)
@@ -131,7 +137,8 @@ export default function PreciseSourcingAgentPage() {
 
   useEffect(() => {
     try {
-      const savedModel = String(window.localStorage.getItem(MODEL_STORAGE_KEY) || '').trim()
+      const savedModelRaw = String(window.localStorage.getItem(MODEL_STORAGE_KEY) || '').trim()
+      const savedModel = savedModelRaw
       if (savedModel) {
         setSelectedModelName(savedModel)
         setModelDraft(savedModel)
@@ -265,6 +272,30 @@ export default function PreciseSourcingAgentPage() {
     () => (Array.isArray(selectedTools) ? selectedTools.map((key) => TOOL_LABEL_MAP[key] || key).filter(Boolean) : []),
     [selectedTools],
   )
+  const activeFusionTools = useMemo(() => {
+    const set = new Set(Array.isArray(selectedTools) ? selectedTools : [])
+    return [
+      { key: 'db', label: 'DB', enabled: set.has('db_chat') },
+      { key: 'kb', label: '知识库', enabled: set.has('local_kb') },
+      { key: 'web', label: 'Web', enabled: set.has('web_search') },
+    ].filter((x) => x.enabled)
+  }, [selectedTools])
+  const effectiveFusionWeights = useMemo(() => {
+    const count = activeFusionTools.length
+    const has = (k) => activeFusionTools.some((x) => x.key === k)
+    if (count === 1) {
+      return {
+        db: has('db') ? 3 : 0,
+        kb: has('kb') ? 3 : 0,
+        web: has('web') ? 3 : 0,
+      }
+    }
+    return {
+      db: has('db') ? Number(fusionWeightDb) : 0,
+      kb: has('kb') ? Number(fusionWeightKb) : 0,
+      web: has('web') ? Number(fusionWeightWeb) : 0,
+    }
+  }, [activeFusionTools, fusionWeightDb, fusionWeightKb, fusionWeightWeb])
   const flowConfigSummary = useMemo(() => ({
     tools: selectedToolLabels.length > 0 ? selectedToolLabels.join('、') : '未选择',
     kb: selectedKbIds.length > 0 ? `${selectedKbIds.length} 个` : '未选择',
@@ -529,23 +560,24 @@ export default function PreciseSourcingAgentPage() {
   }
 
   function renderMessageContent(text = '') {
-    return <div style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{String(text || '')}</div>
+    return <div style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', wordBreak: 'break-word', minWidth: 0, maxWidth: '100%' }}>{String(text || '')}</div>
   }
 
   function parseAnswerSections(text = '') {
     const raw = String(text || '')
-    const keys = ['【直接回答】', '【结论】', '【意图】', '【命中统计】', '【候选供应商Top3】']
+    const normalized = raw.replace(/【候选供应商Top\d+】/g, '【候选供应商TopN】')
+    const keys = ['【直接回答】', '【结论】', '【意图】', '【命中统计】', '【候选供应商TopN】']
     const result = {}
     for (let i = 0; i < keys.length; i += 1) {
       const key = keys[i]
-      const start = raw.indexOf(key)
+      const start = normalized.indexOf(key)
       if (start < 0) continue
       const nextStarts = keys
         .filter((k) => k !== key)
-        .map((k) => raw.indexOf(k, start + key.length))
+        .map((k) => normalized.indexOf(k, start + key.length))
         .filter((idx) => idx > start)
-      const end = nextStarts.length > 0 ? Math.min(...nextStarts) : raw.length
-      result[key] = raw.slice(start + key.length, end).trim()
+      const end = nextStarts.length > 0 ? Math.min(...nextStarts) : normalized.length
+      result[key] = normalized.slice(start + key.length, end).trim()
     }
     return result
   }
@@ -586,14 +618,14 @@ export default function PreciseSourcingAgentPage() {
   function renderAssistantExtraText(item) {
     const text = String(item?.content || '')
     if (!text) return null
-    const sections = ['【直接回答】', '【结论】', '【意图】', '【命中统计】', '【候选供应商Top3】']
+    const sections = ['【直接回答】', '【结论】', '【意图】', '【命中统计】', '【候选供应商TopN】']
     if (!sections.some((k) => text.includes(k))) return renderMessageContent(text)
     const keepLines = text
       .split(/\r?\n/)
       .filter((line) => {
         const t = String(line || '').trim()
         if (!t) return false
-        if (/^【(直接回答|结论|意图|命中统计|候选供应商Top3|产出文件)】/.test(t)) return false
+        if (/^【(直接回答|结论|意图|命中统计|候选供应商Top\d*|候选供应商TopN|产出文件)】/.test(t)) return false
         if (/^\d+\.\s*.+[:：]\s*\/api\/\S+/.test(t)) return false
         return t.startsWith('【自动编排】')
           || t.startsWith('【查询语句】')
@@ -612,7 +644,7 @@ export default function PreciseSourcingAgentPage() {
       .join('\n')
       .trim()
     if (!keepLines) return null
-    return <div style={{ marginTop: 10, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{keepLines}</div>
+    return <div style={{ marginTop: 10, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', wordBreak: 'break-word', minWidth: 0, maxWidth: '100%' }}>{keepLines}</div>
   }
 
   function openArtifactPreview(title, url) {
@@ -625,16 +657,44 @@ export default function PreciseSourcingAgentPage() {
     const sections = parseAnswerSections(item?.rawAnswer || item?.content || '')
     const hasSections = Object.keys(sections).length > 0
     if (!hasSections) return null
+    const isDirectAnswer = String(item?.intent || '') === 'direct_answer'
+      || item?.queryStatements?.route?.mode === 'direct_answer'
     return (
       <div style={{ marginTop: 10, border: '1px solid #dbeafe', background: '#eff6ff', borderRadius: 8, padding: 10 }}>
         {sections['【直接回答】'] ? <div style={{ marginBottom: 6 }}><Tag color="blue">直接回答</Tag>{sections['【直接回答】']}</div> : null}
         {sections['【结论】'] ? <div style={{ marginBottom: 6 }}><Tag color="purple">结论</Tag>{sections['【结论】']}</div> : null}
         {sections['【意图】'] ? <div style={{ marginBottom: 6 }}><Tag color="cyan">意图</Tag>{sections['【意图】']}</div> : null}
-        {sections['【命中统计】'] ? <div style={{ marginBottom: 6 }}><Tag color="gold">命中统计</Tag>{sections['【命中统计】']}</div> : null}
-        {sections['【候选供应商Top3】'] ? (
-          <div style={{ whiteSpace: 'pre-wrap' }}>
-            <Tag color="green">候选供应商Top3</Tag>
-            {sections['【候选供应商Top3】']}
+        {!isDirectAnswer && sections['【命中统计】'] ? <div style={{ marginBottom: 6 }}><Tag color="gold">命中统计</Tag>{sections['【命中统计】']}</div> : null}
+        {!isDirectAnswer && sections['【候选供应商TopN】'] ? (
+          <div style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', wordBreak: 'break-word', minWidth: 0 }}>
+            <Tag color="green">候选供应商TopN</Tag>
+            {sections['【候选供应商TopN】']}
+          </div>
+        ) : null}
+        {!isDirectAnswer && (item?.intentDecision || (Array.isArray(item?.planSteps) && item.planSteps.length > 0) || (item?.queryStatements && typeof item.queryStatements === 'object')) ? (
+          <div style={{ marginTop: 10 }}>
+            <Collapse
+              size="small"
+              items={[
+                {
+                  key: 'intent-detail',
+                  label: '意图解析详情',
+                  children: (
+                    <div style={{ fontSize: 12, color: '#334155', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
+                      {`意图: ${String(item?.intentDecision?.intent || item?.intent || '-')}\n`}
+                      {`路由目标: ${String(item?.intentDecision?.routeTarget || '-')}\n`}
+                      {`路由原因: ${String(item?.intentDecision?.routeReason || '-')}\n`}
+                      {`工具选择: ${Array.isArray(item?.intentDecision?.selectedTools) ? item.intentDecision.selectedTools.join(', ') : '-'}\n`}
+                      {`执行开关: DB=${item?.intentDecision?.needDb ? '是' : '否'} / RAG=${item?.intentDecision?.needRag ? '是' : '否'} / WEB=${item?.intentDecision?.needWeb ? '是' : '否'}\n\n`}
+                      {`计划步骤:\n${Array.isArray(item?.planSteps) && item.planSteps.length > 0
+                        ? item.planSteps.map((s) => `${Number(s?.order || 0)}. ${String(s?.title || s?.id || '-')}${s?.enabled ? '（启用）' : '（跳过）'}`).join('\n')
+                        : '-'}\n\n`}
+                      {`查询参数:\n${item?.queryStatements ? JSON.stringify(item.queryStatements, null, 2) : '-'}`}
+                    </div>
+                  ),
+                },
+              ]}
+            />
           </div>
         ) : null}
       </div>
@@ -654,12 +714,12 @@ export default function PreciseSourcingAgentPage() {
             return (
               <div key={`artifact-${idx}`} style={{ display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'space-between', border: '1px solid #f1f5f9', borderRadius: 6, padding: '6px 8px' }}>
                 <div style={{ minWidth: 0, flex: 1 }}>
-                  <div style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{idx + 1}. {title}</div>
+                  <div style={{ minWidth: 0, whiteSpace: 'normal', overflowWrap: 'anywhere', wordBreak: 'break-word' }}>{idx + 1}. {title}</div>
                   <a
                     href={url}
                     target="_blank"
                     rel="noreferrer"
-                    style={{ display: 'block', marginTop: 2, fontSize: 12, color: '#2563eb', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                    style={{ display: 'block', marginTop: 2, fontSize: 12, color: '#2563eb', minWidth: 0, whiteSpace: 'normal', overflowWrap: 'anywhere', wordBreak: 'break-word' }}
                     title={url}
                   >
                     {url}
@@ -688,8 +748,29 @@ export default function PreciseSourcingAgentPage() {
   }
 
   function renderExecutionProcess(item) {
+    const hasFinalPayload = !!String(item?.rawAnswer || '').trim()
+      || !!(item?.intentDecision && typeof item.intentDecision === 'object')
+      || (Array.isArray(item?.planSteps) && item.planSteps.length > 0)
+      || (Array.isArray(item?.traces) && item.traces.length > 0)
+    if (!hasFinalPayload) return null
+    const isDirectAnswer = String(item?.intent || '') === 'direct_answer'
+      || item?.queryStatements?.route?.mode === 'direct_answer'
+    if (isDirectAnswer) return null
     const rounds = Array.isArray(item?.react?.rounds) ? item.react.rounds : []
     const traces = Array.isArray(item?.traces) ? item.traces : []
+    const fusedSupplierNames = (Array.isArray(item?.evidence?.suppliers) ? item.evidence.suppliers : [])
+      .map((row) => String(row?.companyName || row?.company_name || row?.name || '').trim())
+      .filter(Boolean)
+    const kbHitsMapped = (Array.isArray(item?.evidence?.kbHits) ? item.evidence.kbHits : []).filter((row) => {
+      const cands = Array.isArray(row?.supplierCandidates) ? row.supplierCandidates.map((x) => String(x || '').trim()).filter(Boolean) : []
+      if (cands.length === 0) return false
+      const mapped = cands.filter((name) => fusedSupplierNames.includes(name))
+      return mapped.length > 0
+    })
+    const webHitsMapped = (Array.isArray(item?.evidence?.webHits) ? item.evidence.webHits : []).filter((row) => Array.isArray(row?.supplierCandidates) && row.supplierCandidates.length > 0)
+    const topN = Number(item?.queryStatements?.fusion?.requestedTopN || 10)
+    const intentDecision = item?.intentDecision && typeof item.intentDecision === 'object' ? item.intentDecision : null
+    const planSteps = Array.isArray(item?.planSteps) ? item.planSteps : []
     const fallbackLines = []
     if (rounds.length === 0 && traces.length === 0) {
       const content = String(item?.content || '')
@@ -705,7 +786,7 @@ export default function PreciseSourcingAgentPage() {
       if (queries) fallbackLines.push(`查询语句:\n${queries}`)
       if (fallbackLines.length === 0) return null
     }
-    const panels = rounds.length > 0
+    const reactPanels = rounds.length > 0
       ? rounds.map((round, idx) => ({
         key: `round-${idx + 1}`,
         label: (
@@ -735,22 +816,75 @@ export default function PreciseSourcingAgentPage() {
         label: `${idx + 1}. ${String(trace?.title || trace?.step || 'trace')}`,
         children: <div style={{ whiteSpace: 'pre-wrap' }}>{String(trace?.detail || '')}</div>,
       }))
+    const lifecyclePanels = []
+    const traceTextByStep = (prefixes = []) => traces
+      .filter((t) => prefixes.some((p) => String(t?.step || '').toLowerCase().startsWith(p)))
+      .map((t) => `${String(t?.title || t?.step || '-')}: ${String(t?.detail || '')}`)
+      .join('\n')
+    if (intentDecision || traces.length > 0) {
+      lifecyclePanels.push({
+        key: 'intent',
+        label: (
+          <Space size={8}>
+            <Tag color="magenta">Intent</Tag>
+            <span>意图识别</span>
+          </Space>
+        ),
+        children: (
+          <Space direction="vertical" size={8} style={{ width: '100%' }}>
+            <div><Tag color="blue">意图</Tag> {String(intentDecision?.intent || item?.intent || '识别中')}</div>
+            <div><Tag color="purple">路由</Tag> {String(intentDecision?.routeTarget || '-')}</div>
+            <div><Tag color={intentDecision?.needDb ? 'green' : 'default'}>DB</Tag><Tag color={intentDecision?.needRag ? 'green' : 'default'}>RAG</Tag><Tag color={intentDecision?.needWeb ? 'green' : 'default'}>WEB</Tag></div>
+            <div><Tag color="gold">依据</Tag> {String(intentDecision?.routeReason || '-')}</div>
+            {traceTextByStep(['plan']) ? (
+              <div style={{ whiteSpace: 'pre-wrap', fontSize: 12, color: '#475569' }}>
+                {traceTextByStep(['plan'])}
+              </div>
+            ) : null}
+          </Space>
+        ),
+      })
+    }
+    if (planSteps.length > 0) {
+      lifecyclePanels.push({
+        key: 'plan',
+        label: (
+          <Space size={8}>
+            <Tag color="cyan">Plan</Tag>
+            <span>执行计划</span>
+          </Space>
+        ),
+        children: (
+          <Space direction="vertical" size={6} style={{ width: '100%' }}>
+            {planSteps.map((step, idx) => (
+              <div key={`plan-step-${idx}`} style={{ border: '1px solid #e5e7eb', borderRadius: 8, padding: 8, background: '#fff' }}>
+                <div style={{ fontSize: 12 }}><Tag color={step?.enabled ? 'green' : 'default'}>{step?.enabled ? '启用' : '跳过'}</Tag>{Number(step?.order || idx + 1)}. {String(step?.title || step?.id || 'step')}</div>
+                <div style={{ fontSize: 12, color: '#64748b', marginTop: 4 }}>Tool: {String(step?.tool || '-')}</div>
+                <div style={{ fontSize: 12, color: '#64748b' }}>目标: {String(step?.objective || '-')}</div>
+                <div style={{ fontSize: 12, color: '#64748b' }}>成功标准: {String(step?.successCriteria || '-')}</div>
+              </div>
+            ))}
+          </Space>
+        ),
+      })
+    }
+    // 默认隐藏 ReAct 细粒度链路，避免执行面板噪音过大影响阅读。
     return (
       <div style={{ marginTop: 10 }}>
         <div style={{ marginBottom: 6, color: '#64748b', fontSize: 12 }}>
           执行过程 {item?.intent ? `(意图: ${item.intent})` : ''}{item?.traceVersion ? ` · 版本: ${item.traceVersion}` : ''}
         </div>
-        {panels.length > 0 ? <Collapse size="small" defaultActiveKey={panels.map((p) => p.key)} items={panels} /> : null}
-        {panels.length === 0 && fallbackLines.length > 0 ? (
+        {lifecyclePanels.length > 0 ? <Collapse size="small" defaultActiveKey={lifecyclePanels.map((p) => p.key)} items={lifecyclePanels} /> : null}
+        {lifecyclePanels.length === 0 && fallbackLines.length > 0 ? (
           <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8, padding: 10, whiteSpace: 'pre-wrap', fontSize: 12, color: '#334155' }}>
             {fallbackLines.join('\n\n')}
           </div>
         ) : null}
         {Array.isArray(item?.evidence?.suppliers) && item.evidence.suppliers.length > 0 ? (
           <div style={{ marginTop: 10, borderTop: '1px dashed #cbd5e1', paddingTop: 8 }}>
-            <div style={{ color: '#64748b', fontSize: 12, marginBottom: 6 }}>DB 命中来源字段（Top 5）</div>
+            <div style={{ color: '#64748b', fontSize: 12, marginBottom: 6 }}>DB 命中来源字段（Top {Math.min(topN, Array.isArray(item?.evidence?.suppliers) ? item.evidence.suppliers.length : 0)}）</div>
             <Space direction="vertical" size={6} style={{ width: '100%' }}>
-              {item.evidence.suppliers.slice(0, 5).map((row, idx) => (
+              {item.evidence.suppliers.slice(0, topN).map((row, idx) => (
                 <div key={`db-hit-${idx}`} style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8, padding: 8 }}>
                   <div style={{ fontSize: 12, color: '#334155' }}>{idx + 1}. {String(row?.companyName || row?.company_name || row?.name || '-')}</div>
                   <div style={{ marginTop: 4, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
@@ -765,12 +899,32 @@ export default function PreciseSourcingAgentPage() {
             </Space>
           </div>
         ) : null}
-        {Array.isArray(item?.evidence?.kbHits) && item.evidence.kbHits.length > 0 ? (
+        {kbHitsMapped.length > 0 ? (
           <div style={{ marginTop: 10, borderTop: '1px dashed #cbd5e1', paddingTop: 8 }}>
-            <div style={{ color: '#64748b', fontSize: 12, marginBottom: 6 }}>知识库命中（Top 5）</div>
+            <div style={{ color: '#64748b', fontSize: 12, marginBottom: 6 }}>知识库命中（Top {Math.min(topN, kbHitsMapped.length)}）</div>
             <Space direction="vertical" size={6} style={{ width: '100%' }}>
-              {item.evidence.kbHits.slice(0, 5).map((row, idx) => (
-                <div key={`kb-hit-${idx}`} style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8, padding: 8 }}>
+              {kbHitsMapped.slice(0, topN).map((row, idx) => (
+                <div key={`kb-hit-${idx}`} style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8, padding: 8, minWidth: 0, maxWidth: '100%', overflowX: 'hidden' }}>
+                  {Array.isArray(row?.supplierCandidates) && row.supplierCandidates.length > 0 ? (
+                    <div style={{ marginBottom: 6, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                      <Tag color="green">KB提取供应商</Tag>
+                      {row.supplierCandidates.map((name) => (
+                        <Tag key={`kb-candidate-${idx}-${name}`} color="geekblue">{String(name)}</Tag>
+                      ))}
+                    </div>
+                  ) : null}
+                  {(() => {
+                    const cands = Array.isArray(row?.supplierCandidates) ? row.supplierCandidates.map((x) => String(x || '').trim()).filter(Boolean) : []
+                    const mapped = cands.filter((name) => fusedSupplierNames.includes(name))
+                    return (
+                      <div style={{ marginBottom: 6, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                        <Tag color="green">命中供应商</Tag>
+                        {mapped.slice(0, 4).map((name) => (
+                          <Tag key={`kb-map-${idx}-${name}`} color="geekblue">{name}</Tag>
+                        ))}
+                      </div>
+                    )
+                  })()}
                   <div style={{ fontSize: 12, color: '#334155' }}>
                     {idx + 1}. {String(row?.docName || row?.docId || '-')}
                   </div>
@@ -783,8 +937,9 @@ export default function PreciseSourcingAgentPage() {
                         fontSize: 12,
                         display: 'block',
                         whiteSpace: 'normal',
-                        wordBreak: 'break-all',
+                        wordBreak: 'break-word',
                         overflowWrap: 'anywhere',
+                        maxWidth: '100%',
                       }}
                     >
                       {String(row.docUrl)}
@@ -807,17 +962,26 @@ export default function PreciseSourcingAgentPage() {
                       {String(row.chunkText).slice(0, 120)}
                     </div>
                   ) : null}
+                  {row?.candidateAudit && (Array.isArray(row?.candidateAudit?.dropReasons) ? row.candidateAudit.dropReasons.length > 0 : false) ? (
+                    <div style={{ marginTop: 6, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                      {row.candidateAudit.dropReasons.slice(0, 4).map((item2, ridx) => (
+                        <Tag key={`kb-drop-${idx}-${ridx}`} color="orange">
+                          剔除: {String(item2?.name || '-')}（{String(item2?.reason || '未通过')}）
+                        </Tag>
+                      ))}
+                    </div>
+                  ) : null}
                 </div>
               ))}
             </Space>
           </div>
         ) : null}
-        {Array.isArray(item?.evidence?.webHits) && item.evidence.webHits.length > 0 ? (
+        {webHitsMapped.length > 0 ? (
           <div style={{ marginTop: 10, borderTop: '1px dashed #cbd5e1', paddingTop: 8 }}>
-            <div style={{ color: '#64748b', fontSize: 12, marginBottom: 6 }}>互联网命中（Top 5）</div>
+            <div style={{ color: '#64748b', fontSize: 12, marginBottom: 6 }}>互联网命中（Top {Math.min(topN, webHitsMapped.length)}）</div>
             <Space direction="vertical" size={6} style={{ width: '100%' }}>
-              {item.evidence.webHits.slice(0, 5).map((row, idx) => (
-                <div key={`web-hit-${idx}`} style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8, padding: 8 }}>
+              {webHitsMapped.slice(0, topN).map((row, idx) => (
+                <div key={`web-hit-${idx}`} style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8, padding: 8, minWidth: 0, maxWidth: '100%', overflowX: 'hidden' }}>
                   <div style={{ fontSize: 12, color: '#334155' }}>{idx + 1}. {String(row?.title || row?.name || row?.url || '-')}</div>
                   {row?.url ? (
                     <a
@@ -828,8 +992,9 @@ export default function PreciseSourcingAgentPage() {
                         fontSize: 12,
                         display: 'block',
                         whiteSpace: 'normal',
-                        wordBreak: 'break-all',
+                        wordBreak: 'break-word',
                         overflowWrap: 'anywhere',
+                        maxWidth: '100%',
                       }}
                     >
                       {String(row.url)}
@@ -842,6 +1007,15 @@ export default function PreciseSourcingAgentPage() {
                       ))}
                     </div>
                   ) : null}
+                  {row?.candidateAudit && (Array.isArray(row?.candidateAudit?.dropReasons) ? row.candidateAudit.dropReasons.length > 0 : false) ? (
+                    <div style={{ marginTop: 6, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                      {row.candidateAudit.dropReasons.slice(0, 4).map((item2, ridx) => (
+                        <Tag key={`web-drop-${idx}-${ridx}`} color="orange">
+                          剔除: {String(item2?.name || '-')}（{String(item2?.reason || '未通过')}）
+                        </Tag>
+                      ))}
+                    </div>
+                  ) : null}
                 </div>
               ))}
             </Space>
@@ -849,42 +1023,72 @@ export default function PreciseSourcingAgentPage() {
         ) : null}
         {Array.isArray(item?.evidence?.webDerivedSuppliers) && item.evidence.webDerivedSuppliers.length > 0 ? (
           <div style={{ marginTop: 10, borderTop: '1px dashed #cbd5e1', paddingTop: 8 }}>
-            <div style={{ color: '#64748b', fontSize: 12, marginBottom: 6 }}>互联网提取供应商（Top 10）</div>
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-              {item.evidence.webDerivedSuppliers.map((name) => (
-                <Tag key={`web-supplier-${name}`} color="blue">{String(name)}</Tag>
-              ))}
+            {(() => {
+              const topN = Number(item?.queryStatements?.fusion?.requestedTopN || 10)
+              const rows = item.evidence.webDerivedSuppliers.slice(0, topN)
+              return (
+                <>
+            <div style={{ color: '#64748b', fontSize: 12, marginBottom: 6 }}>
+              互联网提取供应商（Top {rows.length}）
             </div>
+            <Space direction="vertical" size={4} style={{ width: '100%' }}>
+              {rows.map((name, idx) => (
+                <div key={`web-supplier-${name}-${idx}`} style={{ fontSize: 12, color: '#334155', lineHeight: 1.5 }}>
+                  {idx + 1}. {String(name)}
+                </div>
+              ))}
+            </Space>
+                </>
+              )
+            })()}
           </div>
         ) : null}
         {Array.isArray(item?.evidence?.suppliers) && item.evidence.suppliers.length > 0 ? (
           <div style={{ marginTop: 10, borderTop: '1px dashed #cbd5e1', paddingTop: 8 }}>
-            <div style={{ color: '#64748b', fontSize: 12, marginBottom: 6 }}>融合结果解释（Top 3）</div>
+            <div style={{ color: '#64748b', fontSize: 12, marginBottom: 6 }}>融合结果解释（按融合分排序）</div>
             <Space direction="vertical" size={6} style={{ width: '100%' }}>
-              {item.evidence.suppliers.slice(0, 3).map((row, idx) => {
+              {item.evidence.suppliers.slice(0, Number(item?.queryStatements?.fusion?.requestedTopN || 10)).map((row, idx) => {
                 const name = String(row?.companyName || row?.company_name || row?.name || '-')
                 const dbScore = Number(row?._matchScore || 0)
                 const fusedScore = Number(row?._fusedScore || dbScore)
                 const webSupport = Number(row?._webSupportCount || 0)
+                const kbSupportByRow = Number(row?._kbSupportCount || 0)
                 const kbSupport = Array.isArray(item?.evidence?.kbHits)
                   ? item.evidence.kbHits.filter((hit) => {
                     const docName = String(hit?.docName || '')
                     return !!name && (docName.includes(name) || name.includes(docName))
                   }).length
                   : 0
+                const w = item?.queryStatements?.fusion?.fusionWeights || { db: 1, kb: 0.8, web: 1.2 }
                 return (
                   <div key={`fused-top-${idx}`} style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8, padding: 8 }}>
                     <div style={{ fontSize: 12, color: '#334155' }}>{idx + 1}. {name}</div>
+                    <div style={{ marginTop: 4, fontSize: 12, color: '#64748b' }}>
+                      说明：融合分 = {Number(w.db ?? 1).toFixed(1)}×DB分 + {Number(w.kb ?? 0.8).toFixed(1)}×KB关联 + {Number(w.web ?? 1.2).toFixed(1)}×WEB支撑
+                    </div>
                     <div style={{ marginTop: 6, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                       <Tag color="blue">DB分: {dbScore.toFixed(2)}</Tag>
                       <Tag color="purple">WEB支撑: {webSupport}</Tag>
-                      <Tag color="cyan">KB关联: {kbSupport}</Tag>
+                      <Tag color="cyan">KB关联: {Math.max(kbSupportByRow, kbSupport)}</Tag>
                       <Tag color="green">融合分: {fusedScore.toFixed(2)}</Tag>
                     </div>
                   </div>
                 )
               })}
             </Space>
+            <div style={{ marginTop: 8, fontSize: 12, color: '#64748b' }}>
+              {(() => {
+                const selected = Array.isArray(item?.selectedTools) ? item.selectedTools : []
+                const hasKb = Array.isArray(item?.evidence?.kbHits) && item.evidence.kbHits.length > 0
+                const hasWeb = Array.isArray(item?.evidence?.webHits) && item.evidence.webHits.length > 0
+                const reasons = []
+                if (!selected.includes('local_kb')) reasons.push('未启用知识库工具')
+                else if (!hasKb) reasons.push('知识库命中为 0（本轮未采纳）')
+                if (!selected.includes('web_search')) reasons.push('未启用互联网搜索工具')
+                else if (!hasWeb) reasons.push('互联网命中为 0（本轮未采纳）')
+                return reasons.length > 0 ? `未采纳来源说明：${reasons.join('；')}` : '来源采纳说明：DB/KV/WEB均参与，按证据打分融合。'
+              })()}
+            </div>
           </div>
         ) : null}
       </div>
@@ -918,6 +1122,8 @@ export default function PreciseSourcingAgentPage() {
         queryStatements: {},
         traces: [],
         react: { rounds: [] },
+        intentDecision: null,
+        planSteps: [],
         intent: '',
         traceVersion: '',
         selectedTools: Array.isArray(selectedTools) ? [...selectedTools] : [],
@@ -939,6 +1145,7 @@ export default function PreciseSourcingAgentPage() {
         selectedDbTables,
         strictMode,
         temperature,
+        fusionWeights: effectiveFusionWeights,
         reportTemplate,
         history: nextHistory.slice(-12),
       }, {
@@ -947,41 +1154,50 @@ export default function PreciseSourcingAgentPage() {
           if (!trace) return
           patchLastAssistantMessage((last) => {
             const traces = [...(Array.isArray(last?.traces) ? last.traces : []), trace]
+            const detail = String(trace?.detail || '')
+            let nextIntent = last?.intentDecision && typeof last.intentDecision === 'object' ? { ...last.intentDecision } : null
+            if (String(trace?.step || '').toLowerCase().startsWith('plan')) {
+              const intentMatch = detail.match(/意图[=：]([a-z_]+)/i)
+              const dbMatch = detail.match(/DB[=：](是|否)/)
+              const ragMatch = detail.match(/RAG[=：](是|否)/)
+              const webMatch = detail.match(/WEB[=：](是|否)/)
+              if (!nextIntent) nextIntent = {}
+              if (intentMatch) nextIntent.intent = String(intentMatch[1] || '').trim()
+              if (dbMatch) nextIntent.needDb = dbMatch[1] === '是'
+              if (ragMatch) nextIntent.needRag = ragMatch[1] === '是'
+              if (webMatch) nextIntent.needWeb = webMatch[1] === '是'
+              nextIntent.routeReason = detail || nextIntent.routeReason || ''
+            }
             return {
               ...last,
               traces,
               react: { rounds: [] },
+              intentDecision: nextIntent,
               content: `执行中：${String(trace?.title || trace?.step || '')} - ${String(trace?.detail || '')}`,
             }
           })
+        },
+        onHeartbeat: (evt) => {
+          patchLastAssistantMessage((last) => ({
+            ...last,
+            content: `执行中：${String(evt?.message || '正在执行中，请稍候...')}`,
+          }))
         },
         onFinal: (data) => {
           const evidence = data?.evidence || {}
           const artifacts = Array.isArray(data?.artifacts) ? data.artifacts : []
           const qs = data?.queryStatements && typeof data.queryStatements === 'object' ? data.queryStatements : {}
-          const orchestrationText = qs?.orchestration && typeof qs.orchestration === 'object'
-            ? `\n【自动编排】\n`
-              + `工具：${Array.isArray(qs.orchestration.selectedTools) ? qs.orchestration.selectedTools.join(', ') : ''}\n`
-              + `知识库：${Array.isArray(qs.orchestration.selectedKbIds) ? qs.orchestration.selectedKbIds.join(', ') : ''}\n`
-              + `数据库表：${Array.isArray(qs.orchestration.selectedDbTables) ? qs.orchestration.selectedDbTables.join(', ') : ''}\n`
-              + `报告模板：${String(qs.orchestration.reportTemplateType || 'none')}`
-            : ''
-          const queryText = `\n【查询语句】\n`
-            + `DB关键词：${String(qs?.db?.keyword || '')}\n`
-            + `DB模板：${String(qs?.db?.template || '')}\n`
-            + `DB选表：${Array.isArray(qs?.db?.selectedTables) ? qs.db.selectedTables.join(', ') : ''}\n`
-            + `RAG关键词：${String(qs?.rag?.keyword || '')}\n`
-            + `Web关键词：${String(qs?.web?.keyword || '')}`
-          const metaSummary = `命中统计：知识库 ${Array.isArray(evidence?.kbHits) ? evidence.kbHits.length : 0} 条；数据库 ${Array.isArray(evidence?.suppliers) ? evidence.suppliers.length : 0} 条；互联网 ${Array.isArray(evidence?.webHits) ? evidence.webHits.length : 0} 条`
           patchLastAssistantMessage((last) => ({
             ...last,
-            content: `${String(data?.answer || '未返回内容')}${orchestrationText}${queryText}\n\n---\n${metaSummary}`,
+            content: String(data?.answer || '未返回内容'),
             rawAnswer: String(data?.answer || ''),
             evidence,
             artifacts,
             queryStatements: qs,
             traces: Array.isArray(data?.traces) ? data.traces : (Array.isArray(last?.traces) ? last.traces : []),
             react: data?.react || { rounds: [] },
+            intentDecision: data?.intentDecision && typeof data.intentDecision === 'object' ? data.intentDecision : null,
+            planSteps: Array.isArray(data?.planSteps) ? data.planSteps : [],
             intent: String(data?.intent || ''),
             traceVersion: String(data?.traceVersion || ''),
             ts: Date.now(),
@@ -1118,6 +1334,39 @@ export default function PreciseSourcingAgentPage() {
                       <Checkbox checked={strictMode} onChange={(e) => setStrictMode(e.target.checked)}>
                         严格模式（仅保留关键字段命中）
                       </Checkbox>
+                      <div>
+                        <Text>融合权重:</Text>
+                        {activeFusionTools.length === 0 ? (
+                          <div style={{ marginTop: 8, color: '#64748b', fontSize: 12 }}>
+                            请先勾选“数据库检索 / 知识库检索 / 互联网搜索”中的至少一项。
+                          </div>
+                        ) : activeFusionTools.length === 1 ? (
+                          <div style={{ marginTop: 8, border: '1px solid #e5e7eb', borderRadius: 8, padding: '8px 10px', color: '#334155', fontSize: 12 }}>
+                            {activeFusionTools[0].label} 已自动设为 3.0（单来源）
+                          </div>
+                        ) : (
+                          <div style={{ marginTop: 8, display: 'grid', gridTemplateColumns: activeFusionTools.length === 2 ? '1fr 1fr' : '1fr 1fr 1fr', gap: 8 }}>
+                            {activeFusionTools.some((x) => x.key === 'db') ? (
+                              <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, padding: '6px 8px' }}>
+                                <div style={{ fontSize: 12, color: '#475569' }}>DB {fusionWeightDb.toFixed(1)}</div>
+                                <Slider min={0} max={3} step={0.1} value={fusionWeightDb} onChange={(v) => setFusionWeightDb(Number(v || 0))} tooltip={{ open: false }} />
+                              </div>
+                            ) : null}
+                            {activeFusionTools.some((x) => x.key === 'kb') ? (
+                              <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, padding: '6px 8px' }}>
+                                <div style={{ fontSize: 12, color: '#475569' }}>知识库 {fusionWeightKb.toFixed(1)}</div>
+                                <Slider min={0} max={3} step={0.1} value={fusionWeightKb} onChange={(v) => setFusionWeightKb(Number(v || 0))} tooltip={{ open: false }} />
+                              </div>
+                            ) : null}
+                            {activeFusionTools.some((x) => x.key === 'web') ? (
+                              <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, padding: '6px 8px' }}>
+                                <div style={{ fontSize: 12, color: '#475569' }}>Web {fusionWeightWeb.toFixed(1)}</div>
+                                <Slider min={0} max={3} step={0.1} value={fusionWeightWeb} onChange={(v) => setFusionWeightWeb(Number(v || 0))} tooltip={{ open: false }} />
+                              </div>
+                            ) : null}
+                          </div>
+                        )}
+                      </div>
                       <div style={{ borderTop: '1px solid #d9d9d9', paddingTop: 12 }}>
                         <Text>报告模板类型:</Text>
                         <Select value={templateType} onChange={setTemplateType} options={TEMPLATE_TYPE_OPTIONS} style={{ width: '100%', marginTop: 8 }} />
@@ -1219,21 +1468,21 @@ export default function PreciseSourcingAgentPage() {
         </div>
       )}
 
-      <Card className="app-elevated-card" style={{ height: '100%', minHeight: 0 }} bodyStyle={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, padding: 12, overflow: 'hidden' }}>
-        <div ref={viewportRef} style={{ flex: 1, minHeight: 0, border: '1px solid #e5e7eb', borderRadius: 10, background: '#fff', padding: 10, overflowY: 'auto', overflowX: 'hidden' }}>
+      <Card className="app-elevated-card" style={{ height: '100%', minHeight: 0, minWidth: 0, maxWidth: '100%' }} bodyStyle={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, minWidth: 0, maxWidth: '100%', padding: 12, overflow: 'hidden' }}>
+        <div ref={viewportRef} style={{ flex: 1, minHeight: 0, minWidth: 0, maxWidth: '100%', border: '1px solid #e5e7eb', borderRadius: 10, background: '#fff', padding: 10, overflowY: 'auto', overflowX: 'hidden' }}>
           {activeMessages.length === 0 ? (
             <Empty description="请输入对话内容开始交流" image={Empty.PRESENTED_IMAGE_SIMPLE} />
           ) : (
             <Space direction="vertical" size={10} style={{ width: '100%' }}>
               {activeMessages.map((item, idx) => (
-                <Card key={`${item.role}-${idx}`} size="small" style={{ background: item.role === 'user' ? '#eff6ff' : '#f8fafc' }}>
-                  <div style={{ display: 'grid', gridTemplateColumns: '32px 1fr', gap: 10, alignItems: 'start' }}>
+                <Card key={`${item.role}-${idx}`} size="small" style={{ background: item.role === 'user' ? '#eff6ff' : '#f8fafc', minWidth: 0, maxWidth: '100%', overflowX: 'hidden' }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: '32px 1fr', gap: 10, alignItems: 'start', minWidth: 0, maxWidth: '100%' }}>
                     {item.role === 'user' ? (
                       <Avatar size={32} icon={<UserOutlined />} style={{ backgroundColor: '#ff6b6b' }} />
                     ) : (
                       <Avatar size={32} src={assistantAvatarSrc} />
                     )}
-                    <div>
+                    <div style={{ minWidth: 0, maxWidth: '100%', overflowX: 'hidden' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
                         <Text strong>{item.role === 'user' ? '我' : '精准寻源智能体'}：</Text>
                         <Text type="secondary" style={{ fontSize: 12 }}>{formatTime(item?.ts)}</Text>
@@ -1249,7 +1498,7 @@ export default function PreciseSourcingAgentPage() {
             </Space>
           )}
         </div>
-        <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: '1fr auto', gap: 8, alignItems: 'end', flexShrink: 0, background: '#fff' }}>
+        <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: 'minmax(0,1fr) auto', gap: 8, alignItems: 'end', flexShrink: 0, minWidth: 0, maxWidth: '100%', background: '#fff' }}>
           <Input.TextArea
             rows={3}
             value={input}
@@ -1261,6 +1510,7 @@ export default function PreciseSourcingAgentPage() {
                 void onSend()
               }
             }}
+            style={{ minWidth: 0, maxWidth: '100%' }}
           />
           <Button type="primary" icon={<AppstoreOutlined />} loading={loading} onClick={onSend}>发送</Button>
         </div>
@@ -1269,7 +1519,10 @@ export default function PreciseSourcingAgentPage() {
       <Modal
         title="选择模型"
         open={modelDialogOpen}
-        onCancel={() => setModelDialogOpen(false)}
+        onCancel={() => {
+          setModelDialogOpen(false)
+          setModelTestResult(null)
+        }}
         onOk={() => {
           const next = String(modelDraft || '').trim()
           if (!next) {
@@ -1282,6 +1535,45 @@ export default function PreciseSourcingAgentPage() {
         }}
         okText="确定"
         cancelText="取消"
+        footer={(_, { OkBtn, CancelBtn }) => (
+          <Space>
+            <Button
+              loading={modelTestLoading}
+              onClick={async () => {
+                const providerName = String(modelProviderDraft || '').trim()
+                const modelName = String(modelDraft || '').trim()
+                if (!providerName) {
+                  message.warning('请先选择模型供应商')
+                  return
+                }
+                if (!modelName) {
+                  message.warning('请先选择模型名称')
+                  return
+                }
+                setModelTestLoading(true)
+                setModelTestResult(null)
+                try {
+                  const result = await testModelProvider(providerName, { model: modelName })
+                  const ok = Boolean(result?.ok ?? true)
+                  const detail = String(result?.message || result?.detail || result?.status || '')
+                  setModelTestResult({ ok, detail: detail || (ok ? '连接正常' : '连接失败') })
+                  if (ok) message.success('测试连接成功')
+                  else message.error(`测试连接失败：${detail || '未知原因'}`)
+                } catch (error) {
+                  const detail = String(error?.message || '请求失败')
+                  setModelTestResult({ ok: false, detail })
+                  message.error(`测试连接失败：${detail}`)
+                } finally {
+                  setModelTestLoading(false)
+                }
+              }}
+            >
+              测试连接
+            </Button>
+            <CancelBtn />
+            <OkBtn />
+          </Space>
+        )}
       >
         <Space direction="vertical" size={10} style={{ width: '100%' }}>
           <div>
@@ -1317,6 +1609,16 @@ export default function PreciseSourcingAgentPage() {
               optionFilterProp="label"
             />
           </div>
+          {modelTestResult ? (
+            <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, padding: '8px 10px', background: '#f8fafc' }}>
+              <Space size={8} wrap>
+                <Tag color={modelTestResult.ok ? 'green' : 'red'}>
+                  {modelTestResult.ok ? '连接成功' : '连接失败'}
+                </Tag>
+                <Text style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{String(modelTestResult.detail || '')}</Text>
+              </Space>
+            </div>
+          ) : null}
         </Space>
       </Modal>
 
