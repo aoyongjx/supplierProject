@@ -7,6 +7,7 @@ const GraphState = Annotation.Root({
   kbId: Annotation(),
   kbIds: Annotation(),
   topK: Annotation(),
+  webTopK: Annotation(),
   dbTopK: Annotation(),
   selectedDbTables: Annotation(),
   selectedSkills: Annotation(),
@@ -183,7 +184,7 @@ export function createPreciseSourcingLangGraph(tools) {
           objective: '只在需要或显式选择时搜索公开线索，用于发现外部候选和交叉验证。',
           tool: 'web.searchSupplierSignals',
           enabled: executionPlan.useWeb,
-          budget: { topK: 5, attempts: 1 },
+          budget: { topK: Math.min(Math.max(Number(state.webTopK || 10), 1), 50), attempts: 1 },
           successCriteria: '返回至少 1 条公开网页线索。',
           fallback: 'Web 失败不阻断主流程，标记为待人工核验。',
         }),
@@ -370,7 +371,10 @@ export function createPreciseSourcingLangGraph(tools) {
           run: async () => {
             let webError = ''
             try {
-              webHits = await tools.searchWeb(state.executionPlan?.webQuery || state.userInput, 5)
+              webHits = await tools.searchWeb(
+                state.executionPlan?.webQuery || state.userInput,
+                Math.min(Math.max(Number(state.webTopK || 10), 1), 50),
+              )
             } catch (error) {
               webError = String(error?.message || error || '')
             }
@@ -379,7 +383,10 @@ export function createPreciseSourcingLangGraph(tools) {
               title: '执行',
               detail: '调用 Web Tool：公开互联网检索供应商线索。',
               tool: 'web.searchSupplierSignals',
-              input: { query: state.executionPlan?.webQuery || state.userInput, topK: 5 },
+              input: {
+                query: state.executionPlan?.webQuery || state.userInput,
+                topK: Math.min(Math.max(Number(state.webTopK || 10), 1), 50),
+              },
             })
             traces = pushTrace({ traces }, {
               step: 'observe_web',
@@ -461,6 +468,7 @@ export function createPreciseSourcingLangGraph(tools) {
         userInput: state.userInput,
         supplierRows: state.fusedEvidence?.suppliers || state.supplierRows,
         kbHits: state.fusedEvidence?.kbHits || state.kbHits,
+        webHits: state.fusedEvidence?.webHits || state.webHits,
         intent: state.intent,
         demand: state.demand,
         model: state.model,
@@ -563,6 +571,7 @@ export function createPreciseSourcingLangGraph(tools) {
         kbId: input.kbId,
         kbIds: Array.isArray(input.kbIds) ? input.kbIds : [],
         topK: input.topK,
+        webTopK: input.webTopK,
         dbTopK: input.dbTopK,
         selectedDbTables: Array.isArray(input.selectedDbTables) ? input.selectedDbTables : [],
         selectedSkills: Array.isArray(input.selectedSkills) ? input.selectedSkills : [],

@@ -16634,17 +16634,16 @@ async function callPreciseSourcingLlm(state) {
       snippet: toText(item.snippet || item.content || '').slice(0, 100),
     })),
   }
-  const humanPrompt = `请基于证据输出中文简洁结果，严格使用以下模板（不超过12行）：
-【直接回答】先正面回答用户问题（一句话）
-【结论】一句话
-【意图】一句话
-【命中统计】DB x条，RAG y条，WEB z条
-【候选供应商TopN】每行“序号. 名称 | 理由(不超过20字)”
-【下一步】1-3条可执行动作
-${state?.generateCharts === false ? '【图表】不生成图表。' : '【图表】给出建议图表类型（如柱状图/雷达图）及字段。'}
-${toText(state?.reportTemplate?.type) ? `【报告模板】按 ${toText(state.reportTemplate.type)} 模板组织章节。` : ''}
+  const humanPrompt = `你将收到检索召回上下文，请仅基于上下文回答用户问题。
+若上下文不足，请明确说明“证据不足/待核验”，不要编造。
+输出风格优先遵循系统提示词；若系统提示词未指定格式，则使用清晰分段的中文回答。
+${state?.generateCharts === false ? '本轮不需要图表建议。' : '可在结尾补充图表建议（可选）。'}
+${toText(state?.reportTemplate?.type) ? `可参考报告模板：${toText(state.reportTemplate.type)}。` : ''}
 
-证据JSON：
+用户问题：
+{userInput}
+
+召回上下文（JSON）：
 {evidenceJson}`
 
   try {
@@ -16663,7 +16662,12 @@ ${toText(state?.reportTemplate?.type) ? `【报告模板】按 ${toText(state.re
           stream: true,
           messages: [
             { role: 'system', content: resolvedSystemPrompt },
-            { role: 'user', content: humanPrompt.replace('{evidenceJson}', JSON.stringify(evidencePayload)) },
+            {
+              role: 'user',
+              content: humanPrompt
+                .replace('{userInput}', toText(state?.userInput))
+                .replace('{evidenceJson}', JSON.stringify(evidencePayload)),
+            },
           ],
         }),
       })
@@ -16713,6 +16717,7 @@ ${toText(state?.reportTemplate?.type) ? `【报告模板】按 ${toText(state.re
     const chain = prompt.pipe(llm)
     const result = await chain.invoke({
       systemPrompt: resolvedSystemPrompt,
+      userInput: toText(state?.userInput),
       evidenceJson: JSON.stringify(evidencePayload),
     })
 
@@ -16837,6 +16842,14 @@ function toCompactKbHit(hit = {}) {
   }
 }
 
+function resolveRequestedCount({ userInput = '', systemPrompt = '', defaultCount = 10, min = 1, max = 50 } = {}) {
+  const text = `${toText(userInput)}\n${toText(systemPrompt)}`
+  const m = text.match(/(?:top\s*|前|最多|至多|不超过)?\s*(\d{1,3})\s*(?:条|个|家|条记录|个结果|家企业)?/i)
+  const n = m ? Number(m[1]) : NaN
+  if (!Number.isFinite(n)) return defaultCount
+  return Math.min(Math.max(Math.trunc(n), min), max)
+}
+
 const preciseSourcingLangGraph = createPreciseSourcingLangGraph({
   async classifyIntent(userInput = '') {
     const raw = toText(userInput).trim()
@@ -16918,20 +16931,8 @@ const preciseSourcingLangGraph = createPreciseSourcingLangGraph({
     const weekdayText = weekdayMap[now.getDay()]
     const dateText = now.toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' })
     const timeText = now.toLocaleTimeString('zh-CN', { hour12: false, timeZone: 'Asia/Shanghai' })
-    const selectedTools = Array.isArray(state?.selectedTools) ? state.selectedTools.map((x) => toText(x)).filter(Boolean) : []
-    const selectedDbTables = Array.isArray(state?.selectedDbTables) ? state.selectedDbTables.map((x) => toText(x)).filter(Boolean) : []
-    const kbIds = Array.isArray(state?.kbIds) ? state.kbIds.map((x) => toText(x)).filter(Boolean) : []
     const runtimeContext = {
-      roleName: '汽车供应链精准寻源智能体',
-      selectedModel: modelName,
-      selectedTools,
-      selectedDbTables,
-      selectedKnowledgeBaseIds: kbIds.length > 0 ? kbIds : (toText(state?.kbId) ? [toText(state?.kbId)] : []),
-      systemPromptPresetKey: toText(state?.systemPromptPresetKey || ''),
-      systemPrompt: toText(state?.systemPrompt || ''),
-      strictMode: state?.strictMode === true,
-      routeReason: toText(state?.routeReason || ''),
-      directAnswerHint: toText(state?.directAnswer || ''),
+      currentModel: modelName,
       now: {
         timezone: 'Asia/Shanghai',
         date: dateText,
@@ -16940,11 +16941,12 @@ const preciseSourcingLangGraph = createPreciseSourcingLangGraph({
       },
     }
     const system = [
-      '你是一个上下文驱动的直答模型，不要套固定模板，不要说空话。',
-      '先理解用户意图，再根据运行时上下文组织回答。',
-      '当用户询问“你是谁/你能做什么/你用什么模型”时，必须结合当前上下文（角色、模型、工具、知识库、数据表、提示词）给出具体回答。',
+      '你是一个通用对话助手。',
+      '这是普通直答模式：只回答用户当前问题，不调用工具，不展开系统运行细节。',
+      '除非用户明确要求展开，否则回答保持简短。',
+      '当用户问“你使用什么模型”时，使用上下文里的 currentModel 作答。',
       '当用户询问日期、星期时，必须使用上下文中的 now 字段，禁止猜测。',
-      '回答简洁、真实、可落地，禁止编造未启用的工具或能力。',
+      '回答简洁、真实。',
       '输出语言：中文。',
     ].join('\n')
     try {
@@ -17315,60 +17317,37 @@ const preciseSourcingLangGraph = createPreciseSourcingLangGraph({
   async fuseEvidence(state = {}) {
     const oemNameSet = await loadGasOemNameSet()
     const supplierRowsRaw = Array.isArray(state?.supplierRows) ? state.supplierRows : []
-    const supplierRows = supplierRowsRaw.filter((row) => {
+    const supplierRowsFiltered = supplierRowsRaw.filter((row) => {
       const name = toText(row?.companyName || row?.company_name || row?.name || row?.supplier_name || row?.oem_name || '')
       return isLikelySupplierCompanyName(name, toText(state?.userInput)) && !isNameInOemSet(name, oemNameSet)
     })
+    const supplierMap = new Map()
+    for (const row of supplierRowsFiltered) {
+      const name = normalizeSupplierCandidateName(
+        toText(row?.companyName || row?.company_name || row?.name || row?.supplier_name || row?.oem_name || ''),
+      )
+      if (!name) continue
+      const prev = supplierMap.get(name)
+      if (!prev || Number(row?._matchScore || 0) > Number(prev?._matchScore || 0)) {
+        supplierMap.set(name, row)
+      }
+    }
+    const supplierRows = Array.from(supplierMap.values())
+      .sort((a, b) => Number(b?._matchScore || 0) - Number(a?._matchScore || 0))
     const kbHits = Array.isArray(state?.kbHits) ? state.kbHits : []
     const webHits = Array.isArray(state?.webHits) ? state.webHits : []
-    const llmCandidates = await extractSupplierCandidatesByLlmBatch(webHits, 6, toText(state?.model), { query: toText(state?.userInput) })
-    const webSuppliersRaw = Array.from(new Set(
-      webHits
-        .flatMap((item, idx) => {
-          const fromLlm = Array.isArray(llmCandidates?.[idx]) ? llmCandidates[idx] : []
-          const fromRule = extractSupplierCandidatesFromText(`${toText(item?.title)} ${toText(item?.snippet || item?.content)}`, 6, { query: toText(state?.userInput) })
-          return [...fromLlm, ...fromRule]
-        })
-        .map((x) => normalizeSupplierCandidateName(x))
-        .filter((x) => isLikelySupplierCompanyName(x, toText(state?.userInput))),
-    ))
-    const webSuppliersCtx = await refineSupplierCandidatesByContext(webSuppliersRaw, {
-      query: toText(state?.userInput),
-      model: toText(state?.model),
-      context: webHits.map((x) => `${toText(x?.title)} ${toText(x?.snippet || x?.content)}`).join('\n'),
-    })
-    const webSuppliers = (await verifySupplierCandidatesViaWeb(webSuppliersCtx, { query: toText(state?.userInput) }))
-      .filter((name) => !isNameInOemSet(name, oemNameSet))
-    const fusedSuppliers = supplierRows
-      .map((row) => {
-        const name = toText(
-          row?.companyName
-          || row?.company_name
-          || row?.name
-          || row?.supplier_name
-          || '',
-        )
-        const webSupportCount = name
-          ? webSuppliers.filter((candidate) => candidate.includes(name) || name.includes(candidate)).length
-          : 0
-        return {
-          ...row,
-          _webSupportCount: webSupportCount,
-          _fusedScore: Number((Number(row?._matchScore || 0) + webSupportCount * 1.2).toFixed(3)),
-        }
-      })
-      .sort((a, b) => Number(b?._fusedScore || 0) - Number(a?._fusedScore || 0))
+    const webSuppliers = []
     return {
-      suppliers: fusedSuppliers.slice(0, 20),
+      suppliers: supplierRows.slice(0, 20),
       kbHits: kbHits.slice(0, 20),
       webHits: webHits.slice(0, 20),
-      webDerivedSuppliers: webSuppliers.slice(0, 10),
+      webDerivedSuppliers: webSuppliers,
     }
   },
-  async searchWeb(query = '', topK = 5) {
+  async searchWeb(query = '', topK = 10) {
     const raw = await invokeRunnableTool(preciseSourcingToolbox.byName.webSearchTool, {
       query: toText(query),
-      topK: Math.min(Math.max(Number(topK || 5), 1), 10),
+      topK: Math.min(Math.max(Number(topK || 10), 1), 50),
     }, { tool: 'web_search_supplier_signals' })
     const parsed = normalizeToolJsonResult(raw)
     if (!parsed?.ok) throw new Error(toText(parsed?.error || 'web_search_failed'))
@@ -17419,6 +17398,7 @@ app.post('/api/agents/precise-sourcing/chat', authMiddleware, async (req, res) =
   const selectedModel = toText(req.body?.model)
   const systemPrompt = toText(req.body?.systemPrompt)
   const systemPromptPresetKey = toText(req.body?.systemPromptPresetKey || 'default')
+  const requestedCount = resolveRequestedCount({ userInput, systemPrompt, defaultCount: 10, min: 1, max: 50 })
   const enableSecondaryWebVerification = req.body?.enableSecondaryWebVerification === true
   const enablePostEnrichment = req.body?.enablePostEnrichment === true
   if (!userInput) {
@@ -17449,6 +17429,7 @@ app.post('/api/agents/precise-sourcing/chat', authMiddleware, async (req, res) =
       kbId: targetKbId || '',
       kbIds: targetKbIds,
       topK: Math.min(topK, 20),
+      webTopK: requestedCount,
       dbTopK,
       selectedDbTables,
       strictMode,
@@ -17470,6 +17451,7 @@ app.post('/api/agents/precise-sourcing/chat', authMiddleware, async (req, res) =
       targetKbIds,
       selectedDbTables,
       reportTemplate,
+      requestedTopN: requestedCount,
       modelName: selectedModel,
       enableSecondaryWebVerification,
       enablePostEnrichment,
@@ -17917,9 +17899,9 @@ const preciseSourcingToolbox = buildLangChainToolbox({
     }
     return rows
   },
-  async webSearch({ query = '', topK = 5 }) {
+  async webSearch({ query = '', topK = 10 }) {
     const apiKey = toText(process.env.TAVILY_API_KEY)
-    const limit = Math.min(Math.max(Number(topK || 5), 1), 10)
+    const limit = Math.min(Math.max(Number(topK || 10), 1), 50)
     let tavilyError = ''
     if (apiKey) {
       try {
@@ -17993,10 +17975,12 @@ async function buildPreciseSourcingResponsePayload({
   targetKbIds,
   selectedDbTables,
   reportTemplate,
+  requestedTopN = 10,
   modelName,
   enableSecondaryWebVerification = false,
   enablePostEnrichment = false,
 }) {
+  const resultLimit = Math.min(Math.max(Number(requestedTopN || 10), 1), 50)
   const oemNameSet = await loadGasOemNameSet()
   const buildCandidateAudit = (seed = [], contextPassed = [], webVerified = [], source = '') => {
     const seedRows = Array.from(new Set((Array.isArray(seed) ? seed : []).map((x) => normalizeSupplierCandidateName(x)).filter(Boolean)))
@@ -18022,6 +18006,34 @@ async function buildPreciseSourcingResponsePayload({
     }
   }
   const isDirectAnswer = toText(graphResult?.intent) === 'direct_answer'
+  const buildExecutionProtocol = (safeEvidence = { suppliers: [], kbHits: [], webHits: [] }) => {
+    const selected = Array.isArray(selectedTools) ? selectedTools : []
+    return {
+      version: 'agent-standard-v1',
+      mode: isDirectAnswer ? 'direct_llm' : 'plan_react_rag',
+      stages: [
+        { step: 1, name: '用户输入', status: 'done' },
+        { step: 2, name: 'LLM语义理解与任务规划', status: 'done', meta: { intent: toText(graphResult?.intent || '') } },
+        { step: 3, name: '检索子任务分解', status: isDirectAnswer ? 'skipped' : 'done' },
+        { step: 4, name: '发起标准化工具请求(MCP)', status: isDirectAnswer ? 'skipped' : 'done' },
+        { step: 5, name: '工具执行(DB/RAG/WEB)', status: isDirectAnswer ? 'skipped' : 'done' },
+        {
+          step: 6,
+          name: '返回标准化结果',
+          status: 'done',
+          meta: {
+            dbHits: Array.isArray(safeEvidence?.suppliers) ? safeEvidence.suppliers.length : 0,
+            ragHits: Array.isArray(safeEvidence?.kbHits) ? safeEvidence.kbHits.length : 0,
+            webHits: Array.isArray(safeEvidence?.webHits) ? safeEvidence.webHits.length : 0,
+          },
+        },
+        { step: 7, name: '证据整合与去重', status: isDirectAnswer ? 'skipped' : 'done' },
+        { step: 8, name: '系统提示词 + 召回上下文交给LLM生成', status: 'done', meta: { model: toText(modelName || '') } },
+        { step: 9, name: '返回最终结果', status: 'done' },
+      ],
+      selectedTools: selected,
+    }
+  }
   const safeSuppliers = toJsonSafe(Array.isArray(graphResult.supplierRows) ? graphResult.supplierRows.slice(0, 20) : [])
     .filter((row) => {
       const name = toText(row?.companyName || row?.company_name || row?.name || row?.supplier_name || row?.oem_name || '')
@@ -18029,7 +18041,7 @@ async function buildPreciseSourcingResponsePayload({
     })
   const safeKbHitsRaw = toJsonSafe(
     Array.isArray(graphResult.kbHits)
-      ? graphResult.kbHits.slice(0, 8).map((item) => toCompactKbHit(item))
+      ? graphResult.kbHits.slice(0, resultLimit).map((item) => toCompactKbHit(item))
       : [],
   )
   if (!enablePostEnrichment) {
@@ -18056,7 +18068,7 @@ async function buildPreciseSourcingResponsePayload({
       }
     })
     const safeKbHitsEffective = safeKbHits.filter((hit) => Array.isArray(hit?.supplierCandidates) && hit.supplierCandidates.length > 0)
-    const safeWebHits = toJsonSafe((Array.isArray(graphResult.webHits) ? graphResult.webHits : []).slice(0, 8)).map((hit) => ({
+    const safeWebHits = toJsonSafe((Array.isArray(graphResult.webHits) ? graphResult.webHits : []).slice(0, resultLimit)).map((hit) => ({
       ...hit,
       supplierCandidates: [],
       candidateAudit: {
@@ -18095,6 +18107,7 @@ async function buildPreciseSourcingResponsePayload({
         provider: 'tavily -> openclaw-grok-search(fallback)',
       },
       fusion: {
+        requestedTopN: Number(requestedTopN || 10),
         filterVersion: 'v4-fast-no-enrichment',
         strategy: '快速模式：返回主流程证据，跳过重型后处理',
         dbHits: Array.isArray(safeSuppliers) ? safeSuppliers.length : 0,
@@ -18103,7 +18116,12 @@ async function buildPreciseSourcingResponsePayload({
         webDerivedSuppliers: [],
       },
     }
-    const statLine = `【命中统计】DB ${Array.isArray(safeSuppliers) ? safeSuppliers.length : 0}条，RAG ${Array.isArray(safeKbHitsEffective) ? safeKbHitsEffective.length : 0}条，WEB ${Array.isArray(safeWebHits) ? safeWebHits.length : 0}条`
+    const statLine = [
+      '【命中统计】',
+      `DB结构化命中：${Array.isArray(safeSuppliers) ? safeSuppliers.length : 0}条`,
+      `RAG片段命中：${Array.isArray(safeKbHitsEffective) ? safeKbHitsEffective.length : 0}条`,
+      `WEB线索命中：${Array.isArray(safeWebHits) ? safeWebHits.length : 0}条（与供应商候选分开）`,
+    ].join('\n')
     const normalizedAnswer = isDirectAnswer
       ? toText(graphResult.answer).replace(/【命中统计】[^\n\r]*/g, '').trim()
       : (/【命中统计】[^\n\r]*/.test(toText(graphResult.answer))
@@ -18129,6 +18147,11 @@ async function buildPreciseSourcingResponsePayload({
         webHits: safeWebHits,
         webDerivedSuppliers: [],
       },
+      executionProtocol: buildExecutionProtocol({
+        suppliers: safeSuppliers,
+        kbHits: safeKbHitsEffective,
+        webHits: safeWebHits,
+      }),
     }
   }
   const safeKbHits = []
@@ -18142,7 +18165,7 @@ async function buildPreciseSourcingResponsePayload({
     const candidateAudit = buildCandidateAudit(seed, ctx, verifiedFiltered, 'kb')
     if (verifiedFiltered.length > 0) safeKbHits.push({ ...hit, supplierCandidates: verifiedFiltered.slice(0, 5), candidateAudit })
   }
-  const rawWebHits = (Array.isArray(graphResult.webHits) ? graphResult.webHits : []).slice(0, 8)
+  const rawWebHits = (Array.isArray(graphResult.webHits) ? graphResult.webHits : []).slice(0, resultLimit)
   const llmCandidates = await extractSupplierCandidatesByLlmBatch(rawWebHits, 5, toText(modelName), { query: toText(userInput) })
   const safeWebHitsDraft = toJsonSafe(
     rawWebHits.map((item, idx) => {
@@ -18207,6 +18230,7 @@ async function buildPreciseSourcingResponsePayload({
       provider: 'tavily -> openclaw-grok-search(fallback)',
     },
     fusion: {
+      requestedTopN: Number(requestedTopN || 10),
       filterVersion: enableSecondaryWebVerification ? 'v2-context-verify' : 'v3-context-first',
       strategy: enableSecondaryWebVerification
         ? '按相关度聚合DB/RAG/WEB并去重，语义判定+联网验真'
@@ -18217,7 +18241,12 @@ async function buildPreciseSourcingResponsePayload({
       webDerivedSuppliers,
     },
   }
-  const statLine = `【命中统计】DB ${Array.isArray(safeSuppliers) ? safeSuppliers.length : 0}条，RAG ${safeKbHitsEffective.length}条，WEB ${safeWebHitsEffective.length}条`
+  const statLine = [
+    '【命中统计】',
+    `DB结构化命中：${Array.isArray(safeSuppliers) ? safeSuppliers.length : 0}条`,
+    `RAG片段命中：${safeKbHitsEffective.length}条`,
+    `WEB线索命中：${safeWebHitsEffective.length}条（与供应商候选分开）`,
+  ].join('\n')
   const normalizedAnswer = isDirectAnswer
     ? toText(graphResult.answer).replace(/【命中统计】[^\n\r]*/g, '').trim()
     : (/【命中统计】[^\n\r]*/.test(toText(graphResult.answer))
@@ -18243,6 +18272,11 @@ async function buildPreciseSourcingResponsePayload({
       webHits: safeWebHits,
       webDerivedSuppliers,
     },
+    executionProtocol: buildExecutionProtocol({
+      suppliers: safeSuppliers,
+      kbHits: safeKbHits,
+      webHits: safeWebHits,
+    }),
   }
 }
 
@@ -18709,6 +18743,7 @@ app.post('/api/agents/precise-sourcing/chat-stream', authMiddleware, async (req,
   const selectedModel = toText(req.body?.model)
   const systemPrompt = toText(req.body?.systemPrompt)
   const systemPromptPresetKey = toText(req.body?.systemPromptPresetKey || 'default')
+  const requestedCount = resolveRequestedCount({ userInput, systemPrompt, defaultCount: 10, min: 1, max: 50 })
   const enableSecondaryWebVerification = req.body?.enableSecondaryWebVerification === true
   const enablePostEnrichment = req.body?.enablePostEnrichment === true
   const targetKbId = kbIdInput || kbIdsInput[0] || toText(knowledgeBaseStore.keys().next()?.value)
@@ -18730,9 +18765,7 @@ app.post('/api/agents/precise-sourcing/chat-stream', authMiddleware, async (req,
   sendEvent('start', { traceVersion, message: '开始执行' })
 
   try {
-    const primaryTools = fastWebAsync
-      ? selectedTools.filter((x) => toText(x) !== 'web_search')
-      : selectedTools
+    const primaryTools = selectedTools
     const graphStart = Date.now()
     const graphResult = await withTimeout(preciseSourcingLangGraph.run({
       onEvent: (evt) => {
@@ -18747,6 +18780,7 @@ app.post('/api/agents/precise-sourcing/chat-stream', authMiddleware, async (req,
       kbId: targetKbId || '',
       kbIds: targetKbIds,
       topK: Math.min(topK, 20),
+      webTopK: requestedCount,
       dbTopK,
       selectedDbTables,
       strictMode,
@@ -18771,6 +18805,7 @@ app.post('/api/agents/precise-sourcing/chat-stream', authMiddleware, async (req,
       targetKbIds,
       selectedDbTables,
       reportTemplate,
+      requestedTopN: requestedCount,
       modelName: selectedModel,
       enableSecondaryWebVerification,
       enablePostEnrichment,
@@ -18786,22 +18821,26 @@ app.post('/api/agents/precise-sourcing/chat-stream', authMiddleware, async (req,
       modelName: selectedModel,
     }).catch(() => {})
     sendEvent('final', payload)
-    if (fastWebAsync && selectedTools.includes('web_search')) {
+    const routeNeedWeb = graphResult?.executionPlan?.useWeb === true
+    const routeNeedTools = graphResult?.executionPlan?.needsTools === true
+    if (fastWebAsync && routeNeedTools && routeNeedWeb && selectedTools.includes('web_search')) {
       sendEvent('heartbeat', { message: '开始WEB后台补全...' })
       try {
+        const oemNameSet = await loadGasOemNameSet()
         const webRaw = await invokeRunnableTool(preciseSourcingToolbox.byName.webSearchTool, {
           query: toText(graphResult?.executionPlan?.webQuery || userInput),
-          topK: 5,
+          topK: requestedCount,
         }, { tool: 'web_search_supplier_signals_async' })
         const webParsed = normalizeToolJsonResult(webRaw)
-        const webHitsRaw = Array.isArray(webParsed?.data?.results) ? webParsed.data.results.slice(0, 8) : []
+        const webHitsRaw = Array.isArray(webParsed?.data?.results) ? webParsed.data.results.slice(0, Math.min(Math.max(Number(requestedCount || 10), 1), 50)) : []
         const llmCandidates = await extractSupplierCandidatesByLlmBatch(webHitsRaw, 5, toText(selectedModel), { query: toText(userInput) })
         const webHits = webHitsRaw.map((item, idx) => {
           const fromLlm = Array.isArray(llmCandidates?.[idx]) ? llmCandidates[idx] : []
           const fromRule = extractSupplierCandidatesFromText(`${toText(item?.title || '')} ${toText(item?.snippet || item?.content || '')}`, 5, { query: toText(userInput) })
           const supplierCandidates = Array.from(new Set([...fromLlm, ...fromRule]
             .map((x) => normalizeSupplierCandidateName(x))
-            .filter((x) => isLikelySupplierCompanyName(x, toText(userInput))))).slice(0, 5)
+            .filter((x) => isLikelySupplierCompanyName(x, toText(userInput)))
+            .filter((x) => !isNameInOemSet(x, oemNameSet)))).slice(0, 5)
           return {
             ...item,
             supplierCandidates,
@@ -18818,10 +18857,16 @@ app.post('/api/agents/precise-sourcing/chat-stream', authMiddleware, async (req,
           model: toText(selectedModel),
           context: webHits.map((x) => `${toText(x?.title || '')} ${toText(x?.snippet || x?.content || '')}`).join('\n').slice(0, 3000),
         })
+        const webDerivedSuppliersFiltered = Array.isArray(webDerivedSuppliers)
+          ? webDerivedSuppliers
+            .map((x) => normalizeSupplierCandidateName(x))
+            .filter(Boolean)
+            .filter((x) => !isNameInOemSet(x, oemNameSet))
+          : []
         sendEvent('enrich', {
           webHits,
-          webDerivedSuppliers: Array.isArray(webDerivedSuppliers) ? webDerivedSuppliers.slice(0, 12) : [],
-          note: `已完成WEB补全：新增线索 ${webHits.length} 条，提取供应商候选 ${webDerivedSuppliers.length} 个。`,
+          webDerivedSuppliers: webDerivedSuppliersFiltered.slice(0, 12),
+          note: `已完成WEB补全：新增线索 ${webHits.length} 条，提取供应商候选 ${webDerivedSuppliersFiltered.length} 个。`,
         })
       } catch (error) {
         sendEvent('heartbeat', { message: `WEB补全失败：${toText(error?.message || error)}` })

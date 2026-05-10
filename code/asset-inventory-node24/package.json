@@ -19,6 +19,7 @@
     "start": "node server/index.js",
     "build": "vite build",
     "verify:stocks": "node scripts/verify-stocks.mjs",
+    "verify:routing": "node scripts/verify-routing.mjs",
     "lint": "eslint .",
     "preview": "vite preview"
   },

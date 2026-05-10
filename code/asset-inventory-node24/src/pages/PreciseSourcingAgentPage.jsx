@@ -560,7 +560,12 @@ export default function PreciseSourcingAgentPage() {
   }
 
   function renderMessageContent(text = '') {
-    return <div style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', wordBreak: 'break-word', minWidth: 0, maxWidth: '100%' }}>{String(text || '')}</div>
+    const pretty = String(text || '')
+      .replace(/(【[^】]+】)/g, '\n$1')
+      .replace(/\s*-\s*/g, '\n- ')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim()
+    return <div style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', wordBreak: 'break-word', minWidth: 0, maxWidth: '100%' }}>{pretty}</div>
   }
 
   function parseAnswerSections(text = '') {
@@ -659,10 +664,47 @@ export default function PreciseSourcingAgentPage() {
     if (!hasSections) return null
     const isDirectAnswer = String(item?.intent || '') === 'direct_answer'
       || item?.queryStatements?.route?.mode === 'direct_answer'
+    const topN = Number(item?.queryStatements?.fusion?.requestedTopN || 10)
+    const supplierBlocks = Array.isArray(item?.evidence?.suppliers)
+      ? item.evidence.suppliers.slice(0, topN).map((row, idx) => {
+        const name = String(row?.companyName || row?.company_name || row?.name || '-')
+        const hitTags = Array.isArray(row?._matchFieldScores)
+          ? row._matchFieldScores
+            .slice(0, 6)
+            .map((entry) => {
+              const field = String(entry?.field || '').split('.').filter(Boolean).pop() || 'field'
+              const score = Number(entry?.score || 0).toFixed(2)
+              return `${field} (${score})`
+            })
+          : []
+        return { idx, name, hitTags }
+      })
+      : []
     return (
       <div style={{ marginTop: 10, border: '1px solid #dbeafe', background: '#eff6ff', borderRadius: 8, padding: 10 }}>
         {sections['【直接回答】'] ? <div style={{ marginBottom: 6 }}><Tag color="blue">直接回答</Tag>{sections['【直接回答】']}</div> : null}
-        {sections['【结论】'] ? <div style={{ marginBottom: 6 }}><Tag color="purple">结论</Tag>{sections['【结论】']}</div> : null}
+        {sections['【结论】'] ? (
+          <div style={{ marginBottom: 8, border: '1px solid #e5e7eb', borderRadius: 8, background: '#fff', padding: 10 }}>
+            <div style={{ marginBottom: 8 }}>
+              <Tag color="purple">结论</Tag>
+              <span style={{ color: '#334155' }}>{sections['【结论】']}</span>
+            </div>
+            {supplierBlocks.length > 0 ? (
+              <div style={{ display: 'grid', gap: 8 }}>
+                {supplierBlocks.map((row) => (
+                  <div key={`conclusion-supplier-${row.idx}`} style={{ border: '1px solid #e2e8f0', borderRadius: 8, background: '#f8fafc', padding: 8 }}>
+                    <div style={{ fontSize: 13, color: '#0f172a', marginBottom: 6 }}>{row.idx + 1}. {row.name}</div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                      {row.hitTags.length > 0 ? row.hitTags.map((tag) => (
+                        <Tag key={`${row.idx}-${tag}`} color="blue">{tag}</Tag>
+                      )) : <Tag color="default">暂无字段命中标签</Tag>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
         {sections['【意图】'] ? <div style={{ marginBottom: 6 }}><Tag color="cyan">意图</Tag>{sections['【意图】']}</div> : null}
         {!isDirectAnswer && sections['【命中统计】'] ? <div style={{ marginBottom: 6 }}><Tag color="gold">命中统计</Tag>{sections['【命中统计】']}</div> : null}
         {!isDirectAnswer && sections['【候选供应商TopN】'] ? (
@@ -769,7 +811,7 @@ export default function PreciseSourcingAgentPage() {
     })
     const kbHitsFallback = Array.isArray(item?.evidence?.kbHits) ? item.evidence.kbHits : []
     const kbHitsVisible = kbHitsMapped.length > 0 ? kbHitsMapped : kbHitsFallback
-    const webHitsMapped = (Array.isArray(item?.evidence?.webHits) ? item.evidence.webHits : []).filter((row) => Array.isArray(row?.supplierCandidates) && row.supplierCandidates.length > 0)
+    const webHitsMapped = Array.isArray(item?.evidence?.webHits) ? item.evidence.webHits : []
     const topN = Number(item?.queryStatements?.fusion?.requestedTopN || 10)
     const intentDecision = item?.intentDecision && typeof item.intentDecision === 'object' ? item.intentDecision : null
     const planSteps = Array.isArray(item?.planSteps) ? item.planSteps : []
@@ -994,7 +1036,9 @@ export default function PreciseSourcingAgentPage() {
         ) : null}
         {webHitsMapped.length > 0 ? (
           <div style={{ marginTop: 10, borderTop: '1px dashed #cbd5e1', paddingTop: 8 }}>
-            <div style={{ color: '#64748b', fontSize: 12, marginBottom: 6 }}>互联网命中（Top {Math.min(topN, webHitsMapped.length)}）</div>
+            <div style={{ color: '#64748b', fontSize: 12, marginBottom: 6 }}>
+              互联网线索命中（Top {Math.min(topN, webHitsMapped.length)}）
+            </div>
             <Space direction="vertical" size={6} style={{ width: '100%' }}>
               {webHitsMapped.slice(0, topN).map((row, idx) => (
                 <div key={`web-hit-${idx}`} style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8, padding: 8, minWidth: 0, maxWidth: '100%', overflowX: 'hidden' }}>
@@ -1022,7 +1066,7 @@ export default function PreciseSourcingAgentPage() {
                         <Tag key={`${idx}-${name}`} color="geekblue">{String(name)}</Tag>
                       ))}
                     </div>
-                  ) : null}
+                  ) : <div style={{ marginTop: 6, fontSize: 12, color: '#94a3b8' }}>该线索未提取到可采纳供应商候选</div>}
                   {row?.candidateAudit && (Array.isArray(row?.candidateAudit?.dropReasons) ? row.candidateAudit.dropReasons.length > 0 : false) ? (
                     <div style={{ marginTop: 6, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                       {row.candidateAudit.dropReasons.slice(0, 4).map((item2, ridx) => (
