@@ -50,12 +50,7 @@ export async function chatPreciseSourcingAgentStream(payload = {}, handlers = {}
   })
   if (!response.ok || !response.body) {
     const payloadJson = await response.json().catch(() => ({}))
-    // 流式入口失败时也降级到非流式，避免直接抛 502
-    const fallback = await chatPreciseSourcingAgent(payload).catch(() => null)
-    if (fallback && typeof onFinal === 'function') onFinal(fallback)
-    if (typeof onDone === 'function') onDone({ ok: Boolean(fallback), degraded: true, reason: payloadJson.message || `HTTP ${response.status}` })
-    if (!fallback) throw new Error(payloadJson.message || `请求失败（HTTP ${response.status}）`)
-    return
+    throw new Error(payloadJson.message || `流式请求失败（HTTP ${response.status}）`)
   }
   const reader = response.body.getReader()
   const decoder = new TextDecoder('utf-8')
@@ -95,9 +90,7 @@ export async function chatPreciseSourcingAgentStream(payload = {}, handlers = {}
     }
   } catch (error) {
     if (typeof onError === 'function') onError({ message: `流式连接中断：${error?.message || 'unknown error'}` })
-    // 流式失败时降级到非流式，避免用户只看到 502/断流
-    const fallback = await chatPreciseSourcingAgent(payload).catch(() => null)
-    if (fallback && typeof onFinal === 'function') onFinal(fallback)
-    if (typeof onDone === 'function') onDone({ ok: Boolean(fallback), degraded: true })
+    if (typeof onDone === 'function') onDone({ ok: false, degraded: false, streamOnly: true })
+    throw error
   }
 }

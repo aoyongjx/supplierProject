@@ -16850,7 +16850,7 @@ function resolveRequestedCount({ userInput = '', systemPrompt = '', defaultCount
   return Math.min(Math.max(Math.trunc(n), min), max)
 }
 
-const preciseSourcingLangGraph = createPreciseSourcingLangGraph({
+const preciseSourcingOps = {
   async classifyIntent(userInput = '') {
     const raw = toText(userInput).trim()
     const text = raw.toLowerCase()
@@ -17372,7 +17372,73 @@ const preciseSourcingLangGraph = createPreciseSourcingLangGraph({
     else if (toText(answer).startsWith('模型调用失败')) answer = `${toText(answer)}\n\n${fallbackAnswer}`
     return answer
   },
-})
+}
+
+const preciseSourcingLangGraph = createPreciseSourcingLangGraph(preciseSourcingOps)
+
+async function runPreciseSourcingFastPipeline({
+  userInput = '',
+  authHeader = '',
+  targetKbIds = [],
+  selectedDbTables = [],
+  selectedTools = [],
+  topK = 20,
+  dbTopK = 10,
+  strictMode = false,
+} = {}) {
+  const selectedSet = new Set((Array.isArray(selectedTools) ? selectedTools : []).map((x) => toText(x)))
+  const useDb = selectedSet.size === 0 || selectedSet.has('db_chat')
+  const useRag = selectedSet.size === 0 || selectedSet.has('local_kb')
+  const demand = await preciseSourcingOps.parseDemand(userInput)
+  const dbPromise = useDb
+    ? preciseSourcingOps.searchSuppliers(userInput, authHeader, { dbTopK, selectedDbTables, strictMode, demand })
+    : Promise.resolve([])
+  const ragPromise = useRag
+    ? preciseSourcingOps.searchRag(targetKbIds, userInput, topK, authHeader, demand, strictMode)
+    : Promise.resolve([])
+  const [supplierRows, kbHits] = await Promise.all([dbPromise, ragPromise])
+  const fused = await preciseSourcingOps.fuseEvidence({
+    supplierRows: Array.isArray(supplierRows) ? supplierRows : [],
+    kbHits: Array.isArray(kbHits) ? kbHits : [],
+    webHits: [],
+    demand,
+    userInput,
+  })
+  const traces = [
+    { step: 'plan_fast', title: '规划', detail: 'Fast模式：并行执行 DB+RAG，跳过 Plan-then-ReAct 与 Web。' },
+    { step: 'act_db', title: '执行', detail: `DB命中 ${Array.isArray(supplierRows) ? supplierRows.length : 0} 条`, tool: 'db.searchSuppliers' },
+    { step: 'act_rag', title: '执行', detail: `RAG命中 ${Array.isArray(kbHits) ? kbHits.length : 0} 条`, tool: 'rag.searchKnowledgeBase' },
+    { step: 'act_fuse', title: '执行', detail: `融合候选 ${Array.isArray(fused?.suppliers) ? fused.suppliers.length : 0} 条`, tool: 'evidence.fuse' },
+  ]
+  return {
+    intent: 'supplier_search',
+    demand,
+    executionPlan: {
+      needsTools: true,
+      routeReason: 'Fast并行召回',
+      useDb,
+      useRag,
+      useWeb: false,
+      dbQuery: userInput,
+      ragQuery: userInput,
+      webQuery: '',
+    },
+    supplierRows: Array.isArray(fused?.suppliers) ? fused.suppliers : [],
+    kbHits: Array.isArray(fused?.kbHits) ? fused.kbHits : [],
+    webHits: [],
+    fusedEvidence: fused,
+    answer: buildPreciseSourcingFallbackAnswer({
+      userInput,
+      fusedEvidence: fused,
+      supplierRows: Array.isArray(fused?.suppliers) ? fused.suppliers : [],
+      kbHits: Array.isArray(fused?.kbHits) ? fused.kbHits : [],
+      webHits: [],
+    }),
+    artifacts: [],
+    react: { rounds: [] },
+    traces,
+  }
+}
 
 app.post('/api/agents/precise-sourcing/chat', authMiddleware, async (req, res) => {
   const traceVersion = 'ps-v20260506-04'
@@ -17401,6 +17467,7 @@ app.post('/api/agents/precise-sourcing/chat', authMiddleware, async (req, res) =
   const requestedCount = resolveRequestedCount({ userInput, systemPrompt, defaultCount: 10, min: 1, max: 50 })
   const enableSecondaryWebVerification = req.body?.enableSecondaryWebVerification === true
   const enablePostEnrichment = req.body?.enablePostEnrichment === true
+  const executionMode = toText(req.body?.executionMode || 'fast').toLowerCase()
   if (!userInput) {
     return res.status(400).json({ code: 400, message: '缺少参数：message', data: null })
   }
@@ -17423,25 +17490,36 @@ app.post('/api/agents/precise-sourcing/chat', authMiddleware, async (req, res) =
   const targetKbIds = kbIdsInput.length > 0 ? kbIdsInput : (targetKbId ? [targetKbId] : [])
 
   try {
-    const graphResult = await withTimeout(preciseSourcingLangGraph.run({
-      userInput,
-      authHeader,
-      kbId: targetKbId || '',
-      kbIds: targetKbIds,
-      topK: Math.min(topK, 20),
-      webTopK: requestedCount,
-      dbTopK,
-      selectedDbTables,
-      strictMode,
-      selectedSkills: selectedTools,
-      selectedTools,
-      model: selectedModel,
-      systemPrompt,
-      systemPromptPresetKey,
-      generateCharts,
-      temperature,
-      reportTemplate,
-    }), 120000, 'precise_sourcing_chat_timeout')
+    const graphResult = executionMode === 'fast'
+      ? await withTimeout(runPreciseSourcingFastPipeline({
+        userInput,
+        authHeader,
+        targetKbIds,
+        selectedDbTables,
+        selectedTools,
+        topK: Math.min(topK, 20),
+        dbTopK,
+        strictMode,
+      }), 120000, 'precise_sourcing_chat_timeout')
+      : await withTimeout(preciseSourcingLangGraph.run({
+        userInput,
+        authHeader,
+        kbId: targetKbId || '',
+        kbIds: targetKbIds,
+        topK: Math.min(topK, 20),
+        webTopK: requestedCount,
+        dbTopK,
+        selectedDbTables,
+        strictMode,
+        selectedSkills: selectedTools,
+        selectedTools,
+        model: selectedModel,
+        systemPrompt,
+        systemPromptPresetKey,
+        generateCharts,
+        temperature,
+        reportTemplate,
+      }), 120000, 'precise_sourcing_chat_timeout')
     const payload = await buildPreciseSourcingResponsePayload({
       graphResult,
       traceVersion,
@@ -17757,8 +17835,8 @@ async function extractSupplierCandidatesByLlmBatch(items = [], perItemLimit = 5,
   const queryText = toText(options?.query || '')
   const packed = rows.slice(0, 8).map((row, idx) => ({
     index: idx,
-    title: toText(row?.title || row?.name || ''),
-    snippet: toText(row?.snippet || row?.content || '').slice(0, 400),
+    title: toText(row?.title || row?.name || row?.docName || ''),
+    snippet: toText(row?.snippet || row?.content || row?.chunkText || '').slice(0, 700),
     url: toText(row?.url || row?.link || ''),
   }))
   const prompt = [
@@ -18045,28 +18123,36 @@ async function buildPreciseSourcingResponsePayload({
       : [],
   )
   if (!enablePostEnrichment) {
-    const safeKbHits = safeKbHitsRaw.map((hit) => {
-      const seed = extractSupplierCandidatesFromText(`${toText(hit?.docName)} ${toText(hit?.chunkText)}`, 6, { query: toText(userInput) })
-      const supplierCandidates = Array.from(new Set(
-        seed
-          .map((x) => normalizeSupplierCandidateName(x))
-          .filter((x) => isLikelySupplierCompanyName(x, toText(userInput))),
-      )).slice(0, 5)
-      return {
+    const kbLlmCandidates = await extractSupplierCandidatesByLlmBatch(safeKbHitsRaw, 6, toText(modelName), { query: toText(userInput) })
+    const safeKbHits = []
+    for (let kbIdx = 0; kbIdx < safeKbHitsRaw.length; kbIdx += 1) {
+      const hit = safeKbHitsRaw[kbIdx]
+      const seedRule = extractSupplierCandidatesFromText(`${toText(hit?.docName)} ${toText(hit?.chunkText)}`, 6, { query: toText(userInput) })
+      const seedLlm = Array.isArray(kbLlmCandidates?.[kbIdx]) ? kbLlmCandidates[kbIdx] : []
+      const seed = Array.from(new Set([...seedLlm, ...seedRule]
+        .map((x) => normalizeSupplierCandidateName(x))
+        .filter((x) => isLikelySupplierCompanyName(x, toText(userInput)))))
+      const ctx = await refineSupplierCandidatesByContext(seed, {
+        query: toText(userInput),
+        model: toText(modelName),
+        context: `${toText(hit?.docName)} ${toText(hit?.chunkText)}`,
+      })
+      const supplierCandidates = (Array.isArray(ctx) && ctx.length > 0 ? ctx : seed).slice(0, 5)
+      safeKbHits.push({
         ...hit,
         supplierCandidates,
         candidateAudit: {
           source: 'kb',
-          seed: supplierCandidates,
+          seed,
           contextPassed: supplierCandidates,
           webVerified: [],
-          droppedByContext: [],
+          droppedByContext: seed.filter((name) => !supplierCandidates.includes(name)),
           droppedByVerify: [],
-          keepReasons: supplierCandidates.map((name) => ({ name, reasons: ['文本命中企业名称'] })),
+          keepReasons: supplierCandidates.map((name) => ({ name, reasons: ['LLM+分块语义判定通过'] })),
           dropReasons: [],
         },
-      }
-    })
+      })
+    }
     const safeKbHitsEffective = safeKbHits.filter((hit) => Array.isArray(hit?.supplierCandidates) && hit.supplierCandidates.length > 0)
     const safeWebHits = toJsonSafe((Array.isArray(graphResult.webHits) ? graphResult.webHits : []).slice(0, resultLimit)).map((hit) => ({
       ...hit,
@@ -18746,6 +18832,7 @@ app.post('/api/agents/precise-sourcing/chat-stream', authMiddleware, async (req,
   const requestedCount = resolveRequestedCount({ userInput, systemPrompt, defaultCount: 10, min: 1, max: 50 })
   const enableSecondaryWebVerification = req.body?.enableSecondaryWebVerification === true
   const enablePostEnrichment = req.body?.enablePostEnrichment === true
+  const executionMode = toText(req.body?.executionMode || 'fast').toLowerCase()
   const targetKbId = kbIdInput || kbIdsInput[0] || toText(knowledgeBaseStore.keys().next()?.value)
   const targetKbIds = kbIdsInput.length > 0 ? kbIdsInput : (targetKbId ? [targetKbId] : [])
 
@@ -18767,33 +18854,49 @@ app.post('/api/agents/precise-sourcing/chat-stream', authMiddleware, async (req,
   try {
     const primaryTools = selectedTools
     const graphStart = Date.now()
-    const graphResult = await withTimeout(preciseSourcingLangGraph.run({
-      onEvent: (evt) => {
-        if (evt?.type === 'trace' && evt?.trace) {
-          sendEvent('trace', { traceVersion, trace: evt.trace })
-        } else if (evt?.type === 'delta' && evt?.delta) {
-          sendEvent('delta', { text: String(evt.delta) })
-        }
-      },
-      userInput,
-      authHeader,
-      kbId: targetKbId || '',
-      kbIds: targetKbIds,
-      topK: Math.min(topK, 20),
-      webTopK: requestedCount,
-      dbTopK,
-      selectedDbTables,
-      strictMode,
-      selectedSkills: primaryTools,
-      selectedTools: primaryTools,
-      model: selectedModel,
-      systemPrompt,
-      systemPromptPresetKey,
-      generateCharts,
-      temperature,
-      reportTemplate,
-      streamTokens: true,
-    }), 120000, 'precise_sourcing_stream_timeout')
+    const graphResult = executionMode === 'fast'
+      ? await withTimeout(runPreciseSourcingFastPipeline({
+        userInput,
+        authHeader,
+        targetKbIds,
+        selectedDbTables,
+        selectedTools: primaryTools,
+        topK: Math.min(topK, 20),
+        dbTopK,
+        strictMode,
+      }), 120000, 'precise_sourcing_stream_timeout')
+      : await withTimeout(preciseSourcingLangGraph.run({
+        onEvent: (evt) => {
+          if (evt?.type === 'trace' && evt?.trace) {
+            sendEvent('trace', { traceVersion, trace: evt.trace })
+          } else if (evt?.type === 'delta' && evt?.delta) {
+            sendEvent('delta', { text: String(evt.delta) })
+          }
+        },
+        userInput,
+        authHeader,
+        kbId: targetKbId || '',
+        kbIds: targetKbIds,
+        topK: Math.min(topK, 20),
+        webTopK: requestedCount,
+        dbTopK,
+        selectedDbTables,
+        strictMode,
+        selectedSkills: primaryTools,
+        selectedTools: primaryTools,
+        model: selectedModel,
+        systemPrompt,
+        systemPromptPresetKey,
+        generateCharts,
+        temperature,
+        reportTemplate,
+        streamTokens: true,
+      }), 120000, 'precise_sourcing_stream_timeout')
+    if (executionMode === 'fast') {
+      for (const tr of (Array.isArray(graphResult?.traces) ? graphResult.traces : [])) {
+        sendEvent('trace', { traceVersion, trace: tr })
+      }
+    }
     sendEvent('heartbeat', { message: `graph完成，耗时 ${Date.now() - graphStart}ms` })
     const postStart = Date.now()
     const payload = await buildPreciseSourcingResponsePayload({

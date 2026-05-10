@@ -621,35 +621,7 @@ export default function PreciseSourcingAgentPage() {
   }
 
   function renderAssistantExtraText(item) {
-    const text = String(item?.content || '')
-    if (!text) return null
-    const sections = ['【直接回答】', '【结论】', '【意图】', '【命中统计】', '【候选供应商TopN】']
-    if (!sections.some((k) => text.includes(k))) return renderMessageContent(text)
-    const keepLines = text
-      .split(/\r?\n/)
-      .filter((line) => {
-        const t = String(line || '').trim()
-        if (!t) return false
-        if (/^【(直接回答|结论|意图|命中统计|候选供应商Top\d*|候选供应商TopN|产出文件)】/.test(t)) return false
-        if (/^\d+\.\s*.+[:：]\s*\/api\/\S+/.test(t)) return false
-        return t.startsWith('【自动编排】')
-          || t.startsWith('【查询语句】')
-          || t.startsWith('---')
-          || t.startsWith('命中统计：')
-          || t.startsWith('DB关键词：')
-          || t.startsWith('DB模板：')
-          || t.startsWith('DB选表：')
-          || t.startsWith('RAG关键词：')
-          || t.startsWith('Web关键词：')
-          || t.startsWith('工具：')
-          || t.startsWith('知识库：')
-          || t.startsWith('数据库表：')
-          || t.startsWith('报告模板：')
-      })
-      .join('\n')
-      .trim()
-    if (!keepLines) return null
-    return <div style={{ marginTop: 10, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', wordBreak: 'break-word', minWidth: 0, maxWidth: '100%' }}>{keepLines}</div>
+    return null
   }
 
   function openArtifactPreview(title, url) {
@@ -659,88 +631,7 @@ export default function PreciseSourcingAgentPage() {
   }
 
   function renderAssistantResultCard(item) {
-    const sections = parseAnswerSections(item?.rawAnswer || item?.content || '')
-    const hasSections = Object.keys(sections).length > 0
-    if (!hasSections) return null
-    const isDirectAnswer = String(item?.intent || '') === 'direct_answer'
-      || item?.queryStatements?.route?.mode === 'direct_answer'
-    const topN = Number(item?.queryStatements?.fusion?.requestedTopN || 10)
-    const supplierBlocks = Array.isArray(item?.evidence?.suppliers)
-      ? item.evidence.suppliers.slice(0, topN).map((row, idx) => {
-        const name = String(row?.companyName || row?.company_name || row?.name || '-')
-        const hitTags = Array.isArray(row?._matchFieldScores)
-          ? row._matchFieldScores
-            .slice(0, 6)
-            .map((entry) => {
-              const field = String(entry?.field || '').split('.').filter(Boolean).pop() || 'field'
-              const score = Number(entry?.score || 0).toFixed(2)
-              return `${field} (${score})`
-            })
-          : []
-        return { idx, name, hitTags }
-      })
-      : []
-    return (
-      <div style={{ marginTop: 10, border: '1px solid #dbeafe', background: '#eff6ff', borderRadius: 8, padding: 10 }}>
-        {sections['【直接回答】'] ? <div style={{ marginBottom: 6 }}><Tag color="blue">直接回答</Tag>{sections['【直接回答】']}</div> : null}
-        {sections['【结论】'] ? (
-          <div style={{ marginBottom: 8, border: '1px solid #e5e7eb', borderRadius: 8, background: '#fff', padding: 10 }}>
-            <div style={{ marginBottom: 8 }}>
-              <Tag color="purple">结论</Tag>
-              <span style={{ color: '#334155' }}>{sections['【结论】']}</span>
-            </div>
-            {supplierBlocks.length > 0 ? (
-              <div style={{ display: 'grid', gap: 8 }}>
-                {supplierBlocks.map((row) => (
-                  <div key={`conclusion-supplier-${row.idx}`} style={{ border: '1px solid #e2e8f0', borderRadius: 8, background: '#f8fafc', padding: 8 }}>
-                    <div style={{ fontSize: 13, color: '#0f172a', marginBottom: 6 }}>{row.idx + 1}. {row.name}</div>
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                      {row.hitTags.length > 0 ? row.hitTags.map((tag) => (
-                        <Tag key={`${row.idx}-${tag}`} color="blue">{tag}</Tag>
-                      )) : <Tag color="default">暂无字段命中标签</Tag>}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : null}
-          </div>
-        ) : null}
-        {sections['【意图】'] ? <div style={{ marginBottom: 6 }}><Tag color="cyan">意图</Tag>{sections['【意图】']}</div> : null}
-        {!isDirectAnswer && sections['【命中统计】'] ? <div style={{ marginBottom: 6 }}><Tag color="gold">命中统计</Tag>{sections['【命中统计】']}</div> : null}
-        {!isDirectAnswer && sections['【候选供应商TopN】'] ? (
-          <div style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', wordBreak: 'break-word', minWidth: 0 }}>
-            <Tag color="green">候选供应商TopN</Tag>
-            {sections['【候选供应商TopN】']}
-          </div>
-        ) : null}
-        {!isDirectAnswer && (item?.intentDecision || (Array.isArray(item?.planSteps) && item.planSteps.length > 0) || (item?.queryStatements && typeof item.queryStatements === 'object')) ? (
-          <div style={{ marginTop: 10 }}>
-            <Collapse
-              size="small"
-              items={[
-                {
-                  key: 'intent-detail',
-                  label: '意图解析详情',
-                  children: (
-                    <div style={{ fontSize: 12, color: '#334155', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
-                      {`意图: ${String(item?.intentDecision?.intent || item?.intent || '-')}\n`}
-                      {`路由目标: ${String(item?.intentDecision?.routeTarget || '-')}\n`}
-                      {`路由原因: ${String(item?.intentDecision?.routeReason || '-')}\n`}
-                      {`工具选择: ${Array.isArray(item?.intentDecision?.selectedTools) ? item.intentDecision.selectedTools.join(', ') : '-'}\n`}
-                      {`执行开关: DB=${item?.intentDecision?.needDb ? '是' : '否'} / RAG=${item?.intentDecision?.needRag ? '是' : '否'} / WEB=${item?.intentDecision?.needWeb ? '是' : '否'}\n\n`}
-                      {`计划步骤:\n${Array.isArray(item?.planSteps) && item.planSteps.length > 0
-                        ? item.planSteps.map((s) => `${Number(s?.order || 0)}. ${String(s?.title || s?.id || '-')}${s?.enabled ? '（启用）' : '（跳过）'}`).join('\n')
-                        : '-'}\n\n`}
-                      {`查询参数:\n${item?.queryStatements ? JSON.stringify(item.queryStatements, null, 2) : '-'}`}
-                    </div>
-                  ),
-                },
-              ]}
-            />
-          </div>
-        ) : null}
-      </div>
-    )
+    return null
   }
 
   function renderArtifactCard(item) {
@@ -798,359 +689,363 @@ export default function PreciseSourcingAgentPage() {
     const isDirectAnswer = String(item?.intent || '') === 'direct_answer'
       || item?.queryStatements?.route?.mode === 'direct_answer'
     if (isDirectAnswer) return null
-    const rounds = Array.isArray(item?.react?.rounds) ? item.react.rounds : []
+
     const traces = Array.isArray(item?.traces) ? item.traces : []
-    const fusedSupplierNames = (Array.isArray(item?.evidence?.suppliers) ? item.evidence.suppliers : [])
-      .map((row) => String(row?.companyName || row?.company_name || row?.name || '').trim())
-      .filter(Boolean)
-    const kbHitsMapped = (Array.isArray(item?.evidence?.kbHits) ? item.evidence.kbHits : []).filter((row) => {
-      const cands = Array.isArray(row?.supplierCandidates) ? row.supplierCandidates.map((x) => String(x || '').trim()).filter(Boolean) : []
-      if (cands.length === 0) return false
-      const mapped = cands.filter((name) => fusedSupplierNames.includes(name))
-      return mapped.length > 0
-    })
-    const kbHitsFallback = Array.isArray(item?.evidence?.kbHits) ? item.evidence.kbHits : []
-    const kbHitsVisible = kbHitsMapped.length > 0 ? kbHitsMapped : kbHitsFallback
-    const webHitsMapped = Array.isArray(item?.evidence?.webHits) ? item.evidence.webHits : []
-    const topN = Number(item?.queryStatements?.fusion?.requestedTopN || 10)
     const intentDecision = item?.intentDecision && typeof item.intentDecision === 'object' ? item.intentDecision : null
-    const planSteps = Array.isArray(item?.planSteps) ? item.planSteps : []
-    const fallbackLines = []
-    if (rounds.length === 0 && traces.length === 0) {
-      const content = String(item?.content || '')
-      const block = (label) => {
-        const idx = content.indexOf(label)
-        if (idx < 0) return ''
-        const tail = content.slice(idx + label.length)
-        return tail.split('\n').slice(0, 4).join('\n').trim()
-      }
-      const orchestration = block('【自动编排】')
-      const queries = block('【查询语句】')
-      if (orchestration) fallbackLines.push(`自动编排:\n${orchestration}`)
-      if (queries) fallbackLines.push(`查询语句:\n${queries}`)
-      if (fallbackLines.length === 0) return null
-    }
-    const reactPanels = rounds.length > 0
-      ? rounds.map((round, idx) => ({
-        key: `round-${idx + 1}`,
-        label: (
-          <Space size={8}>
-            <Tag color="blue">Round {idx + 1}</Tag>
-            <span>Thought → Action → Observation</span>
-          </Space>
-        ),
-        children: (
-          <Space direction="vertical" size={8} style={{ width: '100%' }}>
-            <div><Tag color="purple">Thought</Tag> {round?.thought?.detail || round?.thought?.title || '（无）'}</div>
-            <div><Tag color="cyan">Action</Tag> {round?.action?.detail || round?.action?.title || '（无）'}</div>
-            {round?.action?.input ? (
-              <div style={{ marginLeft: 4 }}>
-                <Tag color="geekblue">Action Input</Tag>
-                <Typography.Text code style={{ whiteSpace: 'pre-wrap' }}>
-                  {JSON.stringify(round.action.input, null, 2)}
-                </Typography.Text>
-              </div>
-            ) : null}
-            <div><Tag color="gold">Observation</Tag> {round?.observation?.detail || round?.observation?.title || '（无）'}</div>
-          </Space>
-        ),
+    const planStepsRaw = Array.isArray(item?.planSteps) ? item.planSteps : []
+    const planTrace = traces.find((t) => String(t?.step || '').toLowerCase() === 'plan')
+    const actPlanTrace = traces.find((t) => String(t?.step || '').toLowerCase() === 'act_plan')
+    const planDetailText = String(planTrace?.detail || '')
+    const intentFromTrace = (() => {
+      const m = planDetailText.match(/意图[=：]([a-z_]+)/i)
+      return m?.[1] ? String(m[1]).trim() : ''
+    })()
+    const planStepsFromTrace = (() => {
+      const m = planDetailText.match(/计划分解=([^\n\r]+)/)
+      if (!m?.[1]) return []
+      return String(m[1])
+        .split(/[；/]/)
+        .map((x) => String(x || '').trim())
+        .filter(Boolean)
+        .map((x, idx) => ({ id: `trace-plan-${idx + 1}`, title: x }))
+    })()
+    const planSteps = planStepsRaw.length > 0 ? planStepsRaw : planStepsFromTrace
+    const executionStages = Array.isArray(item?.executionProtocol?.stages) ? item.executionProtocol.stages : []
+    const executionPlanFromTrace = actPlanTrace?.input?.executionPlan && typeof actPlanTrace.input.executionPlan === 'object'
+      ? actPlanTrace.input.executionPlan
+      : null
+    const selectedToolSet = new Set(Array.isArray(item?.selectedTools) ? item.selectedTools.map((x) => String(x || '')) : [])
+
+    const hasTraceStep = (prefix) => traces.some((t) => String(t?.step || '').toLowerCase().startsWith(String(prefix || '').toLowerCase()))
+    const doneOrSkipped = (done, skipped = false) => (done ? 'done' : (skipped ? 'skipped' : 'pending'))
+
+    const activeToolTasks = [
+      { key: 'db_chat', label: 'DB任务', enabled: selectedToolSet.has('db_chat') || intentDecision?.needDb === true, done: hasTraceStep('observe_db') },
+      { key: 'local_kb', label: 'RAG任务', enabled: selectedToolSet.has('local_kb') || intentDecision?.needRag === true, done: hasTraceStep('observe_rag') },
+      { key: 'web_search', label: 'WEB任务', enabled: selectedToolSet.has('web_search') || intentDecision?.needWeb === true, done: hasTraceStep('observe_web') },
+      { key: 'python_chart_generator', label: '图表任务', enabled: selectedToolSet.has('python_chart_generator'), done: hasTraceStep('observe_tools') },
+      { key: 'file_exporter', label: '导出任务', enabled: selectedToolSet.has('file_exporter'), done: hasTraceStep('observe_tools') },
+      { key: 'image_gen', label: '图片任务', enabled: selectedToolSet.has('image_gen'), done: hasTraceStep('observe_tools') },
+    ].filter((x) => x.enabled)
+
+    const metricDbHits = Array.isArray(item?.evidence?.suppliers) ? item.evidence.suppliers.length : 0
+    const metricRagHits = Array.isArray(item?.evidence?.kbHits) ? item.evidence.kbHits.length : 0
+    const metricWebHits = Array.isArray(item?.evidence?.webHits) ? item.evidence.webHits.length : 0
+    const dbCompanies = (Array.isArray(item?.evidence?.suppliers) ? item.evidence.suppliers : [])
+      .map((x) => String(x?.companyName || x?.company_name || x?.name || '').trim())
+      .filter(Boolean)
+    const kbCompanies = Array.from(new Set((Array.isArray(item?.evidence?.kbHits) ? item.evidence.kbHits : [])
+      .flatMap((x) => (Array.isArray(x?.supplierCandidates) ? x.supplierCandidates : []))
+      .map((x) => String(x || '').trim())
+      .filter(Boolean)))
+    const webCompanies = Array.from(new Set((Array.isArray(item?.evidence?.webHits) ? item.evidence.webHits : [])
+      .flatMap((x) => (Array.isArray(x?.supplierCandidates) ? x.supplierCandidates : []))
+      .map((x) => String(x || '').trim())
+      .filter(Boolean)))
+    const webEnrichNote = String(item?.evidence?.webEnrichNote || '').trim()
+    const fusedSuppliers = (Array.isArray(item?.evidence?.suppliers) ? item.evidence.suppliers : [])
+      .map((row) => ({
+        name: String(row?.companyName || row?.company_name || row?.name || '').trim(),
+        dbScore: Number(row?._matchScore || 0),
+        fusedScore: Number(row?._fusedScore || row?._matchScore || 0),
+        kbSupport: Number(row?._kbSupportCount || 0),
+        webSupport: Number(row?._webSupportCount || 0),
       }))
-      : traces.map((trace, idx) => ({
-        key: `trace-${idx + 1}`,
-        label: `${idx + 1}. ${String(trace?.title || trace?.step || 'trace')}`,
-        children: <div style={{ whiteSpace: 'pre-wrap' }}>{String(trace?.detail || '')}</div>,
-      }))
-    const lifecyclePanels = []
-    const traceTextByStep = (prefixes = []) => traces
-      .filter((t) => prefixes.some((p) => String(t?.step || '').toLowerCase().startsWith(p)))
-      .map((t) => `${String(t?.title || t?.step || '-')}: ${String(t?.detail || '')}`)
-      .join('\n')
-    if (intentDecision || traces.length > 0) {
-      lifecyclePanels.push({
-        key: 'intent',
-        label: (
-          <Space size={8}>
-            <Tag color="magenta">Intent</Tag>
-            <span>意图识别</span>
-          </Space>
-        ),
-        children: (
-          <Space direction="vertical" size={8} style={{ width: '100%' }}>
-            <div><Tag color="blue">意图</Tag> {String(intentDecision?.intent || item?.intent || '识别中')}</div>
-            <div><Tag color="purple">路由</Tag> {String(intentDecision?.routeTarget || '-')}</div>
-            <div><Tag color={intentDecision?.needDb ? 'green' : 'default'}>DB</Tag><Tag color={intentDecision?.needRag ? 'green' : 'default'}>RAG</Tag><Tag color={intentDecision?.needWeb ? 'green' : 'default'}>WEB</Tag></div>
-            <div><Tag color="gold">依据</Tag> {String(intentDecision?.routeReason || '-')}</div>
-            {traceTextByStep(['plan']) ? (
-              <div style={{ whiteSpace: 'pre-wrap', fontSize: 12, color: '#475569' }}>
-                {traceTextByStep(['plan'])}
-              </div>
-            ) : null}
-          </Space>
-        ),
-      })
+      .filter((x) => x.name)
+      .sort((a, b) => b.fusedScore - a.fusedScore)
+    const answerSections = parseAnswerSections(item?.rawAnswer || item?.content || '')
+    const promptText = String(item?.systemPrompt || item?.queryStatements?.prompt || '').trim()
+    const retrievalSummary = [
+      `DB命中供应商: ${dbCompanies.length}`,
+      `RAG命中供应商: ${kbCompanies.length}`,
+      `WEB命中供应商: ${webCompanies.length}`,
+      `融合去重后: ${fusedSuppliers.length}`,
+    ].join('\n')
+    const stageResult = (stepNo) => executionStages.find((x) => Number(x?.step) === Number(stepNo)) || null
+
+    const dbRequestText = String(item?.queryStatements?.db?.template || executionPlanFromTrace?.dbQuery || '').trim()
+    const ragRequestText = String(item?.queryStatements?.rag?.endpoint || executionPlanFromTrace?.ragQuery || '').trim()
+    const webProviderText = String(item?.queryStatements?.web?.provider || '').trim()
+    const webQueryText = String(item?.queryStatements?.web?.keyword || executionPlanFromTrace?.webQuery || '').trim()
+    const needDbTask = selectedToolSet.has('db_chat') || intentDecision?.needDb === true
+    const needRagTask = selectedToolSet.has('local_kb') || intentDecision?.needRag === true
+    const needWebTask = selectedToolSet.has('web_search') || intentDecision?.needWeb === true
+    const requestReady = activeToolTasks.length > 0 && (
+      (needDbTask && dbRequestText)
+      || (needRagTask && ragRequestText)
+      || (needWebTask && webQueryText)
+      || hasTraceStep('act_plan')
+    )
+
+    const rawDone = {
+      s1: true,
+      s2: hasTraceStep('plan') || Boolean(intentDecision),
+      s3: planSteps.length > 0,
+      s4: Boolean(requestReady),
+      s5: hasTraceStep('observe_db') || hasTraceStep('observe_rag') || hasTraceStep('observe_web') || hasTraceStep('observe_tools'),
+      s6: hasTraceStep('observe_db') || hasTraceStep('observe_rag') || hasTraceStep('observe_web'),
+      s7: hasTraceStep('observe_fuse') || hasTraceStep('act_fuse'),
+      s8: hasTraceStep('act_llm') || hasTraceStep('observe_llm') || Boolean(stageResult(8)),
+      s9: item?.streamDone === true,
     }
-    if (planSteps.length > 0) {
-      lifecyclePanels.push({
-        key: 'plan',
-        label: (
-          <Space size={8}>
-            <Tag color="cyan">Plan</Tag>
-            <span>执行计划</span>
-          </Space>
-        ),
-        children: (
-          <Space direction="vertical" size={6} style={{ width: '100%' }}>
-            {planSteps.map((step, idx) => (
-              <div key={`plan-step-${idx}`} style={{ border: '1px solid #e5e7eb', borderRadius: 8, padding: 8, background: '#fff' }}>
-                <div style={{ fontSize: 12 }}><Tag color={step?.enabled ? 'green' : 'default'}>{step?.enabled ? '启用' : '跳过'}</Tag>{Number(step?.order || idx + 1)}. {String(step?.title || step?.id || 'step')}</div>
-                <div style={{ fontSize: 12, color: '#64748b', marginTop: 4 }}>Tool: {String(step?.tool || '-')}</div>
-                <div style={{ fontSize: 12, color: '#64748b' }}>目标: {String(step?.objective || '-')}</div>
-                <div style={{ fontSize: 12, color: '#64748b' }}>成功标准: {String(step?.successCriteria || '-')}</div>
-              </div>
-            ))}
-          </Space>
-        ),
-      })
+    const keysOrdered = ['s1', 's2', 's3', 's4', 's5', 's6', 's7', 's8', 's9']
+    const gatedDone = {}
+    for (let i = 0; i < keysOrdered.length; i += 1) {
+      const k = keysOrdered[i]
+      if (i === 0) gatedDone[k] = rawDone[k]
+      else gatedDone[k] = Boolean(rawDone[k] && gatedDone[keysOrdered[i - 1]])
     }
-    // 展示 ReAct 细粒度链路，便于用户核查 Plan -> ReAct 实际执行过程。
+    const firstPendingIdx = keysOrdered.findIndex((k) => !gatedDone[k])
+    const stepStatus = {}
+    for (let i = 0; i < keysOrdered.length; i += 1) {
+      const k = keysOrdered[i]
+      if (gatedDone[k]) stepStatus[k] = 'done'
+      else if (firstPendingIdx >= 0 && i === firstPendingIdx) stepStatus[k] = 'pending'
+      else stepStatus[k] = 'pending'
+    }
+
+    const processSteps = [
+      { key: 's1', stepNo: 1, title: '用户输入', detail: String(item?.userInput || item?.queryStatements?.db?.keyword || '-').slice(0, 240), status: stepStatus.s1 },
+      {
+        key: 's2',
+        stepNo: 2,
+        title: 'LLM语义理解与任务规划',
+        detail: '语义解析: 意图=' + String(intentDecision?.intent || item?.intent || intentFromTrace || '-') + '\n任务规划: ' + String(intentDecision?.routeReason || planDetailText || '-'),
+        status: stepStatus.s2,
+      },
+      { key: 's3', stepNo: 3, title: '检索子任务分解', detail: planSteps.length > 0 ? planSteps.map((x, idx) => String(idx + 1) + '. ' + String(x?.title || x?.id || '-')).join('\n') : '', status: stepStatus.s3 },
+      {
+        key: 's4',
+        stepNo: 4,
+        title: '发起标准化工具请求',
+        detail: [
+          activeToolTasks.length > 0 ? ('任务: ' + activeToolTasks.map((x) => x.label).join('、')) : '任务: 无',
+          'DB请求: ' + (dbRequestText || '-'),
+          'RAG请求: ' + (ragRequestText || '-'),
+          'WEB请求: ' + (webProviderText || 'web.searchSupplierSignals') + ' | query=' + (webQueryText || '-'),
+        ].join('\n'),
+        status: stepStatus.s4,
+      },
+      { key: 's5', stepNo: 5, title: '工具执行(DB/RAG/WEB)', detail: '', status: stepStatus.s5 },
+      { key: 's6', stepNo: 6, title: '返回标准化结果（含 dbHits/ragHits/webHits）', detail: 'dbHits=' + metricDbHits + ' | ragHits=' + metricRagHits + ' | webHits=' + metricWebHits, status: stepStatus.s6 },
+      { key: 's7', stepNo: 7, title: '证据整合与去重', detail: '融合候选=' + metricDbHits, status: stepStatus.s7 },
+      { key: 's8', stepNo: 8, title: '系统提示词 + 召回上下文交给LLM生成（含 model）', detail: 'model=' + String(item?.model || stageResult(8)?.meta?.model || '-'), status: stepStatus.s8 },
+      { key: 's9', stepNo: 9, title: '返回最终结果', detail: '已返回最终答复', status: stepStatus.s9 },
+    ]
+    const visibleProcessSteps = processSteps.filter((step) => {
+      if (step.key === 's3') return Boolean(String(step.detail || '').trim())
+      return true
+    })
+
     return (
       <div style={{ marginTop: 10 }}>
-        <div style={{ marginBottom: 6, color: '#64748b', fontSize: 12 }}>
-          执行过程 {item?.intent ? `(意图: ${item.intent})` : ''}{item?.traceVersion ? ` · 版本: ${item.traceVersion}` : ''}
-        </div>
-        {lifecyclePanels.length > 0 ? <Collapse size="small" defaultActiveKey={lifecyclePanels.map((p) => p.key)} items={lifecyclePanels} /> : null}
-        {reactPanels.length > 0 ? (
-          <div style={{ marginTop: 10 }}>
-            <Collapse size="small" defaultActiveKey={[]} items={[{
-              key: 'react-rounds',
-              label: (
-                <Space size={8}>
-                  <Tag color="blue">ReAct</Tag>
-                  <span>Thought / Action / Observation</span>
-                </Space>
-              ),
-              children: <Collapse size="small" items={reactPanels} />,
-            }]} />
-          </div>
-        ) : null}
-        {lifecyclePanels.length === 0 && fallbackLines.length > 0 ? (
-          <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8, padding: 10, whiteSpace: 'pre-wrap', fontSize: 12, color: '#334155' }}>
-            {fallbackLines.join('\n\n')}
-          </div>
-        ) : null}
-        {Array.isArray(item?.evidence?.suppliers) && item.evidence.suppliers.length > 0 ? (
-          <div style={{ marginTop: 10, borderTop: '1px dashed #cbd5e1', paddingTop: 8 }}>
-            <div style={{ color: '#64748b', fontSize: 12, marginBottom: 6 }}>DB 命中来源字段（Top {Math.min(topN, Array.isArray(item?.evidence?.suppliers) ? item.evidence.suppliers.length : 0)}）</div>
-            <Space direction="vertical" size={6} style={{ width: '100%' }}>
-              {item.evidence.suppliers.slice(0, topN).map((row, idx) => (
-                <div key={`db-hit-${idx}`} style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8, padding: 8 }}>
-                  <div style={{ fontSize: 12, color: '#334155' }}>{idx + 1}. {String(row?.companyName || row?.company_name || row?.name || '-')}</div>
-                  <div style={{ marginTop: 4, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                    {(Array.isArray(row?._matchFieldScores) ? row._matchFieldScores : []).map((item2) => (
-                      <Tag key={`${idx}-${item2?.field}`} color="blue">
-                        {String(item2?.field)} ({Number(item2?.score || 0).toFixed(2)})
-                      </Tag>
+        <Collapse
+          size="small"
+          defaultActiveKey={['s1']}
+          items={visibleProcessSteps.map((step, idx) => ({
+            key: step.key,
+            label: (
+              <Space size={8}>
+                <Tag color={step.status === 'done' ? 'green' : step.status === 'skipped' ? 'default' : 'blue'}>{step.status}</Tag>
+                <span>{idx + 1}. {step.title}</span>
+              </Space>
+            ),
+            children: (
+              <div>
+                {step.key === 's4' ? (
+                  <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                    <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, padding: 8, background: '#fff' }}>
+                      <div style={{ fontSize: 12, color: '#0f172a' }}>
+                        任务: {activeToolTasks.length > 0 ? activeToolTasks.map((x) => x.label).join('、') : '无'}
+                      </div>
+                    </div>
+                    {(selectedToolSet.has('db_chat') || intentDecision?.needDb === true) ? (
+                      <div style={{ border: '1px solid #dbeafe', borderRadius: 8, padding: 8, background: '#f8fbff' }}>
+                        <div style={{ fontSize: 12, marginBottom: 6 }}>
+                          <Tag color={dbRequestText ? 'green' : 'blue'}>{dbRequestText ? 'ready' : 'pending'}</Tag>
+                          DB请求
+                        </div>
+                        <div style={{ fontSize: 12, color: '#334155', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
+                          template: {dbRequestText || '-'}
+                        </div>
+                      </div>
+                    ) : null}
+                    {(selectedToolSet.has('local_kb') || intentDecision?.needRag === true) ? (
+                      <div style={{ border: '1px solid #e9d5ff', borderRadius: 8, padding: 8, background: '#faf5ff' }}>
+                        <div style={{ fontSize: 12, marginBottom: 6 }}>
+                          <Tag color={ragRequestText ? 'green' : 'blue'}>{ragRequestText ? 'ready' : 'pending'}</Tag>
+                          RAG请求
+                        </div>
+                        <div style={{ fontSize: 12, color: '#334155', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
+                          query: {ragRequestText || '-'}
+                        </div>
+                      </div>
+                    ) : null}
+                    {(selectedToolSet.has('web_search') || intentDecision?.needWeb === true) ? (
+                      <div style={{ border: '1px solid #bbf7d0', borderRadius: 8, padding: 8, background: '#f0fdf4' }}>
+                        <div style={{ fontSize: 12, marginBottom: 6 }}>
+                          <Tag color={webQueryText ? 'green' : 'blue'}>{webQueryText ? 'ready' : 'pending'}</Tag>
+                          WEB请求
+                        </div>
+                        <div style={{ fontSize: 12, color: '#334155', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
+                          provider: {webProviderText || 'web.searchSupplierSignals'}{'\n'}
+                          query: {webQueryText || '-'}
+                        </div>
+                      </div>
+                    ) : null}
+                  </Space>
+                ) : step.key === 's5' ? (
+                  <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                    {activeToolTasks.length > 0 ? activeToolTasks.map((task, tIdx) => {
+                      const taskStatus = doneOrSkipped(task.done, false)
+                      return (
+                        <div key={'tool-task-' + task.key} style={{ border: '1px solid #e5e7eb', borderRadius: 8, padding: 8, background: '#fff' }}>
+                          <div style={{ fontSize: 12, color: '#0f172a' }}>
+                            <Tag color={taskStatus === 'done' ? 'green' : taskStatus === 'skipped' ? 'default' : 'blue'}>{taskStatus}</Tag>
+                            {tIdx + 1}. {task.label}
+                          </div>
+                        </div>
+                      )
+                    }) : <div style={{ fontSize: 12, color: '#64748b' }}>未选择工具任务</div>}
+                    {selectedToolSet.has('db_chat') || intentDecision?.needDb === true ? (
+                      <div style={{ border: '1px solid #dbeafe', borderRadius: 8, padding: 8, background: '#f8fbff' }}>
+                        <div style={{ fontSize: 12, marginBottom: 6 }}>DB命中企业（{dbCompanies.length}）</div>
+                        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                          {dbCompanies.length > 0 ? dbCompanies.map((name, i) => <Tag key={`db-company-${i}`} color="blue">{name}</Tag>) : <span style={{ fontSize: 12, color: '#64748b' }}>无</span>}
+                        </div>
+                      </div>
+                    ) : null}
+                    {selectedToolSet.has('local_kb') || intentDecision?.needRag === true ? (
+                      <div style={{ border: '1px solid #e9d5ff', borderRadius: 8, padding: 8, background: '#faf5ff' }}>
+                        <div style={{ fontSize: 12, marginBottom: 6 }}>RAG命中企业（{kbCompanies.length}）</div>
+                        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                          {kbCompanies.length > 0 ? kbCompanies.map((name, i) => <Tag key={`kb-company-${i}`} color="purple">{name}</Tag>) : <span style={{ fontSize: 12, color: '#64748b' }}>无</span>}
+                        </div>
+                      </div>
+                    ) : null}
+                    {selectedToolSet.has('web_search') || intentDecision?.needWeb === true ? (
+                      <div style={{ border: '1px solid #bbf7d0', borderRadius: 8, padding: 8, background: '#f0fdf4' }}>
+                        <div style={{ fontSize: 12, marginBottom: 6 }}>WEB命中企业（{webCompanies.length}）</div>
+                        {webEnrichNote ? (
+                          <div style={{ fontSize: 12, color: '#166534', marginBottom: 6, whiteSpace: 'pre-wrap' }}>
+                            {webEnrichNote}
+                          </div>
+                        ) : null}
+                        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                          {webCompanies.length > 0 ? webCompanies.map((name, i) => <Tag key={`web-company-${i}`} color="green">{name}</Tag>) : <span style={{ fontSize: 12, color: '#64748b' }}>无</span>}
+                        </div>
+                      </div>
+                    ) : null}
+                    <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, padding: 8, background: '#fff' }}>
+                      <div style={{ fontSize: 12, marginBottom: 6 }}>调用顺序与结果</div>
+                      <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                        {traces
+                          .filter((t) => /^(act_|observe_)/i.test(String(t?.step || '')))
+                          .map((t, i) => (
+                            <div key={`trace-exec-${i}`} style={{ fontSize: 12, color: '#334155', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
+                              {i + 1}. {String(t?.step || '-')} | tool={String(t?.tool || '-')}
+                              {t?.input ? `\ninput=${JSON.stringify(t.input)}` : ''}
+                              {t?.detail ? `\nresult=${String(t.detail)}` : ''}
+                            </div>
+                          ))}
+                      </Space>
+                    </div>
+                  </Space>
+                ) : step.key === 's6' ? (
+                  <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                    <div style={{ border: '1px solid #dbeafe', borderRadius: 8, padding: 8, background: '#f8fbff' }}>
+                      <div style={{ fontSize: 12, marginBottom: 6 }}>DB供应商（{dbCompanies.length}）</div>
+                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                        {fusedSuppliers.filter((x) => x.dbScore > 0).map((x, i) => <Tag key={`s6-db-${i}`} color="blue">{x.name} ({x.dbScore.toFixed(2)})</Tag>)}
+                      </div>
+                    </div>
+                    <div style={{ border: '1px solid #e9d5ff', borderRadius: 8, padding: 8, background: '#faf5ff' }}>
+                      <div style={{ fontSize: 12, marginBottom: 6 }}>RAG供应商（{kbCompanies.length}）</div>
+                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                        {kbCompanies.map((name, i) => <Tag key={`s6-kb-${i}`} color="purple">{name}</Tag>)}
+                      </div>
+                    </div>
+                    <div style={{ border: '1px solid #bbf7d0', borderRadius: 8, padding: 8, background: '#f0fdf4' }}>
+                      <div style={{ fontSize: 12, marginBottom: 6 }}>WEB供应商（{webCompanies.length}）</div>
+                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                        {webCompanies.map((name, i) => <Tag key={`s6-web-${i}`} color="green">{name}</Tag>)}
+                      </div>
+                    </div>
+                  </Space>
+                ) : step.key === 's7' ? (
+                  <div style={{ display: 'grid', gap: 6 }}>
+                    {fusedSuppliers.map((x, i) => (
+                      <div key={`s7-fused-${i}`} style={{ border: '1px solid #e5e7eb', borderRadius: 8, padding: 8, background: '#fff' }}>
+                        <div style={{ fontSize: 12, color: '#0f172a' }}>{i + 1}. {x.name}</div>
+                        <div style={{ marginTop: 4, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                          <Tag color="green">融合分 {x.fusedScore.toFixed(2)}</Tag>
+                          <Tag color="blue">DB {x.dbScore.toFixed(2)}</Tag>
+                          <Tag color="purple">KB {x.kbSupport}</Tag>
+                          <Tag color="cyan">WEB {x.webSupport}</Tag>
+                        </div>
+                      </div>
                     ))}
                   </div>
-                </div>
-              ))}
-            </Space>
-          </div>
-        ) : null}
-        {kbHitsVisible.length > 0 ? (
-          <div style={{ marginTop: 10, borderTop: '1px dashed #cbd5e1', paddingTop: 8 }}>
-            <div style={{ color: '#64748b', fontSize: 12, marginBottom: 6 }}>知识库命中（Top {Math.min(topN, kbHitsVisible.length)}）</div>
-            <Space direction="vertical" size={6} style={{ width: '100%' }}>
-              {kbHitsVisible.slice(0, topN).map((row, idx) => (
-                <div key={`kb-hit-${idx}`} style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8, padding: 8, minWidth: 0, maxWidth: '100%', overflowX: 'hidden' }}>
-                  {Array.isArray(row?.supplierCandidates) && row.supplierCandidates.length > 0 ? (
-                    <div style={{ marginBottom: 6, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                      <Tag color="green">KB提取供应商</Tag>
-                      {row.supplierCandidates.map((name) => (
-                        <Tag key={`kb-candidate-${idx}-${name}`} color="geekblue">{String(name)}</Tag>
-                      ))}
+                ) : step.key === 's8' ? (
+                  <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                    <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, padding: 8, background: '#fff' }}>
+                      <div style={{ fontSize: 12, color: '#64748b', marginBottom: 4 }}>提示词</div>
+                      <div style={{ fontSize: 12, color: '#334155', whiteSpace: 'pre-wrap' }}>{promptText || '未显式传入（使用后端默认提示词）'}</div>
                     </div>
-                  ) : null}
-                  {(() => {
-                    const cands = Array.isArray(row?.supplierCandidates) ? row.supplierCandidates.map((x) => String(x || '').trim()).filter(Boolean) : []
-                    const mapped = cands.filter((name) => fusedSupplierNames.includes(name))
-                    return (
-                      <div style={{ marginBottom: 6, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                        <Tag color="green">命中供应商</Tag>
-                        {mapped.slice(0, 4).map((name) => (
-                          <Tag key={`kb-map-${idx}-${name}`} color="geekblue">{name}</Tag>
+                    <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, padding: 8, background: '#fff' }}>
+                      <div style={{ fontSize: 12, color: '#64748b', marginBottom: 4 }}>召回上下文摘要</div>
+                      <div style={{ fontSize: 12, color: '#334155', whiteSpace: 'pre-wrap' }}>{retrievalSummary}</div>
+                    </div>
+                  </Space>
+                ) : step.key === 's9' ? (
+                  <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                    {answerSections['【结论】'] ? (
+                      <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, padding: 8, background: '#fff' }}>
+                        <div style={{ fontSize: 12, color: '#64748b', marginBottom: 4 }}>结论</div>
+                        <div style={{ fontSize: 12, color: '#334155', whiteSpace: 'pre-wrap' }}>{answerSections['【结论】']}</div>
+                      </div>
+                    ) : null}
+                    <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, padding: 8, background: '#fff' }}>
+                      <div style={{ fontSize: 12, color: '#64748b', marginBottom: 4 }}>供应商列表</div>
+                      <div style={{ display: 'grid', gap: 6 }}>
+                        {fusedSuppliers.map((x, i) => (
+                          <div key={`s9-s-${i}`} style={{ border: '1px solid #eef2f7', borderRadius: 8, padding: 6 }}>
+                            <div style={{ fontSize: 12 }}>{i + 1}. {x.name}</div>
+                            <div style={{ marginTop: 4 }}><Tag color="green">融合分 {x.fusedScore.toFixed(2)}</Tag></div>
+                          </div>
                         ))}
                       </div>
-                    )
-                  })()}
-                  <div style={{ fontSize: 12, color: '#334155' }}>
-                    {idx + 1}. {String(row?.docName || row?.docId || '-')}
+                    </div>
+                    {answerSections['【候选供应商TopN】'] ? (
+                      <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, padding: 8, background: '#fff' }}>
+                        <div style={{ fontSize: 12, color: '#64748b', marginBottom: 4 }}>建议</div>
+                        <div style={{ fontSize: 12, color: '#334155', whiteSpace: 'pre-wrap' }}>{answerSections['【候选供应商TopN】']}</div>
+                      </div>
+                    ) : null}
+                  </Space>
+                ) : (
+                  <div>
+                    {step.detail ? (
+                      <div style={{ fontSize: 12, color: '#334155', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{step.detail}</div>
+                    ) : null}
+                    {stageResult(step.stepNo)?.meta && typeof stageResult(step.stepNo).meta === 'object' ? (
+                      <div style={{ marginTop: 6, fontSize: 12, color: '#64748b', whiteSpace: 'pre-wrap' }}>
+                        {Object.entries(stageResult(step.stepNo).meta).map(([k, v]) => String(k) + ': ' + String(v)).join(' | ')}
+                      </div>
+                    ) : null}
                   </div>
-                  {row?.docUrl ? (
-                    <a
-                      href={String(row.docUrl)}
-                      target="_blank"
-                      rel="noreferrer"
-                      style={{
-                        fontSize: 12,
-                        display: 'block',
-                        whiteSpace: 'normal',
-                        wordBreak: 'break-word',
-                        overflowWrap: 'anywhere',
-                        maxWidth: '100%',
-                      }}
-                    >
-                      {String(row.docUrl)}
-                    </a>
-                  ) : null}
-                  {row?.chunkText ? (
-                    <div
-                      style={{
-                        marginTop: 4,
-                        fontSize: 12,
-                        color: '#64748b',
-                        whiteSpace: 'pre-wrap',
-                        wordBreak: 'break-word',
-                        overflowWrap: 'anywhere',
-                        maxHeight: 88,
-                        overflow: 'auto',
-                        paddingRight: 4,
-                      }}
-                    >
-                      {String(row.chunkText).slice(0, 120)}
-                    </div>
-                  ) : null}
-                  {row?.candidateAudit && (Array.isArray(row?.candidateAudit?.dropReasons) ? row.candidateAudit.dropReasons.length > 0 : false) ? (
-                    <div style={{ marginTop: 6, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                      {row.candidateAudit.dropReasons.slice(0, 4).map((item2, ridx) => (
-                        <Tag key={`kb-drop-${idx}-${ridx}`} color="orange">
-                          剔除: {String(item2?.name || '-')}（{String(item2?.reason || '未通过')}）
-                        </Tag>
-                      ))}
-                    </div>
-                  ) : null}
-                </div>
-              ))}
-            </Space>
+                )}
+              </div>
+            ),
+          }))}
+        />
+
+        <div style={{ marginTop: 10, border: '1px solid #e5e7eb', borderRadius: 8, background: '#fff', padding: 10 }}>
+          <div style={{ fontSize: 12, color: '#64748b', marginBottom: 6 }}>最终返回结果</div>
+          <div style={{ fontSize: 13, color: '#0f172a', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
+            {String(item?.rawAnswer || (item?.streamDone ? item?.content : '') || '暂无结果')}
           </div>
-        ) : null}
-        {webHitsMapped.length > 0 ? (
-          <div style={{ marginTop: 10, borderTop: '1px dashed #cbd5e1', paddingTop: 8 }}>
-            <div style={{ color: '#64748b', fontSize: 12, marginBottom: 6 }}>
-              互联网线索命中（Top {Math.min(topN, webHitsMapped.length)}）
-            </div>
-            <Space direction="vertical" size={6} style={{ width: '100%' }}>
-              {webHitsMapped.slice(0, topN).map((row, idx) => (
-                <div key={`web-hit-${idx}`} style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8, padding: 8, minWidth: 0, maxWidth: '100%', overflowX: 'hidden' }}>
-                  <div style={{ fontSize: 12, color: '#334155' }}>{idx + 1}. {String(row?.title || row?.name || row?.url || '-')}</div>
-                  {row?.url ? (
-                    <a
-                      href={String(row.url)}
-                      target="_blank"
-                      rel="noreferrer"
-                      style={{
-                        fontSize: 12,
-                        display: 'block',
-                        whiteSpace: 'normal',
-                        wordBreak: 'break-word',
-                        overflowWrap: 'anywhere',
-                        maxWidth: '100%',
-                      }}
-                    >
-                      {String(row.url)}
-                    </a>
-                  ) : null}
-                  {Array.isArray(row?.supplierCandidates) && row.supplierCandidates.length > 0 ? (
-                    <div style={{ marginTop: 6, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                      {row.supplierCandidates.map((name) => (
-                        <Tag key={`${idx}-${name}`} color="geekblue">{String(name)}</Tag>
-                      ))}
-                    </div>
-                  ) : <div style={{ marginTop: 6, fontSize: 12, color: '#94a3b8' }}>该线索未提取到可采纳供应商候选</div>}
-                  {row?.candidateAudit && (Array.isArray(row?.candidateAudit?.dropReasons) ? row.candidateAudit.dropReasons.length > 0 : false) ? (
-                    <div style={{ marginTop: 6, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                      {row.candidateAudit.dropReasons.slice(0, 4).map((item2, ridx) => (
-                        <Tag key={`web-drop-${idx}-${ridx}`} color="orange">
-                          剔除: {String(item2?.name || '-')}（{String(item2?.reason || '未通过')}）
-                        </Tag>
-                      ))}
-                    </div>
-                  ) : null}
-                </div>
-              ))}
-            </Space>
-          </div>
-        ) : null}
-        {Array.isArray(item?.evidence?.webDerivedSuppliers) && item.evidence.webDerivedSuppliers.length > 0 ? (
-          <div style={{ marginTop: 10, borderTop: '1px dashed #cbd5e1', paddingTop: 8 }}>
-            {(() => {
-              const topN = Number(item?.queryStatements?.fusion?.requestedTopN || 10)
-              const rows = item.evidence.webDerivedSuppliers.slice(0, topN)
-              return (
-                <>
-            <div style={{ color: '#64748b', fontSize: 12, marginBottom: 6 }}>
-              互联网提取供应商（Top {rows.length}）
-            </div>
-            <Space direction="vertical" size={4} style={{ width: '100%' }}>
-              {rows.map((name, idx) => (
-                <div key={`web-supplier-${name}-${idx}`} style={{ fontSize: 12, color: '#334155', lineHeight: 1.5 }}>
-                  {idx + 1}. {String(name)}
-                </div>
-              ))}
-            </Space>
-                </>
-              )
-            })()}
-          </div>
-        ) : null}
-        {Array.isArray(item?.evidence?.suppliers) && item.evidence.suppliers.length > 0 ? (
-          <div style={{ marginTop: 10, borderTop: '1px dashed #cbd5e1', paddingTop: 8 }}>
-            <div style={{ color: '#64748b', fontSize: 12, marginBottom: 6 }}>融合结果解释（按融合分排序）</div>
-            <Space direction="vertical" size={6} style={{ width: '100%' }}>
-              {item.evidence.suppliers.slice(0, Number(item?.queryStatements?.fusion?.requestedTopN || 10)).map((row, idx) => {
-                const name = String(row?.companyName || row?.company_name || row?.name || '-')
-                const dbScore = Number(row?._matchScore || 0)
-                const fusedScore = Number(row?._fusedScore || dbScore)
-                const webSupport = Number(row?._webSupportCount || 0)
-                const kbSupportByRow = Number(row?._kbSupportCount || 0)
-                const kbSupport = Array.isArray(item?.evidence?.kbHits)
-                  ? item.evidence.kbHits.filter((hit) => {
-                    const docName = String(hit?.docName || '')
-                    return !!name && (docName.includes(name) || name.includes(docName))
-                  }).length
-                  : 0
-                const w = item?.queryStatements?.fusion?.fusionWeights || { db: 1, kb: 0.8, web: 1.2 }
-                return (
-                  <div key={`fused-top-${idx}`} style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8, padding: 8 }}>
-                    <div style={{ fontSize: 12, color: '#334155' }}>{idx + 1}. {name}</div>
-                    <div style={{ marginTop: 4, fontSize: 12, color: '#64748b' }}>
-                      说明：融合分 = {Number(w.db ?? 1).toFixed(1)}×DB分 + {Number(w.kb ?? 0.8).toFixed(1)}×KB关联 + {Number(w.web ?? 1.2).toFixed(1)}×WEB支撑
-                    </div>
-                    <div style={{ marginTop: 6, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                      <Tag color="blue">DB分: {dbScore.toFixed(2)}</Tag>
-                      <Tag color="purple">WEB支撑: {webSupport}</Tag>
-                      <Tag color="cyan">KB关联: {Math.max(kbSupportByRow, kbSupport)}</Tag>
-                      <Tag color="green">融合分: {fusedScore.toFixed(2)}</Tag>
-                    </div>
-                  </div>
-                )
-              })}
-            </Space>
-            <div style={{ marginTop: 8, fontSize: 12, color: '#64748b' }}>
-              {(() => {
-                const selected = Array.isArray(item?.selectedTools) ? item.selectedTools : []
-                const hasKb = Array.isArray(item?.evidence?.kbHits) && item.evidence.kbHits.length > 0
-                const hasWeb = Array.isArray(item?.evidence?.webHits) && item.evidence.webHits.length > 0
-                const reasons = []
-                if (!selected.includes('local_kb')) reasons.push('未启用知识库工具')
-                else if (!hasKb) reasons.push('知识库命中为 0（本轮未采纳）')
-                if (!selected.includes('web_search')) reasons.push('未启用互联网搜索工具')
-                else if (!hasWeb) reasons.push('互联网命中为 0（本轮未采纳）')
-                return reasons.length > 0 ? `未采纳来源说明：${reasons.join('；')}` : '来源采纳说明：DB/KV/WEB均参与，按证据打分融合。'
-              })()}
-            </div>
-          </div>
-        ) : null}
+        </div>
       </div>
     )
   }
@@ -1177,6 +1072,8 @@ export default function PreciseSourcingAgentPage() {
         role: 'assistant',
         content: '执行中，请稍候...',
         rawAnswer: '',
+        userInput: question,
+        streamDone: false,
         evidence: { suppliers: [], kbHits: [], webHits: [] },
         artifacts: [],
         queryStatements: {},
@@ -1216,31 +1113,40 @@ export default function PreciseSourcingAgentPage() {
             const traces = [...(Array.isArray(last?.traces) ? last.traces : []), trace]
             const detail = String(trace?.detail || '')
             let nextIntent = last?.intentDecision && typeof last.intentDecision === 'object' ? { ...last.intentDecision } : null
+            let nextPlanSteps = Array.isArray(last?.planSteps) ? [...last.planSteps] : []
             if (String(trace?.step || '').toLowerCase().startsWith('plan')) {
               const intentMatch = detail.match(/意图[=：]([a-z_]+)/i)
               const dbMatch = detail.match(/DB[=：](是|否)/)
               const ragMatch = detail.match(/RAG[=：](是|否)/)
               const webMatch = detail.match(/WEB[=：](是|否)/)
+              const planMatch = detail.match(/计划分解=([^\n\r]+)/)
               if (!nextIntent) nextIntent = {}
               if (intentMatch) nextIntent.intent = String(intentMatch[1] || '').trim()
               if (dbMatch) nextIntent.needDb = dbMatch[1] === '是'
               if (ragMatch) nextIntent.needRag = ragMatch[1] === '是'
               if (webMatch) nextIntent.needWeb = webMatch[1] === '是'
               nextIntent.routeReason = detail || nextIntent.routeReason || ''
+              if (planMatch?.[1]) {
+                const parts = String(planMatch[1])
+                  .split(/[；/]/)
+                  .map((x) => String(x || '').trim())
+                  .filter(Boolean)
+                if (parts.length > 0) nextPlanSteps = parts.map((p, idx) => ({ id: `trace-plan-${idx + 1}`, title: p }))
+              }
             }
             return {
               ...last,
               traces,
               react: { rounds: [] },
               intentDecision: nextIntent,
-              content: `执行中：${String(trace?.title || trace?.step || '')} - ${String(trace?.detail || '')}`,
+              planSteps: nextPlanSteps,
             }
           })
         },
         onHeartbeat: (evt) => {
           patchLastAssistantMessage((last) => ({
             ...last,
-            content: `执行中：${String(evt?.message || '正在执行中，请稍候...')}`,
+            lastHeartbeat: String(evt?.message || '正在执行中，请稍候...'),
           }))
         },
         onDelta: (evt) => {
@@ -1262,6 +1168,8 @@ export default function PreciseSourcingAgentPage() {
           const qs = data?.queryStatements && typeof data.queryStatements === 'object' ? data.queryStatements : {}
           patchLastAssistantMessage((last) => ({
             ...last,
+            userInput: question,
+            streamDone: true,
             content: String(data?.answer || '未返回内容'),
             rawAnswer: String(data?.answer || ''),
             evidence,
@@ -1286,20 +1194,22 @@ export default function PreciseSourcingAgentPage() {
             const dedupWebHits = Array.from(new Map(mergedWebHits.map((x, i) => [String(x?.url || x?.link || x?.title || `row-${i}`), x])).values())
             const mergedDerived = [...(Array.isArray(prevEvidence.webDerivedSuppliers) ? prevEvidence.webDerivedSuppliers : []), ...extraSuppliers]
             const dedupDerived = Array.from(new Set(mergedDerived.map((x) => String(x || '').trim()).filter(Boolean)))
-            const base = String(last?.rawAnswer || last?.content || '')
-            const nextContent = enrichNote ? `${base}\n\n---\n[WEB补全]\n${enrichNote}` : base
             return {
               ...last,
-              content: nextContent,
-              rawAnswer: nextContent,
+              content: String(last?.content || ''),
+              rawAnswer: String(last?.rawAnswer || ''),
               evidence: {
                 ...prevEvidence,
                 webHits: dedupWebHits,
                 webDerivedSuppliers: dedupDerived,
+                webEnrichNote: enrichNote || String(prevEvidence?.webEnrichNote || ''),
               },
               ts: Date.now(),
             }
           })
+        },
+        onDone: () => {
+          patchLastAssistantMessage((last) => ({ ...last, streamDone: true }))
         },
       })
     } catch (error) {
@@ -1870,4 +1780,5 @@ export default function PreciseSourcingAgentPage() {
     </div>
   )
 }
+
 
