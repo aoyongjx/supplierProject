@@ -1,9 +1,11 @@
-import { AppstoreOutlined, DeploymentUnitOutlined, MenuFoldOutlined, MenuUnfoldOutlined, MessageOutlined, UserOutlined } from '@ant-design/icons'
-import { Avatar, Button, Card, Checkbox, Collapse, Empty, Input, Modal, Select, Slider, Space, Tabs, Tag, Typography, Upload, message } from 'antd'
+import { AppstoreOutlined, DeploymentUnitOutlined, FullscreenExitOutlined, FullscreenOutlined, InfoCircleOutlined, MenuFoldOutlined, MenuUnfoldOutlined, MessageOutlined, UserOutlined } from '@ant-design/icons'
+import { Avatar, Button, Card, Checkbox, Collapse, Empty, Input, Modal, Select, Slider, Space, Tabs, Tag, Tooltip, Typography, Upload, message } from 'antd'
 import { CanvasWidget, SelectionBoxLayerFactory } from '@projectstorm/react-canvas-core'
 import { DefaultDiagramState, DiagramEngine, DiagramModel, LinkLayerFactory, NodeLayerFactory } from '@projectstorm/react-diagrams-core'
 import { DefaultLinkFactory, DefaultLinkModel, DefaultNodeFactory, DefaultNodeModel, DefaultPortFactory } from '@projectstorm/react-diagrams-defaults'
 import { useEffect, useMemo, useRef, useState } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { chatPreciseSourcingAgentStream } from '../api/agentApi'
 import { fetchKnowledgeBases } from '../api/knowledgeBaseApi'
 import { fetchLangchainSessionState, fetchLangchainTools, saveLangchainSessionState } from '../api/langchainShellApi'
@@ -58,9 +60,13 @@ const DEFAULT_SYSTEM_PROMPT = `你是汽车供应链精准寻源助手。
 目标：基于数据库/知识库/互联网证据，为用户输出可执行的候选供应商建议。
 要求：
 1) 优先给结论，再给证据与下一步。
-2) 候选供应商输出TopN（由证据质量决定），每条包含：名称、匹配理由、风险提示。
-3) 不编造；无证据时明确说明并给补充检索建议。
-4) 输出简洁、结构化，使用中文。`
+2) 候选供应商输出TopN（由证据质量决定），并优先按rerank分数与证据强度排序。
+3) 输出必须使用Markdown结构，且优先表格化，不要大段连写文本。
+4) 至少包含两张表：
+   - 候选供应商TopN表：排名｜供应商｜关联主机厂｜结论等级｜Rerank分｜证据强度｜主要依据｜风险/缺口｜建议动作
+   - 证据摘要表：来源(DB/RAG/WEB)｜证据片段｜关联供应商｜匹配类型｜置信度｜可追溯链接
+5) 另附“明确不足/待核验”和“下一步检索建议”两个小节，使用编号列表。
+6) 不编造；无证据时明确说明并给补充检索建议。输出中文。`
 const PROMPT_PRESETS = [
   {
     key: 'default',
@@ -74,9 +80,10 @@ const PROMPT_PRESETS = [
 目标：优先控制风险，再推荐候选供应商。
 要求：
 1) 先给风险结论（高/中/低）与原因，再给候选。
-2) 每个候选包含：名称、匹配点、主要风险、建议核验项。
-3) 证据不足时必须标注“待核验”，禁止主观推断。
-4) 输出TopN，中文，简洁结构化。`,
+2) 输出必须使用Markdown表格，候选按风险优先级与rerank分排序。
+3) 候选表字段：排名｜供应商｜风险等级｜Rerank分｜关键风险｜证据依据｜核验项。
+4) 证据表字段：来源｜证据片段｜关联供应商｜置信度｜可追溯链接。
+5) 证据不足时必须标注“待核验”，禁止主观推断。输出中文。`,
   },
   {
     key: 'fast',
@@ -85,11 +92,115 @@ const PROMPT_PRESETS = [
 目标：快速给出可跟进的供应商线索清单。
 要求：
 1) 先直接回答，再给TopN候选。
-2) 每个候选只写：名称 + 一句话理由 + 推荐动作。
-3) 控制篇幅，优先高相关结果；无命中就给替代关键词。
-4) 中文输出，节奏快，不展开冗长解释。`,
+2) 输出使用Markdown，候选列表必须为表格：排名｜供应商｜Rerank分｜一句话理由｜推荐动作。
+3) 再补一张证据简表：来源｜证据片段｜关联供应商。
+4) 控制篇幅，优先高相关结果；无命中就给替代关键词。中文输出。`,
   },
 ]
+
+function normalizeLlmMarkdownForRender(text = '') {
+  let s = String(text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim()
+  if (!s) return ''
+  // Some model outputs collapse blocks into one line: "||" often indicates table row boundaries.
+  s = s.replace(/\|\|/g, '|\n|')
+  // Ensure section headings can start on new lines.
+  s = s.replace(/---\s*##/g, '\n\n##')
+  s = s.replace(/([^\n])\s*(##{1,6}\s*)/g, '$1\n\n$2')
+  s = s.replace(/([^\n])\s*(#{1,6}\s*)/g, '$1\n\n$2')
+  // Ensure horizontal separators are isolated.
+  s = s.replace(/([^\n])---([^\n])/g, '$1\n---\n$2')
+  // Normalize excessive spaces around table pipes.
+  s = s.replace(/[ \t]*\|[ \t]*/g, ' | ').replace(/\n[ \t]+/g, '\n')
+  // Force common table section titles onto their own lines.
+  s = s.replace(/##\s*候选供应商TopN表\s*\|/g, '## 候选供应商TopN表\n|')
+  s = s.replace(/##\s*证据摘要表\s*\|/g, '## 证据摘要表\n|')
+  // Split chained rows that are glued by "||".
+  s = s.replace(/\|\|\s*(\d+\s*\|)/g, '\n| $1')
+  s = s.replace(/\|\|\s*(DB\s*\|)/gi, '\n| $1')
+  s = s.replace(/\|\|\s*(RAG\s*\|)/gi, '\n| $1')
+  s = s.replace(/\|\|\s*(WEB\s*\|)/gi, '\n| $1')
+  // Remove malformed separator noise lines often produced by model collapse.
+  s = s
+    .split('\n')
+    .filter((line) => {
+      const t = line.trim()
+      if (!t) return true
+      if (/^\|?\s*:?\s*\|?\s*$/.test(t)) return false
+      if (/^\|\s*---\s*\|\s*$/.test(t)) return false
+      return true
+    })
+    .join('\n')
+  // Ensure key tables have a valid markdown separator row.
+  const ensureTableSeparator = (input, headerPrefix) => {
+    const lines = input.split('\n')
+    for (let i = 0; i < lines.length; i += 1) {
+      if (lines[i].includes(headerPrefix) && lines[i].includes('|')) {
+        const next = lines[i + 1] || ''
+        if (!/^\s*\|(?:\s*:?-+:?\s*\|)+\s*$/.test(next)) {
+          const colCount = Math.max(2, lines[i].split('|').filter((x) => x.trim()).length)
+          const sep = `| ${Array.from({ length: colCount }).map(() => '---').join(' | ')} |`
+          lines.splice(i + 1, 0, sep)
+        }
+      }
+    }
+    return lines.join('\n')
+  }
+  s = ensureTableSeparator(s, '排名')
+  s = ensureTableSeparator(s, '来源')
+  const splitTableRowsByStarter = (input, sectionTitle, starters = []) => {
+    const lines = input.split('\n')
+    const sectionIdx = lines.findIndex((x) => x.includes(sectionTitle))
+    if (sectionIdx < 0) return input
+    const headerIdx = lines.findIndex((x, i) => i > sectionIdx && x.includes('|') && !x.trim().startsWith('| ---'))
+    if (headerIdx < 0) return input
+    const sepIdx = headerIdx + 1
+    let bodyStart = sepIdx + 1
+    if (bodyStart >= lines.length) return input
+    let bodyEnd = lines.length
+    for (let i = bodyStart; i < lines.length; i += 1) {
+      if (/^##\s+/.test(lines[i].trim())) {
+        bodyEnd = i
+        break
+      }
+    }
+    const bodyRaw = lines.slice(bodyStart, bodyEnd).join(' ').replace(/\s+/g, ' ').trim()
+    if (!bodyRaw.includes('|')) return input
+    let tmp = bodyRaw
+    for (const st of starters) {
+      if (st === '\\d+') {
+        tmp = tmp.replace(/\|\s*(\d+)\s*\|/g, '\n| $1 |')
+      } else {
+        const re = new RegExp(`\\|\\s*(${st})\\s*\\|`, 'gi')
+        tmp = tmp.replace(re, '\n| $1 |')
+      }
+    }
+    const rows = tmp
+      .split('\n')
+      .map((x) => x.trim())
+      .filter((x) => x.startsWith('|') && x.includes('|'))
+      .map((x) => x.replace(/\s+\|\s+/g, ' | ').replace(/[ \t]+/g, ' '))
+    if (rows.length === 0) return input
+    const merged = [
+      ...lines.slice(0, bodyStart),
+      ...rows,
+      ...lines.slice(bodyEnd),
+    ]
+    return merged.join('\n')
+  }
+  s = splitTableRowsByStarter(s, '候选供应商TopN表', ['\\d+'])
+  s = splitTableRowsByStarter(s, '证据摘要表', ['DB', 'RAG', 'WEB'])
+  // Keep blank lines tidy.
+  s = s.replace(/\n{3,}/g, '\n\n')
+  return s
+}
+
+function markdownChildrenToText(children) {
+  if (children == null) return ''
+  if (typeof children === 'string' || typeof children === 'number') return String(children)
+  if (Array.isArray(children)) return children.map((x) => markdownChildrenToText(x)).join('')
+  if (typeof children === 'object') return markdownChildrenToText(children?.props?.children)
+  return ''
+}
 
 export default function PreciseSourcingAgentPage() {
   const [input, setInput] = useState('')
@@ -108,9 +219,9 @@ export default function PreciseSourcingAgentPage() {
   const [kbTopK, setKbTopK] = useState(3)
   const [dbTopK, setDbTopK] = useState(10)
   const [temperature, setTemperature] = useState(0.7)
-  const [fusionWeightDb, setFusionWeightDb] = useState(1)
-  const [fusionWeightKb, setFusionWeightKb] = useState(0.8)
-  const [fusionWeightWeb, setFusionWeightWeb] = useState(1.2)
+  const [sourceQuotaDb, setSourceQuotaDb] = useState(3)
+  const [sourceQuotaRag, setSourceQuotaRag] = useState(2)
+  const [sourceQuotaWeb, setSourceQuotaWeb] = useState(2)
   const [selectedModelName, setSelectedModelName] = useState('gpt-5.4')
   const [systemPrompt, setSystemPrompt] = useState(DEFAULT_SYSTEM_PROMPT)
   const [systemPromptEnabled, setSystemPromptEnabled] = useState(true)
@@ -127,13 +238,17 @@ export default function PreciseSourcingAgentPage() {
   const [modelTestResult, setModelTestResult] = useState(null)
   const [flowDialogOpen, setFlowDialogOpen] = useState(false)
   const [flowTabKey, setFlowTabKey] = useState('logic')
+  const [sequenceFullscreen, setSequenceFullscreen] = useState(false)
   const [artifactPreviewOpen, setArtifactPreviewOpen] = useState(false)
   const [artifactPreviewTitle, setArtifactPreviewTitle] = useState('')
   const [artifactPreviewUrl, setArtifactPreviewUrl] = useState('')
+  const [rerankDetailOpen, setRerankDetailOpen] = useState(false)
+  const [rerankDetailRecord, setRerankDetailRecord] = useState(null)
 
   const [sessions, setSessions] = useState([{ name: 'default', messages: [] }])
   const [currentSession, setCurrentSession] = useState('default')
   const viewportRef = useRef(null)
+  const sequenceDiagramWrapRef = useRef(null)
 
   useEffect(() => {
     try {
@@ -280,22 +395,11 @@ export default function PreciseSourcingAgentPage() {
       { key: 'web', label: 'Web', enabled: set.has('web_search') },
     ].filter((x) => x.enabled)
   }, [selectedTools])
-  const effectiveFusionWeights = useMemo(() => {
-    const count = activeFusionTools.length
-    const has = (k) => activeFusionTools.some((x) => x.key === k)
-    if (count === 1) {
-      return {
-        db: has('db') ? 3 : 0,
-        kb: has('kb') ? 3 : 0,
-        web: has('web') ? 3 : 0,
-      }
-    }
-    return {
-      db: has('db') ? Number(fusionWeightDb) : 0,
-      kb: has('kb') ? Number(fusionWeightKb) : 0,
-      web: has('web') ? Number(fusionWeightWeb) : 0,
-    }
-  }, [activeFusionTools, fusionWeightDb, fusionWeightKb, fusionWeightWeb])
+  const effectiveSourceQuota = useMemo(() => ({
+    db: activeFusionTools.some((x) => x.key === 'db') ? Number(sourceQuotaDb) : 0,
+    rag: activeFusionTools.some((x) => x.key === 'kb') ? Number(sourceQuotaRag) : 0,
+    web: activeFusionTools.some((x) => x.key === 'web') ? Number(sourceQuotaWeb) : 0,
+  }), [activeFusionTools, sourceQuotaDb, sourceQuotaRag, sourceQuotaWeb])
   const flowConfigSummary = useMemo(() => ({
     tools: selectedToolLabels.length > 0 ? selectedToolLabels.join('、') : '未选择',
     kb: selectedKbIds.length > 0 ? `${selectedKbIds.length} 个` : '未选择',
@@ -305,28 +409,29 @@ export default function PreciseSourcingAgentPage() {
     template: templateType === 'none' ? '无' : templateType,
   }), [selectedToolLabels, selectedKbIds, selectedDbTables, selectedModelName, systemPromptEnabled, templateType])
   const flowLogicText = useMemo(() => [
-    `开始`,
-    ` -> 读取当前配置（工具=${flowConfigSummary.tools}；知识库=${flowConfigSummary.kb}；数据库=${flowConfigSummary.db}；模型=${flowConfigSummary.model}；提示词=${flowConfigSummary.prompt}）`,
-    ` -> 需求解析（关键词、意图、约束）`,
-    ` -> 自动编排（仅执行已启用分支）`,
-    ` -> 数据库检索（${activeFlowBranches.db ? `启用，${flowConfigSummary.db}` : '跳过'}）`,
-    ` -> 知识库检索（${activeFlowBranches.kb ? `启用，${flowConfigSummary.kb}` : '跳过'}）`,
-    ` -> 互联网检索（${activeFlowBranches.web ? '启用' : '跳过'}）`,
-    ` -> 证据融合（去重、相关性排序、风险归纳）`,
-    ` -> 大模型总结（候选、风险、下一步、查询语句）`,
-    ` -> 产出工具（图表=${activeFlowBranches.chart ? '启用' : '跳过'}；文件导出=${activeFlowBranches.export ? '启用' : '跳过'}）`,
-    ` -> 返回前端（答案 + 结构化结果 + artifacts）`,
+    `1. 用户输入：接收查询内容与当前配置（工具=${flowConfigSummary.tools}；知识库=${flowConfigSummary.kb}；数据库=${flowConfigSummary.db}；模型=${flowConfigSummary.model}；提示词=${flowConfigSummary.prompt}）`,
+    `2. LLM语义理解与任务规划：识别意图、主机厂/品类关键词、是否需要DB/RAG/WEB分支`,
+    `3. 检索子任务分解：将请求拆成 DB任务 / RAG任务 / WEB任务（仅启用已选分支）`,
+    `4. 发起标准化工具请求：构造统一请求体（query/template/provider/topK/sourceQuota）`,
+    `5. 工具执行(DB/RAG/WEB)：并行执行检索并持续回传执行日志`,
+    `6. 返回标准化结果：统一为 dbHits / ragHits / webHits（含候选与证据片段）`,
+    `7. 证据整合与去重：构建全量候选池，做名称归一、同名去重、证据归因`,
+    `8. 候选重排(Rerank)：按 query-candidate-evidence 打分，分源保底 + 总分竞争，得到 TopN + 边界样本`,
+    `9. 系统提示词 + 召回上下文交给LLM生成：将 prompt + DB/RAG/WEB + rerank 一并送入模型 ${flowConfigSummary.model}`,
+    `10. 返回最终结果：输出结构化候选、证据摘要与LLM原文（流式更新后定稿）`,
   ].join('\n'), [flowConfigSummary, activeFlowBranches])
   const flowSequenceText = useMemo(() => [
-    `用户 -> 前端：输入问题 + 当前配置`,
-    `前端 -> 后端：/api/agents/precise-sourcing/chat（携带工具、知识库、数据库、模型、提示词）`,
-    `后端 -> LangGraph：plan`,
-    `LangGraph -> 工具层：按配置执行（DB=${activeFlowBranches.db ? '是' : '否'}，KB=${activeFlowBranches.kb ? '是' : '否'}，WEB=${activeFlowBranches.web ? '是' : '否'}）`,
-    `LangGraph -> LLM：使用模型 ${flowConfigSummary.model}`,
-    `LangGraph -> 产出工具：图表=${activeFlowBranches.chart ? '是' : '否'}，导出=${activeFlowBranches.export ? '是' : '否'}`,
-    `LangGraph -> 后端：answer + structured + artifacts + queryStatements`,
-    `后端 -> 前端：渲染结果`,
-  ].join('\n'), [activeFlowBranches, flowConfigSummary.model])
+    `1) 用户 -> 前端：输入问题与配置`,
+    `2) 前端 -> 后端：/api/agents/precise-sourcing/chat（message + tools + kb + db + model + prompt）`,
+    `3) 后端 -> LangGraph：语义理解与任务规划（step2/3）`,
+    `4) LangGraph -> 工具层：发起标准化请求（step4）`,
+    `5) 工具层 -> 数据源(DB/RAG/WEB)：执行检索并返回命中（step5/6）`,
+    `6) LangGraph：证据整合与去重（step7）`,
+    `7) LangGraph -> Reranker：候选重排，返回TopN+边界（step8）`,
+    `8) LangGraph -> LLM(${flowConfigSummary.model})：prompt + 召回上下文 + rerank（step9）`,
+    `9) LLM -> LangGraph：返回最终文本与结构化片段`,
+    `10) 后端 -> 前端：流式更新并最终展示（step10）`,
+  ].join('\n'), [flowConfigSummary.model])
   const sequenceDiagramEngine = useMemo(() => {
     const engine = new DiagramEngine()
     engine.getLayerFactories().registerFactory(new NodeLayerFactory())
@@ -349,30 +454,38 @@ export default function PreciseSourcingAgentPage() {
       return link
     }
 
-    const readConfigNode = mkNode('读取用户配置', 'rgb(14, 165, 233)', 20, 150)
-    const parseNode = mkNode('需求解析', 'rgb(59, 130, 246)', 180, 150)
-    const orchestrateNode = mkNode('自动编排', 'rgb(37, 99, 235)', 340, 150)
-    const fusionNode = mkNode('证据融合与排序', 'rgb(126, 34, 206)', 540, 150)
-    const llmNode = mkNode(`模型输出 (${flowConfigSummary.model})`, 'rgb(101, 163, 13)', 730, 150)
-    const returnNode = mkNode('返回前端结果', 'rgb(2, 132, 199)', 1080, 150)
+    const readConfigNode = mkNode('1 用户输入', 'rgb(14, 165, 233)', 20, 160)
+    const parseNode = mkNode('2 语义理解与规划', 'rgb(59, 130, 246)', 130, 160)
+    const orchestrateNode = mkNode('3/4 子任务分解+标准化请求', 'rgb(37, 99, 235)', 260, 160)
+    const retrievalResultNode = mkNode('5/6 工具执行与标准化结果', 'rgb(30, 64, 175)', 470, 160)
+    const fusionNode = mkNode('7 证据整合与去重', 'rgb(126, 34, 206)', 660, 160)
+    const rerankNode = mkNode('8 候选重排(Rerank)', 'rgb(168, 85, 247)', 820, 160)
+    const llmNode = mkNode(`9 LLM生成 (${flowConfigSummary.model})`, 'rgb(101, 163, 13)', 980, 160)
+    const returnNode = mkNode('10 返回最终结果', 'rgb(2, 132, 199)', 1120, 160)
 
     const readOut = readConfigNode.addOutPort('输出')
     const parseIn = parseNode.addInPort('输入')
     const parseOut = parseNode.addOutPort('输出')
     const orchIn = orchestrateNode.addInPort('输入')
     const orchOut = orchestrateNode.addOutPort('输出')
+    const retrievalIn = retrievalResultNode.addInPort('输入')
+    const retrievalOut = retrievalResultNode.addOutPort('输出')
     const fusionIn = fusionNode.addInPort('输入')
     const fusionOut = fusionNode.addOutPort('输出')
+    const rerankIn = rerankNode.addInPort('输入')
+    const rerankOut = rerankNode.addOutPort('输出')
     const llmIn = llmNode.addInPort('输入')
     const llmOut = llmNode.addOutPort('输出')
     const retIn = returnNode.addInPort('输入')
 
-    const graphNodes = [readConfigNode, parseNode, orchestrateNode, fusionNode, llmNode, returnNode]
+    const graphNodes = [readConfigNode, parseNode, orchestrateNode, retrievalResultNode, fusionNode, rerankNode, llmNode, returnNode]
     const graphLinks = [
       mkLink(readOut, parseIn),
       mkLink(parseOut, orchIn),
-      mkLink(orchOut, fusionIn),
-      mkLink(fusionOut, llmIn),
+      mkLink(orchOut, retrievalIn),
+      mkLink(retrievalOut, fusionIn),
+      mkLink(fusionOut, rerankIn),
+      mkLink(rerankOut, llmIn),
     ]
 
     const retrievalDefs = [
@@ -380,14 +493,14 @@ export default function PreciseSourcingAgentPage() {
       { enabled: activeFlowBranches.kb, name: '知识库检索', color: 'rgb(15, 118, 110)' },
       { enabled: activeFlowBranches.web, name: '互联网搜索', color: 'rgb(14, 165, 164)' },
     ].filter((item) => item.enabled)
-    const retrievalStartY = 20
+    const retrievalStartY = 35
     retrievalDefs.forEach((item, idx) => {
-      const node = mkNode(item.name, item.color, 360, retrievalStartY + idx * 80)
+      const node = mkNode(item.name, item.color, 390, retrievalStartY + idx * 120)
       const inPort = node.addInPort('输入')
       const outPort = node.addOutPort('输出')
       graphNodes.push(node)
       graphLinks.push(mkLink(orchOut, inPort))
-      graphLinks.push(mkLink(outPort, fusionIn))
+      graphLinks.push(mkLink(outPort, retrievalIn))
     })
 
     const outputDefs = [
@@ -409,23 +522,90 @@ export default function PreciseSourcingAgentPage() {
       })
     }
 
+    graphNodes.forEach((n) => n.setLocked(true))
+    graphLinks.forEach((l) => l.setLocked(true))
     model.addAll(...graphNodes, ...graphLinks)
+    // Keep nodes/links read-only, but allow canvas panning.
+    model.setLocked(false)
 
     engine.setModel(model)
     return engine
   }, [activeFlowBranches, flowConfigSummary.model])
+  const fitSequenceDiagramViewport = (fullscreen = false) => {
+    try {
+      const model = sequenceDiagramEngine.getModel()
+      const nodes = Array.isArray(model?.getNodes?.()) ? model.getNodes() : []
+      if (!nodes || nodes.length === 0) return
+      const host = sequenceDiagramWrapRef.current
+      const vw = Number(host?.clientWidth || 0)
+      const vh = Number(host?.clientHeight || 0)
+      if (vw <= 0 || vh <= 0) return
+      const minX = Math.min(...nodes.map((n) => Number(n.getX?.() || 0)))
+      const minY = Math.min(...nodes.map((n) => Number(n.getY?.() || 0)))
+      const maxX = Math.max(...nodes.map((n) => Number(n.getX?.() || 0) + 220))
+      const maxY = Math.max(...nodes.map((n) => Number(n.getY?.() || 0) + 90))
+      const contentW = Math.max(1, maxX - minX)
+      const contentH = Math.max(1, maxY - minY)
+      const pad = fullscreen ? 120 : 60
+      const zx = (vw - pad) / contentW
+      const zy = (vh - pad) / contentH
+      const zoomRaw = Math.min(zx, zy) * 100
+      const zoom = fullscreen
+        ? Math.max(90, Math.min(210, zoomRaw))
+        : Math.max(70, Math.min(130, zoomRaw))
+      model.setZoomLevel(zoom)
+      const scaledW = contentW * (zoom / 100)
+      const scaledH = contentH * (zoom / 100)
+      const offsetX = Math.round((vw - scaledW) / 2 - minX * (zoom / 100))
+      const offsetY = Math.round((vh - scaledH) / 2 - minY * (zoom / 100))
+      model.setOffset(offsetX, offsetY)
+      sequenceDiagramEngine.repaintCanvas()
+    } catch (error) {
+      void error
+    }
+  }
   useEffect(() => {
     if (!flowDialogOpen || flowTabKey !== 'sequence') return
     const timer = window.setTimeout(() => {
       try {
         sequenceDiagramEngine.repaintCanvas()
-        sequenceDiagramEngine.zoomToFit({ margin: 40, maxZoom: 1 })
+        fitSequenceDiagramViewport(false)
       } catch (error) {
         void error
       }
     }, 80)
     return () => window.clearTimeout(timer)
   }, [flowDialogOpen, flowTabKey, sequenceDiagramEngine])
+  useEffect(() => {
+    const onFsChange = () => {
+      const current = document.fullscreenElement
+      const inSequenceFs = Boolean(current && sequenceDiagramWrapRef.current && current === sequenceDiagramWrapRef.current)
+      setSequenceFullscreen(inSequenceFs)
+      try {
+        const model = sequenceDiagramEngine.getModel()
+        const nodes = Array.isArray(model?.getNodes?.()) ? model.getNodes() : []
+        const links = Array.isArray(model?.getLinks?.()) ? Object.values(model.getLinks()) : []
+        nodes.forEach((n) => n.setLocked(!inSequenceFs))
+        links.forEach((l) => l.setLocked(true))
+      } catch (error) {
+        void error
+      }
+      if (inSequenceFs) {
+        window.setTimeout(() => {
+          try {
+            sequenceDiagramEngine.repaintCanvas()
+            fitSequenceDiagramViewport(true)
+          } catch (error) {
+            void error
+          }
+        }, 40)
+      } else {
+        window.setTimeout(() => fitSequenceDiagramViewport(false), 40)
+      }
+    }
+    document.addEventListener('fullscreenchange', onFsChange)
+    return () => document.removeEventListener('fullscreenchange', onFsChange)
+  }, [sequenceDiagramEngine])
 
   useEffect(() => {
     if (!Array.isArray(modelProviders) || modelProviders.length === 0) return
@@ -717,6 +897,7 @@ export default function PreciseSourcingAgentPage() {
     const selectedToolSet = new Set(Array.isArray(item?.selectedTools) ? item.selectedTools.map((x) => String(x || '')) : [])
 
     const hasTraceStep = (prefix) => traces.some((t) => String(t?.step || '').toLowerCase().startsWith(String(prefix || '').toLowerCase()))
+    const hasFastPlan = hasTraceStep('plan_fast')
     const doneOrSkipped = (done, skipped = false) => (done ? 'done' : (skipped ? 'skipped' : 'pending'))
 
     const activeToolTasks = [
@@ -727,6 +908,7 @@ export default function PreciseSourcingAgentPage() {
       { key: 'file_exporter', label: '导出任务', enabled: selectedToolSet.has('file_exporter'), done: hasTraceStep('observe_tools') },
       { key: 'image_gen', label: '图片任务', enabled: selectedToolSet.has('image_gen'), done: hasTraceStep('observe_tools') },
     ].filter((x) => x.enabled)
+    const allActiveToolTasksDone = activeToolTasks.length > 0 && activeToolTasks.every((x) => x.done === true)
 
     const metricDbHits = Array.isArray(item?.evidence?.suppliers) ? item.evidence.suppliers.length : 0
     const metricRagHits = Array.isArray(item?.evidence?.kbHits) ? item.evidence.kbHits.length : 0
@@ -734,14 +916,34 @@ export default function PreciseSourcingAgentPage() {
     const dbCompanies = (Array.isArray(item?.evidence?.suppliers) ? item.evidence.suppliers : [])
       .map((x) => String(x?.companyName || x?.company_name || x?.name || '').trim())
       .filter(Boolean)
+    const isLikelyCompanyName = (name = '') => /(公司|集团|股份|有限责任)/.test(String(name || '').trim())
     const kbCompanies = Array.from(new Set((Array.isArray(item?.evidence?.kbHits) ? item.evidence.kbHits : [])
-      .flatMap((x) => (Array.isArray(x?.supplierCandidates) ? x.supplierCandidates : []))
+      .flatMap((x) => [
+        ...(Array.isArray(x?.supplierCandidates) ? x.supplierCandidates : []),
+        ...(Array.isArray(x?._supplierCandidates) ? x._supplierCandidates : []),
+      ])
       .map((x) => String(x || '').trim())
-      .filter(Boolean)))
+      .filter((x) => x && isLikelyCompanyName(x))))
     const webCompanies = Array.from(new Set((Array.isArray(item?.evidence?.webHits) ? item.evidence.webHits : [])
-      .flatMap((x) => (Array.isArray(x?.supplierCandidates) ? x.supplierCandidates : []))
+      .flatMap((x) => [
+        ...(Array.isArray(x?.supplierCandidates) ? x.supplierCandidates : []),
+        ...(Array.isArray(x?._supplierCandidates) ? x._supplierCandidates : []),
+      ])
+      .map((x) => String(x || '').trim())
+      .filter((x) => x && isLikelyCompanyName(x))))
+    const webDerivedCompanies = Array.from(new Set((Array.isArray(item?.evidence?.webDerivedSuppliers) ? item.evidence.webDerivedSuppliers : [])
       .map((x) => String(x || '').trim())
       .filter(Boolean)))
+    const mergedWebCompanies = Array.from(new Set([...webCompanies, ...webDerivedCompanies]))
+    const webSignals = (Array.isArray(item?.evidence?.webHits) ? item.evidence.webHits : [])
+      .map((x) => ({
+        title: String(x?.title || x?.name || '').trim(),
+        url: String(x?.url || x?.href || x?.link || '').trim(),
+      }))
+      .filter((x) => x.title || x.url)
+    const webSignalLines = webSignals
+      .slice(0, 8)
+      .map((x) => (x.url ? `${x.title || '(无标题)'} | ${x.url}` : (x.title || '(无标题)')))
     const webEnrichNote = String(item?.evidence?.webEnrichNote || '').trim()
     const fusedSuppliers = (Array.isArray(item?.evidence?.suppliers) ? item.evidence.suppliers : [])
       .map((row) => ({
@@ -750,15 +952,66 @@ export default function PreciseSourcingAgentPage() {
         fusedScore: Number(row?._fusedScore || row?._matchScore || 0),
         kbSupport: Number(row?._kbSupportCount || 0),
         webSupport: Number(row?._webSupportCount || 0),
+        rerankScore: Number(row?._rerankScore || 0),
+        rerankReason: String(row?._rerankReason || '').trim(),
+        rerankSource: String(row?._rerankSource || '').trim(),
+        rerankIndex: Number(row?._rerankIndex || 0),
       }))
       .filter((x) => x.name)
       .sort((a, b) => b.fusedScore - a.fusedScore)
+    const allSupplierPool = (() => {
+      const map = new Map()
+      const upsert = (name, patch = {}) => {
+        const key = String(name || '').trim()
+        if (!key) return
+        const prev = map.get(key) || {
+          name: key,
+          dbScore: 0,
+          fusedScore: 0,
+          kbSupport: 0,
+          webSupport: 0,
+          rerankScore: 0,
+        }
+        map.set(key, {
+          ...prev,
+          ...patch,
+          dbScore: Math.max(Number(prev.dbScore || 0), Number(patch.dbScore ?? prev.dbScore ?? 0)),
+          fusedScore: Math.max(Number(prev.fusedScore || 0), Number(patch.fusedScore ?? prev.fusedScore ?? 0)),
+          kbSupport: Math.max(Number(prev.kbSupport || 0), Number(patch.kbSupport ?? prev.kbSupport ?? 0)),
+          webSupport: Math.max(Number(prev.webSupport || 0), Number(patch.webSupport ?? prev.webSupport ?? 0)),
+          rerankScore: Math.max(Number(prev.rerankScore || 0), Number(patch.rerankScore ?? prev.rerankScore ?? 0)),
+        })
+      }
+      fusedSuppliers.forEach((x) => upsert(x.name, x))
+      dbCompanies.forEach((name) => upsert(name, { dbScore: 1, fusedScore: 1 }))
+      kbCompanies.forEach((name) => upsert(name, { kbSupport: 1 }))
+      mergedWebCompanies.forEach((name) => upsert(name, { webSupport: 1 }))
+      return Array.from(map.values())
+        .sort((a, b) => (Number(b.rerankScore || 0) - Number(a.rerankScore || 0))
+          || (Number(b.fusedScore || 0) - Number(a.fusedScore || 0))
+          || (Number(b.dbScore || 0) - Number(a.dbScore || 0))
+          || String(a.name).localeCompare(String(b.name), 'zh-CN'))
+    })()
+    const rawPoolCount = dbCompanies.length + kbCompanies.length + mergedWebCompanies.length + fusedSuppliers.length
+    const dedupPoolCount = allSupplierPool.length
+    const reducedCount = Math.max(0, rawPoolCount - dedupPoolCount)
+    const rerankedSuppliers = [...fusedSuppliers]
+      .sort((a, b) => Number(b?.rerankScore || 0) - Number(a?.rerankScore || 0))
+      .filter((x) => Number(x?.rerankScore || 0) > 0)
+    const rerankMeta = item?.evidence?.rerankMeta && typeof item.evidence.rerankMeta === 'object' ? item.evidence.rerankMeta : null
+    const rerankPoolTotal = Number(rerankMeta?.totalCandidates || 0)
+    const rerankTopN = Number(rerankMeta?.topN || 0)
+    const rerankReturned = rerankedSuppliers.length
+    const rerankBoundary = Array.isArray(rerankMeta?.boundary) ? rerankMeta.boundary.map((x) => String(x || '').trim()).filter(Boolean) : []
     const answerSections = parseAnswerSections(item?.rawAnswer || item?.content || '')
+    const llmRawOutput = String(item?.rawAnswer || item?.content || '').trim()
+    const llmRenderOutput = normalizeLlmMarkdownForRender(llmRawOutput)
     const promptText = String(item?.systemPrompt || item?.queryStatements?.prompt || '').trim()
     const retrievalSummary = [
       `DB命中供应商: ${dbCompanies.length}`,
       `RAG命中供应商: ${kbCompanies.length}`,
-      `WEB命中供应商: ${webCompanies.length}`,
+      `WEB命中供应商: ${mergedWebCompanies.length}`,
+      `WEB命中线索: ${webSignals.length}`,
       `融合去重后: ${fusedSuppliers.length}`,
     ].join('\n')
     const stageResult = (stepNo) => executionStages.find((x) => Number(x?.step) === Number(stepNo)) || null
@@ -767,6 +1020,12 @@ export default function PreciseSourcingAgentPage() {
     const ragRequestText = String(item?.queryStatements?.rag?.endpoint || executionPlanFromTrace?.ragQuery || '').trim()
     const webProviderText = String(item?.queryStatements?.web?.provider || '').trim()
     const webQueryText = String(item?.queryStatements?.web?.keyword || executionPlanFromTrace?.webQuery || '').trim()
+    const actualWebProviders = Array.from(new Set(
+      (Array.isArray(item?.evidence?.webHits) ? item.evidence.webHits : [])
+        .map((x) => String(x?._provider || '').trim())
+        .filter(Boolean),
+    ))
+    const actualWebProviderText = actualWebProviders.length > 0 ? actualWebProviders.join(' + ') : '-'
     const needDbTask = selectedToolSet.has('db_chat') || intentDecision?.needDb === true
     const needRagTask = selectedToolSet.has('local_kb') || intentDecision?.needRag === true
     const needWebTask = selectedToolSet.has('web_search') || intentDecision?.needWeb === true
@@ -777,18 +1036,21 @@ export default function PreciseSourcingAgentPage() {
       || hasTraceStep('act_plan')
     )
 
+    const hasAnyActRetrieval = hasTraceStep('act_db') || hasTraceStep('act_rag') || hasTraceStep('act_web')
+    const hasAnyObserveRetrieval = hasTraceStep('observe_db') || hasTraceStep('observe_rag') || hasTraceStep('observe_web')
     const rawDone = {
       s1: true,
-      s2: hasTraceStep('plan') || Boolean(intentDecision),
-      s3: planSteps.length > 0,
-      s4: Boolean(requestReady),
-      s5: hasTraceStep('observe_db') || hasTraceStep('observe_rag') || hasTraceStep('observe_web') || hasTraceStep('observe_tools'),
-      s6: hasTraceStep('observe_db') || hasTraceStep('observe_rag') || hasTraceStep('observe_web'),
+      s2: hasTraceStep('plan') || hasFastPlan || Boolean(intentDecision),
+      s3: planSteps.length > 0 || hasFastPlan,
+      s4: hasAnyActRetrieval || hasTraceStep('act_plan'),
+      s5: allActiveToolTasksDone || (activeToolTasks.length === 0 && hasTraceStep('observe_tools')),
+      s6: hasAnyObserveRetrieval,
       s7: hasTraceStep('observe_fuse') || hasTraceStep('act_fuse'),
-      s8: hasTraceStep('act_llm') || hasTraceStep('observe_llm') || Boolean(stageResult(8)),
-      s9: item?.streamDone === true,
+      s8: hasTraceStep('observe_rerank') || hasTraceStep('act_rerank'),
+      s9: hasTraceStep('observe_llm') || Boolean(stageResult(9)),
+      s10: item?.streamDone === true,
     }
-    const keysOrdered = ['s1', 's2', 's3', 's4', 's5', 's6', 's7', 's8', 's9']
+    const keysOrdered = ['s1', 's2', 's3', 's4', 's5', 's6', 's7', 's8', 's9', 's10']
     const gatedDone = {}
     for (let i = 0; i < keysOrdered.length; i += 1) {
       const k = keysOrdered[i]
@@ -823,25 +1085,62 @@ export default function PreciseSourcingAgentPage() {
           'DB请求: ' + (dbRequestText || '-'),
           'RAG请求: ' + (ragRequestText || '-'),
           'WEB请求: ' + (webProviderText || 'web.searchSupplierSignals') + ' | query=' + (webQueryText || '-'),
+          'WEB实际提供方: ' + actualWebProviderText,
         ].join('\n'),
         status: stepStatus.s4,
       },
       { key: 's5', stepNo: 5, title: '工具执行(DB/RAG/WEB)', detail: '', status: stepStatus.s5 },
       { key: 's6', stepNo: 6, title: '返回标准化结果（含 dbHits/ragHits/webHits）', detail: 'dbHits=' + metricDbHits + ' | ragHits=' + metricRagHits + ' | webHits=' + metricWebHits, status: stepStatus.s6 },
-      { key: 's7', stepNo: 7, title: '证据整合与去重', detail: '融合候选=' + metricDbHits, status: stepStatus.s7 },
-      { key: 's8', stepNo: 8, title: '系统提示词 + 召回上下文交给LLM生成（含 model）', detail: 'model=' + String(item?.model || stageResult(8)?.meta?.model || '-'), status: stepStatus.s8 },
-      { key: 's9', stepNo: 9, title: '返回最终结果', detail: '已返回最终答复', status: stepStatus.s9 },
+      { key: 's7', stepNo: 7, title: '证据整合与去重', detail: '全量企业池=' + String(allSupplierPool.length), status: stepStatus.s7 },
+      { key: 's8', stepNo: 8, title: '候选重排(Rerank)', detail: 'query-candidate-evidence 相关性打分，输出 TopN + 边界样本', status: stepStatus.s8 },
+      { key: 's9', stepNo: 9, title: '系统提示词 + 召回上下文交给LLM生成（含 model）', detail: 'model=' + String(item?.model || stageResult(9)?.meta?.model || '-'), status: stepStatus.s9 },
+      { key: 's10', stepNo: 10, title: '返回最终结果', detail: '已返回最终答复', status: stepStatus.s10 },
     ]
     const visibleProcessSteps = processSteps.filter((step) => {
       if (step.key === 's3') return Boolean(String(step.detail || '').trim())
       return true
     })
+    const firstPendingKey = firstPendingIdx >= 0 ? keysOrdered[firstPendingIdx] : 's10'
+    const autoExpandedKeys = visibleProcessSteps
+      .filter((step) => gatedDone[step.key] || step.key === firstPendingKey)
+      .map((step) => step.key)
+    const traceStepToProcessKey = (traceStep = '') => {
+      const s = String(traceStep || '').toLowerCase()
+      if (!s) return ''
+      if (s === 'plan' || s.startsWith('think_plan') || s.startsWith('observe_plan')) return 's2'
+      if (s.startsWith('act_plan')) return 's4'
+      if (s.startsWith('think_retrieval')) return 's3'
+      if (s.startsWith('act_db') || s.startsWith('act_rag') || s.startsWith('act_web') || s.startsWith('observe_tools')) return 's5'
+      if (s.startsWith('observe_db') || s.startsWith('observe_rag') || s.startsWith('observe_web')) return 's6'
+      if (s.startsWith('act_fuse') || s.startsWith('observe_fuse')) return 's7'
+      if (s.startsWith('act_rerank') || s.startsWith('observe_rerank') || s.startsWith('think_rerank')) return 's8'
+      if (s.startsWith('think_llm') || s.startsWith('observe_llm') || s.startsWith('act_llm')) return 's9'
+      if (s.startsWith('final') || s.startsWith('done')) return 's10'
+      return ''
+    }
+    const traceLinesByStep = (() => {
+      const map = {}
+      for (const st of visibleProcessSteps) map[st.key] = []
+      traces.forEach((t) => {
+        const key = traceStepToProcessKey(t?.step)
+        if (!key || !map[key]) return
+        const detail = String(t?.detail || '').trim()
+        const title = String(t?.title || '').trim()
+        const tool = String(t?.tool || '').trim()
+        const line = [String(t?.step || '-'), title, tool ? `tool=${tool}` : '', detail]
+          .filter(Boolean)
+          .join(' | ')
+        if (line) map[key].push(line)
+      })
+      return map
+    })()
 
     return (
       <div style={{ marginTop: 10 }}>
         <Collapse
+          key={`proc-${firstPendingKey}-${visibleProcessSteps.length}`}
           size="small"
-          defaultActiveKey={['s1']}
+          defaultActiveKey={autoExpandedKeys}
           items={visibleProcessSteps.map((step, idx) => ({
             key: step.key,
             label: (
@@ -925,15 +1224,26 @@ export default function PreciseSourcingAgentPage() {
                     ) : null}
                     {selectedToolSet.has('web_search') || intentDecision?.needWeb === true ? (
                       <div style={{ border: '1px solid #bbf7d0', borderRadius: 8, padding: 8, background: '#f0fdf4' }}>
-                        <div style={{ fontSize: 12, marginBottom: 6 }}>WEB命中企业（{webCompanies.length}）</div>
+                        <div style={{ fontSize: 12, marginBottom: 6 }}>
+                          WEB命中企业（{mergedWebCompanies.length}）
+                          <span style={{ color: '#64748b' }}> | 主流程候选 {webCompanies.length}，异步补全候选 {webDerivedCompanies.length}</span>
+                        </div>
                         {webEnrichNote ? (
                           <div style={{ fontSize: 12, color: '#166534', marginBottom: 6, whiteSpace: 'pre-wrap' }}>
                             {webEnrichNote}
                           </div>
                         ) : null}
                         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                          {webCompanies.length > 0 ? webCompanies.map((name, i) => <Tag key={`web-company-${i}`} color="green">{name}</Tag>) : <span style={{ fontSize: 12, color: '#64748b' }}>无</span>}
+                          {mergedWebCompanies.length > 0 ? mergedWebCompanies.map((name, i) => <Tag key={`web-company-${i}`} color="green">{name}</Tag>) : <span style={{ fontSize: 12, color: '#64748b' }}>无</span>}
                         </div>
+                        {mergedWebCompanies.length === 0 && webSignalLines.length > 0 ? (
+                          <div style={{ marginTop: 8 }}>
+                            <div style={{ fontSize: 12, marginBottom: 6 }}>WEB命中线索（{webSignals.length}）</div>
+                            <div style={{ fontSize: 12, color: '#334155', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
+                              {webSignalLines.join('\n')}
+                            </div>
+                          </div>
+                        ) : null}
                       </div>
                     ) : null}
                     <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, padding: 8, background: '#fff' }}>
@@ -966,15 +1276,27 @@ export default function PreciseSourcingAgentPage() {
                       </div>
                     </div>
                     <div style={{ border: '1px solid #bbf7d0', borderRadius: 8, padding: 8, background: '#f0fdf4' }}>
-                      <div style={{ fontSize: 12, marginBottom: 6 }}>WEB供应商（{webCompanies.length}）</div>
+                      <div style={{ fontSize: 12, marginBottom: 6 }}>WEB供应商（{mergedWebCompanies.length}）</div>
                       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                        {webCompanies.map((name, i) => <Tag key={`s6-web-${i}`} color="green">{name}</Tag>)}
+                        {mergedWebCompanies.map((name, i) => <Tag key={`s6-web-${i}`} color="green">{name}</Tag>)}
                       </div>
+                      {mergedWebCompanies.length === 0 && webSignalLines.length > 0 ? (
+                        <div style={{ marginTop: 8, fontSize: 12, color: '#334155', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
+                          {webSignalLines.join('\n')}
+                        </div>
+                      ) : null}
                     </div>
                   </Space>
                 ) : step.key === 's7' ? (
                   <div style={{ display: 'grid', gap: 6 }}>
-                    {fusedSuppliers.map((x, i) => (
+                    <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, padding: 8, background: '#f8fafc' }}>
+                      <div style={{ fontSize: 12, color: '#334155', whiteSpace: 'pre-wrap' }}>
+                        {`原始总数=${rawPoolCount}
+去重后总数=${dedupPoolCount}
+差值=${reducedCount}（主要来自同名去重与非企业名过滤）`}
+                      </div>
+                    </div>
+                    {allSupplierPool.map((x, i) => (
                       <div key={`s7-fused-${i}`} style={{ border: '1px solid #e5e7eb', borderRadius: 8, padding: 8, background: '#fff' }}>
                         <div style={{ fontSize: 12, color: '#0f172a' }}>{i + 1}. {x.name}</div>
                         <div style={{ marginTop: 4, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
@@ -989,6 +1311,46 @@ export default function PreciseSourcingAgentPage() {
                 ) : step.key === 's8' ? (
                   <Space direction="vertical" size={6} style={{ width: '100%' }}>
                     <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, padding: 8, background: '#fff' }}>
+                      <div style={{ fontSize: 12, color: '#64748b', marginBottom: 4 }}>Rerank结果（独立阶段）</div>
+                      <div style={{ fontSize: 12, color: '#334155', marginBottom: 8 }}>
+                        候选池总数={rerankPoolTotal || '-'}；目标TopN={rerankTopN || '-'}；实际返回={rerankReturned}
+                        {rerankTopN > 0 && rerankReturned < rerankTopN ? `（未达TopN，因可用候选仅 ${rerankReturned} 条）` : ''}
+                      </div>
+                      <div style={{ display: 'grid', gap: 6 }}>
+                        {(rerankedSuppliers.length > 0 ? rerankedSuppliers : fusedSuppliers).map((x, i) => (
+                          <div key={`s8-r-${i}`} style={{ border: '1px solid #eef2f7', borderRadius: 8, padding: 6 }}>
+                            <div style={{ fontSize: 12 }}>{i + 1}. {x.name}</div>
+                            <div style={{ marginTop: 4, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                              <Tag color="gold">Rerank {Number(x?.rerankScore || 0).toFixed(2)}</Tag>
+                              <Tag color="green">融合分 {x.fusedScore.toFixed(2)}</Tag>
+                              <Button
+                                size="small"
+                                type="link"
+                                style={{ padding: 0, height: 'auto' }}
+                                onClick={() => {
+                                  setRerankDetailRecord(x)
+                                  setRerankDetailOpen(true)
+                                }}
+                              >
+                                查看得分详情
+                              </Button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    <div style={{ border: '1px solid #f1f5f9', borderRadius: 8, padding: 8, background: '#fff' }}>
+                      <div style={{ fontSize: 12, color: '#64748b', marginBottom: 4 }}>边界样本（不计入TopN）</div>
+                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                        {rerankBoundary.length > 0
+                          ? rerankBoundary.map((name, i) => <Tag key={`s8-b-${i}`}>{name}</Tag>)
+                          : <span style={{ fontSize: 12, color: '#94a3b8' }}>无</span>}
+                      </div>
+                    </div>
+                  </Space>
+                ) : step.key === 's9' ? (
+                  <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                    <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, padding: 8, background: '#fff' }}>
                       <div style={{ fontSize: 12, color: '#64748b', marginBottom: 4 }}>提示词</div>
                       <div style={{ fontSize: 12, color: '#334155', whiteSpace: 'pre-wrap' }}>{promptText || '未显式传入（使用后端默认提示词）'}</div>
                     </div>
@@ -997,15 +1359,20 @@ export default function PreciseSourcingAgentPage() {
                       <div style={{ fontSize: 12, color: '#334155', whiteSpace: 'pre-wrap' }}>{retrievalSummary}</div>
                     </div>
                   </Space>
-                ) : step.key === 's9' ? (
+                ) : step.key === 's10' ? (
                   <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                    {step.status !== 'done' ? (
+                      <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, padding: 8, background: '#fff' }}>
+                        <div style={{ fontSize: 12, color: '#64748b' }}>LLM正在生成最终结果，当前为流式草稿，完成后自动刷新。</div>
+                      </div>
+                    ) : null}
                     {answerSections['【结论】'] ? (
                       <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, padding: 8, background: '#fff' }}>
                         <div style={{ fontSize: 12, color: '#64748b', marginBottom: 4 }}>结论</div>
                         <div style={{ fontSize: 12, color: '#334155', whiteSpace: 'pre-wrap' }}>{answerSections['【结论】']}</div>
                       </div>
                     ) : null}
-                    <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, padding: 8, background: '#fff' }}>
+                    <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, padding: 8, background: '#fff', display: step.status === 'done' ? 'block' : 'none' }}>
                       <div style={{ fontSize: 12, color: '#64748b', marginBottom: 4 }}>供应商列表</div>
                       <div style={{ display: 'grid', gap: 6 }}>
                         {fusedSuppliers.map((x, i) => (
@@ -1015,6 +1382,98 @@ export default function PreciseSourcingAgentPage() {
                           </div>
                         ))}
                       </div>
+                    </div>
+                    <div style={{ border: '1px solid #dbeafe', borderRadius: 10, padding: 10, background: 'linear-gradient(180deg,#f8fbff 0%,#ffffff 100%)', display: step.status === 'done' ? 'block' : 'none' }}>
+                      <div style={{ fontSize: 13, color: '#1e3a8a', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <MessageOutlined />
+                        <span>LLM大模型输出（原文）</span>
+                      </div>
+                      {llmRawOutput ? (
+                        <div style={{ fontSize: 12, color: '#334155', overflowX: 'auto', lineHeight: 1.7 }}>
+                          <ReactMarkdown
+                            remarkPlugins={[remarkGfm]}
+                            components={{
+                              table: ({ children }) => (
+                                <table
+                                  style={{
+                                    width: '100%',
+                                    minWidth: 980,
+                                    borderCollapse: 'separate',
+                                    borderSpacing: 0,
+                                    margin: '10px 0',
+                                    background: '#fff',
+                                    border: '1px solid #dbeafe',
+                                    borderRadius: 10,
+                                    overflow: 'hidden',
+                                    tableLayout: 'auto',
+                                  }}
+                                >
+                                  {children}
+                                </table>
+                              ),
+                              thead: ({ children }) => <thead style={{ position: 'sticky', top: 0, zIndex: 1 }}>{children}</thead>,
+                              tr: ({ children }) => <tr style={{ borderBottom: '1px solid #eef2ff' }}>{children}</tr>,
+                              th: ({ children }) => {
+                                const text = markdownChildrenToText(children)
+                                const isTraceCol = /可追溯链接/.test(text)
+                                return (
+                                  <th
+                                    style={{
+                                      borderBottom: '1px solid #cfe1ff',
+                                      padding: '10px 10px',
+                                      background: '#eaf2ff',
+                                      color: '#0f172a',
+                                      textAlign: 'left',
+                                      whiteSpace: 'normal',
+                                      wordBreak: 'keep-all',
+                                      overflowWrap: 'anywhere',
+                                      lineHeight: 1.5,
+                                      fontWeight: 600,
+                                      width: isTraceCol ? 150 : undefined,
+                                      maxWidth: isTraceCol ? 150 : undefined,
+                                    }}
+                                  >
+                                    {children}
+                                  </th>
+                                )
+                              },
+                              td: ({ children }) => {
+                                const text = markdownChildrenToText(children)
+                                const likelyUrlCell = /https?:\/\//i.test(text) || /^www\./i.test(text)
+                                return (
+                                  <td
+                                    style={{
+                                      borderBottom: '1px solid #eef2f7',
+                                      padding: '9px 10px',
+                                      verticalAlign: 'top',
+                                      background: '#ffffff',
+                                      whiteSpace: 'normal',
+                                      wordBreak: likelyUrlCell ? 'break-all' : 'break-word',
+                                      overflowWrap: 'anywhere',
+                                      lineHeight: 1.6,
+                                      width: likelyUrlCell ? 150 : undefined,
+                                      maxWidth: likelyUrlCell ? 150 : undefined,
+                                    }}
+                                  >
+                                    {children}
+                                  </td>
+                                )
+                              },
+                              h1: ({ children }) => <h4 style={{ margin: '10px 0 6px', color: '#0f172a' }}>{children}</h4>,
+                              h2: ({ children }) => <h4 style={{ margin: '10px 0 6px', color: '#0f172a' }}>{children}</h4>,
+                              h3: ({ children }) => <h5 style={{ margin: '8px 0 6px', color: '#1e293b' }}>{children}</h5>,
+                              p: ({ children }) => <p style={{ margin: '6px 0' }}>{children}</p>,
+                              ul: ({ children }) => <ul style={{ margin: '6px 0 6px 18px' }}>{children}</ul>,
+                              ol: ({ children }) => <ol style={{ margin: '6px 0 6px 18px' }}>{children}</ol>,
+                              li: ({ children }) => <li style={{ margin: '2px 0' }}>{children}</li>,
+                              code: ({ children }) => <code style={{ background: '#eef2ff', color: '#1e3a8a', padding: '1px 5px', borderRadius: 4 }}>{children}</code>,
+                              blockquote: ({ children }) => <blockquote style={{ margin: '8px 0', padding: '6px 10px', borderLeft: '3px solid #93c5fd', background: '#f8fafc' }}>{children}</blockquote>,
+                            }}
+                          >
+                            {llmRenderOutput}
+                          </ReactMarkdown>
+                        </div>
+                      ) : <div style={{ fontSize: 12, color: '#64748b' }}>暂无模型输出</div>}
                     </div>
                     {answerSections['【候选供应商TopN】'] ? (
                       <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, padding: 8, background: '#fff' }}>
@@ -1033,6 +1492,18 @@ export default function PreciseSourcingAgentPage() {
                         {Object.entries(stageResult(step.stepNo).meta).map(([k, v]) => String(k) + ': ' + String(v)).join(' | ')}
                       </div>
                     ) : null}
+                    {Array.isArray(traceLinesByStep[step.key]) && traceLinesByStep[step.key].length > 0 ? (
+                      <div style={{ marginTop: 8, border: '1px solid #e5e7eb', borderRadius: 8, background: '#f8fafc', padding: 8 }}>
+                        <div style={{ fontSize: 12, color: '#64748b', marginBottom: 4 }}>流式日志</div>
+                        <div style={{ display: 'grid', gap: 4 }}>
+                          {traceLinesByStep[step.key].map((line, i) => (
+                            <div key={`trace-line-${step.key}-${i}`} style={{ fontSize: 12, color: '#334155', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
+                              {i + 1}. {line}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
                 )}
               </div>
@@ -1040,12 +1511,6 @@ export default function PreciseSourcingAgentPage() {
           }))}
         />
 
-        <div style={{ marginTop: 10, border: '1px solid #e5e7eb', borderRadius: 8, background: '#fff', padding: 10 }}>
-          <div style={{ fontSize: 12, color: '#64748b', marginBottom: 6 }}>最终返回结果</div>
-          <div style={{ fontSize: 13, color: '#0f172a', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
-            {String(item?.rawAnswer || (item?.streamDone ? item?.content : '') || '暂无结果')}
-          </div>
-        </div>
       </div>
     )
   }
@@ -1083,6 +1548,8 @@ export default function PreciseSourcingAgentPage() {
         planSteps: [],
         intent: '',
         traceVersion: '',
+        systemPrompt: systemPromptEnabled ? systemPrompt : '',
+        systemPromptPresetKey: systemPromptEnabled ? systemPromptPresetKey : '',
         selectedTools: Array.isArray(selectedTools) ? [...selectedTools] : [],
         ts: Date.now(),
       }
@@ -1091,6 +1558,8 @@ export default function PreciseSourcingAgentPage() {
       await chatPreciseSourcingAgentStream({
         message: question,
         model: selectedModelName,
+        executionMode: 'normal',
+        finalTopN: 10,
         systemPrompt: systemPromptEnabled ? systemPrompt : '',
         systemPromptPresetKey: systemPromptEnabled ? systemPromptPresetKey : '',
         kbId: selectedKbIds[0] || '',
@@ -1102,7 +1571,7 @@ export default function PreciseSourcingAgentPage() {
         selectedDbTables,
         strictMode,
         temperature,
-        fusionWeights: effectiveFusionWeights,
+        sourceQuota: effectiveSourceQuota,
         reportTemplate,
         history: nextHistory.slice(-12),
       }, {
@@ -1175,10 +1644,20 @@ export default function PreciseSourcingAgentPage() {
             evidence,
             artifacts,
             queryStatements: qs,
-            traces: Array.isArray(data?.traces) ? data.traces : (Array.isArray(last?.traces) ? last.traces : []),
+            traces: (() => {
+              const finalTraces = Array.isArray(data?.traces) ? data.traces : null
+              const fallbackTraces = Array.isArray(last?.traces) ? last.traces : []
+              return finalTraces && finalTraces.length > 0 ? finalTraces : fallbackTraces
+            })(),
+            systemPrompt: String(last?.systemPrompt || ''),
+            systemPromptPresetKey: String(last?.systemPromptPresetKey || ''),
             react: data?.react || { rounds: [] },
-            intentDecision: data?.intentDecision && typeof data.intentDecision === 'object' ? data.intentDecision : null,
-            planSteps: Array.isArray(data?.planSteps) ? data.planSteps : [],
+            intentDecision: data?.intentDecision && typeof data.intentDecision === 'object'
+              ? data.intentDecision
+              : (last?.intentDecision && typeof last.intentDecision === 'object' ? last.intentDecision : null),
+            planSteps: Array.isArray(data?.planSteps) && data.planSteps.length > 0
+              ? data.planSteps
+              : (Array.isArray(last?.planSteps) ? last.planSteps : []),
             intent: String(data?.intent || ''),
             traceVersion: String(data?.traceVersion || ''),
             ts: Date.now(),
@@ -1210,6 +1689,16 @@ export default function PreciseSourcingAgentPage() {
         },
         onDone: () => {
           patchLastAssistantMessage((last) => ({ ...last, streamDone: true }))
+        },
+        onError: (evt) => {
+          const errText = String(evt?.message || '执行失败').trim()
+          patchLastAssistantMessage((last) => ({
+            ...last,
+            streamDone: true,
+            content: errText || '执行失败',
+            rawAnswer: String(last?.rawAnswer || errText || '执行失败'),
+          }))
+          message.error(errText || '执行失败')
         },
       })
     } catch (error) {
@@ -1343,37 +1832,64 @@ export default function PreciseSourcingAgentPage() {
                         严格模式（仅保留关键字段命中）
                       </Checkbox>
                       <div>
-                        <Text>融合权重:</Text>
+                        <Space size={6} align="center">
+                          <Text>分源保底配额:</Text>
+                          <Tooltip
+                            placement="top"
+                            title={(
+                              <div style={{ whiteSpace: 'pre-wrap', maxWidth: 520 }}>
+                                {`对齐标准成分为4层并可回溯：
+
+1、实体抽取规则
+从哪段文本抽到的名字（原文片段）
+抽取方式（规则/LLM）
+置信度分数
+2、实体规范化规则
+名称如何清洗（去前后缀、括号、噪声词）
+别名如何映射到标准名（alias map）
+为什么 A 映射到 B（显示映射依据）
+3、匹配规则
+精确匹配/模糊匹配阈值是多少
+是否允许简称、英文名、子公司名匹配
+命中时给出匹配类型和相似度
+4、归因规则
+为什么这条证据算到该企业（证据片段 + 匹配路径）
+为什么没算（失败原因：未抽取/低置信/冲突/低相似度）`}
+                              </div>
+                            )}
+                          >
+                            <InfoCircleOutlined style={{ color: '#64748b', cursor: 'pointer' }} />
+                          </Tooltip>
+                        </Space>
                         {activeFusionTools.length === 0 ? (
                           <div style={{ marginTop: 8, color: '#64748b', fontSize: 12 }}>
                             请先勾选“数据库检索 / 知识库检索 / 互联网搜索”中的至少一项。
-                          </div>
-                        ) : activeFusionTools.length === 1 ? (
-                          <div style={{ marginTop: 8, border: '1px solid #e5e7eb', borderRadius: 8, padding: '8px 10px', color: '#334155', fontSize: 12 }}>
-                            {activeFusionTools[0].label} 已自动设为 3.0（单来源）
                           </div>
                         ) : (
                           <div style={{ marginTop: 8, display: 'grid', gridTemplateColumns: activeFusionTools.length === 2 ? '1fr 1fr' : '1fr 1fr 1fr', gap: 8 }}>
                             {activeFusionTools.some((x) => x.key === 'db') ? (
                               <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, padding: '6px 8px' }}>
-                                <div style={{ fontSize: 12, color: '#475569' }}>DB {fusionWeightDb.toFixed(1)}</div>
-                                <Slider min={0} max={3} step={0.1} value={fusionWeightDb} onChange={(v) => setFusionWeightDb(Number(v || 0))} tooltip={{ open: false }} />
+                                <div style={{ fontSize: 12, color: '#475569' }}>DB {sourceQuotaDb}</div>
+                                <Slider min={0} max={10} step={1} value={sourceQuotaDb} onChange={(v) => setSourceQuotaDb(Number(v || 0))} tooltip={{ open: false }} />
                               </div>
                             ) : null}
                             {activeFusionTools.some((x) => x.key === 'kb') ? (
                               <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, padding: '6px 8px' }}>
-                                <div style={{ fontSize: 12, color: '#475569' }}>知识库 {fusionWeightKb.toFixed(1)}</div>
-                                <Slider min={0} max={3} step={0.1} value={fusionWeightKb} onChange={(v) => setFusionWeightKb(Number(v || 0))} tooltip={{ open: false }} />
+                                <div style={{ fontSize: 12, color: '#475569' }}>RAG {sourceQuotaRag}</div>
+                                <Slider min={0} max={10} step={1} value={sourceQuotaRag} onChange={(v) => setSourceQuotaRag(Number(v || 0))} tooltip={{ open: false }} />
                               </div>
                             ) : null}
                             {activeFusionTools.some((x) => x.key === 'web') ? (
                               <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, padding: '6px 8px' }}>
-                                <div style={{ fontSize: 12, color: '#475569' }}>Web {fusionWeightWeb.toFixed(1)}</div>
-                                <Slider min={0} max={3} step={0.1} value={fusionWeightWeb} onChange={(v) => setFusionWeightWeb(Number(v || 0))} tooltip={{ open: false }} />
+                                <div style={{ fontSize: 12, color: '#475569' }}>WEB {sourceQuotaWeb}</div>
+                                <Slider min={0} max={10} step={1} value={sourceQuotaWeb} onChange={(v) => setSourceQuotaWeb(Number(v || 0))} tooltip={{ open: false }} />
                               </div>
                             ) : null}
                           </div>
                         )}
+                        <div style={{ marginTop: 6, color: '#64748b', fontSize: 12 }}>
+                          先按 DB/RAG/WEB 保底配额入选，再按总分竞争补齐剩余名额。
+                        </div>
                       </div>
                       <div style={{ borderTop: '1px solid #d9d9d9', paddingTop: 12 }}>
                         <Text>报告模板类型:</Text>
@@ -1684,6 +2200,9 @@ export default function PreciseSourcingAgentPage() {
         title="智能体流程图"
         open={flowDialogOpen}
         onCancel={() => {
+          if (document.fullscreenElement && sequenceDiagramWrapRef.current && document.fullscreenElement === sequenceDiagramWrapRef.current) {
+            void document.exitFullscreen().catch(() => {})
+          }
           setFlowDialogOpen(false)
           setFlowTabKey('logic')
         }}
@@ -1699,28 +2218,36 @@ export default function PreciseSourcingAgentPage() {
               label: '逻辑流程图',
               children: (
                 <Space direction="vertical" size={10} style={{ width: '100%' }}>
+                  <div style={{ background: '#fff7ed', border: '1px solid #fed7aa', borderRadius: 8, padding: 10, fontSize: 12, color: '#9a3412' }}>
+                    技术栈：React 19 + Ant Design 6（前端）｜Node.js + Express（后端）｜LangGraph（流程编排）｜LangChain（工具/模型调用）｜OpenAI兼容ChatCompletions（LLM）｜PostgreSQL（业务数据）｜本地RAG检索 + Web检索 + Reranker
+                  </div>
                   <div style={{ background: '#f8fafc', border: '1px solid #e5e7eb', borderRadius: 8, padding: 10, fontSize: 12, color: '#475569' }}>
                     实时配置：工具 {flowConfigSummary.tools}；知识库 {flowConfigSummary.kb}；数据库 {flowConfigSummary.db}；模型 {flowConfigSummary.model}；提示词 {flowConfigSummary.prompt}；模板 {flowConfigSummary.template}
                   </div>
-                  <div style={{ ...FLOW_NODE_STYLE, borderColor: '#bfdbfe', background: '#f8fafc' }}>开始：读取用户配置（工具/知识库/数据库/模型/提示词）</div>
+                  <div style={{ ...FLOW_NODE_STYLE, borderColor: '#bfdbfe', background: '#f8fafc' }}>1. 用户输入</div>
                   <div style={{ textAlign: 'center', color: '#94a3b8' }}>↓</div>
-                  <div style={FLOW_NODE_STYLE}>需求解析：提取关键词、业务约束与目标</div>
+                  <div style={FLOW_NODE_STYLE}>2. LLM语义理解与任务规划</div>
                   <div style={{ textAlign: 'center', color: '#94a3b8' }}>↓</div>
-                  <div style={FLOW_NODE_STYLE}>自动编排：按你已选择的工具决定执行分支</div>
+                  <div style={FLOW_NODE_STYLE}>3. 检索子任务分解</div>
+                  <div style={{ textAlign: 'center', color: '#94a3b8' }}>↓</div>
+                  <div style={FLOW_NODE_STYLE}>4. 发起标准化工具请求</div>
+                  <div style={{ textAlign: 'center', color: '#94a3b8' }}>↓</div>
+                  <div style={FLOW_NODE_STYLE}>5. 工具执行(DB/RAG/WEB)</div>
                   <Space wrap size={8}>
                     <Tag color={activeFlowBranches.db ? 'blue' : 'default'}>数据库检索 {activeFlowBranches.db ? '启用' : '未启用'}</Tag>
                     <Tag color={activeFlowBranches.kb ? 'blue' : 'default'}>知识库检索 {activeFlowBranches.kb ? '启用' : '未启用'}</Tag>
                     <Tag color={activeFlowBranches.web ? 'blue' : 'default'}>互联网搜索 {activeFlowBranches.web ? '启用' : '未启用'}</Tag>
-                    <Tag color={activeFlowBranches.image ? 'blue' : 'default'}>图片生成 {activeFlowBranches.image ? '启用' : '未启用'}</Tag>
-                    <Tag color={activeFlowBranches.chart ? 'blue' : 'default'}>图表生成 {activeFlowBranches.chart ? '启用' : '未启用'}</Tag>
-                    <Tag color={activeFlowBranches.export ? 'blue' : 'default'}>文件导出 {activeFlowBranches.export ? '启用' : '未启用'}</Tag>
                   </Space>
                   <div style={{ textAlign: 'center', color: '#94a3b8' }}>↓</div>
-                  <div style={FLOW_NODE_STYLE}>证据融合：去重、相关性排序、风险归纳</div>
+                  <div style={FLOW_NODE_STYLE}>6. 返回标准化结果（dbHits/ragHits/webHits）</div>
                   <div style={{ textAlign: 'center', color: '#94a3b8' }}>↓</div>
-                  <div style={FLOW_NODE_STYLE}>模型输出：候选供应商 + 风险等级 + 下一步动作 + 查询语句</div>
+                  <div style={FLOW_NODE_STYLE}>7. 证据整合与去重</div>
                   <div style={{ textAlign: 'center', color: '#94a3b8' }}>↓</div>
-                  <div style={FLOW_NODE_STYLE}>返回前端：答案、结构化结果、可下载产物（如图表/文件）</div>
+                  <div style={FLOW_NODE_STYLE}>8. 候选重排(Rerank)</div>
+                  <div style={{ textAlign: 'center', color: '#94a3b8' }}>↓</div>
+                  <div style={FLOW_NODE_STYLE}>9. 系统提示词 + 召回上下文交给LLM生成（LangGraph → LLM）</div>
+                  <div style={{ textAlign: 'center', color: '#94a3b8' }}>↓</div>
+                  <div style={FLOW_NODE_STYLE}>10. 返回最终结果（流式更新后定稿）</div>
                   <pre style={{ whiteSpace: 'pre-wrap', margin: 0, background: '#f8fafc', border: '1px solid #e5e7eb', borderRadius: 8, padding: 12 }}>
                     {flowLogicText}
                   </pre>
@@ -1733,19 +2260,50 @@ export default function PreciseSourcingAgentPage() {
               children: (
                 <Space direction="vertical" size={10} style={{ width: '100%' }}>
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
-                    <div style={{ border: '1px solid #dbeafe', background: '#eff6ff', borderRadius: 8, padding: '6px 10px', fontSize: 12, color: '#1e40af' }}>数据源层：数据库 / 知识库 / 互联网</div>
-                    <div style={{ border: '1px solid #bbf7d0', background: '#f0fdf4', borderRadius: 8, padding: '6px 10px', fontSize: 12, color: '#166534' }}>融合层：证据融合与相关性排序</div>
-                    <div style={{ border: '1px solid #ddd6fe', background: '#f5f3ff', borderRadius: 8, padding: '6px 10px', fontSize: 12, color: '#5b21b6' }}>决策输出层：模型总结与结果返回</div>
+                    <div style={{ border: '1px solid #dbeafe', background: '#eff6ff', borderRadius: 8, padding: '6px 10px', fontSize: 12, color: '#1e40af' }}>编排层：LangGraph</div>
+                    <div style={{ border: '1px solid #bbf7d0', background: '#f0fdf4', borderRadius: 8, padding: '6px 10px', fontSize: 12, color: '#166534' }}>能力层：DB / RAG / WEB / Reranker</div>
+                    <div style={{ border: '1px solid #ddd6fe', background: '#f5f3ff', borderRadius: 8, padding: '6px 10px', fontSize: 12, color: '#5b21b6' }}>模型层：LLM(${flowConfigSummary.model})</div>
                   </div>
-                  <div className="precise-sequence-diagram" style={{ height: 340, borderRadius: 12, border: '1px solid #1f2937', overflow: 'hidden', background: '#2f3136' }}>
+                  <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                    <Button
+                      size="small"
+                      icon={sequenceFullscreen ? <FullscreenExitOutlined /> : <FullscreenOutlined />}
+                      onClick={async () => {
+                        try {
+                          if (!sequenceDiagramWrapRef.current) return
+                          if (document.fullscreenElement) {
+                            await document.exitFullscreen()
+                            return
+                          }
+                          await sequenceDiagramWrapRef.current.requestFullscreen()
+                        } catch (error) {
+                          message.error('切换全屏失败')
+                        }
+                      }}
+                    >
+                      {sequenceFullscreen ? '退出全屏' : '图表全屏'}
+                    </Button>
+                  </div>
+                  <div style={{ fontSize: 12, color: '#64748b' }}>全屏后可直接拖动小方块节点调整视图；退出全屏后自动恢复锁定。</div>
+                  <div
+                    ref={sequenceDiagramWrapRef}
+                    className="precise-sequence-diagram"
+                    style={{
+                      height: sequenceFullscreen ? '100vh' : 340,
+                      borderRadius: 12,
+                      border: '1px solid #1f2937',
+                      overflow: 'hidden',
+                      background: '#2f3136',
+                    }}
+                  >
                     <CanvasWidget engine={sequenceDiagramEngine} className="precise-sequence-canvas" />
                   </div>
                   <Space wrap size={8}>
                     <Tag color={activeFlowBranches.db ? 'blue' : 'default'}>DB {activeFlowBranches.db ? '启用' : '未启用'}</Tag>
                     <Tag color={activeFlowBranches.kb ? 'blue' : 'default'}>KB {activeFlowBranches.kb ? '启用' : '未启用'}</Tag>
                     <Tag color={activeFlowBranches.web ? 'blue' : 'default'}>WEB {activeFlowBranches.web ? '启用' : '未启用'}</Tag>
-                    <Tag color={activeFlowBranches.chart ? 'blue' : 'default'}>图表 {activeFlowBranches.chart ? '启用' : '未启用'}</Tag>
-                    <Tag color={activeFlowBranches.export ? 'blue' : 'default'}>导出 {activeFlowBranches.export ? '启用' : '未启用'}</Tag>
+                    <Tag color="geekblue">LangGraph 编排</Tag>
+                    <Tag color="purple">LangChain 调用层</Tag>
                   </Space>
                   <pre style={{ whiteSpace: 'pre-wrap', margin: 0, background: '#f8fafc', border: '1px solid #e5e7eb', borderRadius: 8, padding: 12 }}>
                     {flowSequenceText}
@@ -1755,6 +2313,38 @@ export default function PreciseSourcingAgentPage() {
             },
           ]}
         />
+      </Modal>
+
+      <Modal
+        title="Rerank得分详情"
+        open={rerankDetailOpen}
+        onCancel={() => setRerankDetailOpen(false)}
+        footer={[
+          <Button key="close" onClick={() => setRerankDetailOpen(false)}>关闭</Button>,
+        ]}
+        width={760}
+      >
+        {rerankDetailRecord ? (
+          <Space direction="vertical" size={8} style={{ width: '100%' }}>
+            <div style={{ fontSize: 13, color: '#0f172a' }}>
+              企业名：<b>{rerankDetailRecord.name || '-'}</b>
+            </div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <Tag color="gold">Rerank {Number(rerankDetailRecord.rerankScore || 0).toFixed(2)}</Tag>
+              <Tag color="green">融合分 {Number(rerankDetailRecord.fusedScore || 0).toFixed(2)}</Tag>
+              <Tag color="blue">DB {Number(rerankDetailRecord.dbScore || 0).toFixed(2)}</Tag>
+              <Tag color="purple">KB {Number(rerankDetailRecord.kbSupport || 0)}</Tag>
+              <Tag color="cyan">WEB {Number(rerankDetailRecord.webSupport || 0)}</Tag>
+            </div>
+            <div style={{ fontSize: 12, color: '#334155', whiteSpace: 'pre-wrap' }}>
+              {`Rerank序号: ${Number(rerankDetailRecord.rerankIndex || 0) > 0 ? Number(rerankDetailRecord.rerankIndex) : '-'}
+Rerank来源: ${rerankDetailRecord.rerankSource || '-'}
+打分依据: ${rerankDetailRecord.rerankReason || '暂无（未返回详细解释）'}`}
+            </div>
+          </Space>
+        ) : (
+          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无可展示的Rerank详情" />
+        )}
       </Modal>
 
       <Modal
@@ -1780,5 +2370,3 @@ export default function PreciseSourcingAgentPage() {
     </div>
   )
 }
-
-

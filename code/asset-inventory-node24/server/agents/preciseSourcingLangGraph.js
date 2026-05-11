@@ -7,6 +7,7 @@ const GraphState = Annotation.Root({
   kbId: Annotation(),
   kbIds: Annotation(),
   topK: Annotation(),
+  finalTopN: Annotation(),
   webTopK: Annotation(),
   dbTopK: Annotation(),
   selectedDbTables: Annotation(),
@@ -20,6 +21,7 @@ const GraphState = Annotation.Root({
   reportTemplate: Annotation(),
   temperature: Annotation(),
   fusionWeights: Annotation(),
+  sourceQuota: Annotation(),
   streamTokens: Annotation({ reducer: (_x, y) => y, default: () => false }),
   intent: Annotation({ reducer: (_x, y) => y, default: () => 'supplier_search' }),
   demand: Annotation({ reducer: (_x, y) => y, default: () => ({}) }),
@@ -29,6 +31,7 @@ const GraphState = Annotation.Root({
   kbHits: Annotation({ reducer: (_x, y) => y, default: () => [] }),
   webHits: Annotation({ reducer: (_x, y) => y, default: () => [] }),
   fusedEvidence: Annotation({ reducer: (_x, y) => y, default: () => ({ suppliers: [], kbHits: [] }) }),
+  rerankedEvidence: Annotation({ reducer: (_x, y) => y, default: () => ({ suppliers: [], meta: {} }) }),
   artifacts: Annotation({ reducer: (_x, y) => y, default: () => [] }),
   answer: Annotation({ reducer: (_x, y) => y, default: () => '' }),
 })
@@ -97,6 +100,17 @@ function summarizePlanSteps(steps = []) {
   return steps
     .filter((step) => step?.enabled)
     .map((step, index) => `${index + 1}) ${step.title}`)
+}
+
+function summarizeWebProviders(hits = []) {
+  const list = Array.isArray(hits) ? hits : []
+  const stat = new Map()
+  for (const item of list) {
+    const key = String(item?._provider || 'unknown').trim() || 'unknown'
+    stat.set(key, Number(stat.get(key) || 0) + 1)
+  }
+  const parts = Array.from(stat.entries()).map(([k, v]) => `${k}:${v}`)
+  return parts.length > 0 ? parts.join(', ') : 'none'
 }
 
 export function createPreciseSourcingLangGraph(tools) {
@@ -391,7 +405,9 @@ export function createPreciseSourcingLangGraph(tools) {
             traces = pushTrace({ traces }, {
               step: 'observe_web',
               title: '观察',
-              detail: webError ? `Web 检索失败，已降级继续。错误=${webError}` : `Web 命中 ${Array.isArray(webHits) ? webHits.length : 0} 条`,
+              detail: webError
+                ? `Web 检索失败，已降级继续。错误=${webError}`
+                : `Web 命中 ${Array.isArray(webHits) ? webHits.length : 0} 条；provider分布=${summarizeWebProviders(webHits)}`,
             })
           },
         },
@@ -456,6 +472,44 @@ export function createPreciseSourcingLangGraph(tools) {
         }),
       }
     })
+    .addNode('rerank_evidence', async (state) => {
+      const rerankedEvidence = typeof tools.rerankEvidence === 'function'
+        ? await tools.rerankEvidence({
+          userInput: state.userInput,
+          fusedEvidence: state.fusedEvidence,
+          requestedTopN: Math.min(Math.max(Number(state.finalTopN || 10), 1), 50),
+          boundaryCount: 3,
+          sourceQuota: state.sourceQuota && typeof state.sourceQuota === 'object' ? state.sourceQuota : undefined,
+        })
+        : { suppliers: state.fusedEvidence?.suppliers || [], meta: {} }
+      return {
+        rerankedEvidence,
+        traces: pushTrace({
+          ...state,
+          traces: pushTrace({
+            ...state,
+            traces: pushTrace(state, {
+              step: 'think_rerank',
+              title: '思考',
+              detail: '计划步骤：候选重排；目标=对“查询-候选-证据片段”进行相关性评分，并保留 TopN + 边界样本。',
+            }),
+          }, {
+            step: 'act_rerank',
+            title: '执行',
+            detail: '执行候选 Rerank，并输出 TopN + 边界样本。',
+            tool: 'rerank_supplier_candidates',
+            input: {
+              fusedSuppliers: Array.isArray(state.fusedEvidence?.suppliers) ? state.fusedEvidence.suppliers.length : 0,
+              topK: Math.min(Math.max(Number(state.topK || 10), 1), 20),
+            },
+          }),
+        }, {
+          step: 'observe_rerank',
+          title: '观察',
+          detail: `重排完成：输出 ${Array.isArray(rerankedEvidence?.suppliers) ? rerankedEvidence.suppliers.length : 0} 条；边界样本 ${Array.isArray(rerankedEvidence?.meta?.boundary) ? rerankedEvidence.meta.boundary.length : 0} 条`,
+        }),
+      }
+    })
     .addNode('think_llm', async (state) => ({
       traces: pushTrace(state, {
         step: 'think_3',
@@ -466,7 +520,7 @@ export function createPreciseSourcingLangGraph(tools) {
     .addNode('act_llm', async (state) => {
       const answer = await tools.generateAnswer({
         userInput: state.userInput,
-        supplierRows: state.fusedEvidence?.suppliers || state.supplierRows,
+        supplierRows: state.rerankedEvidence?.suppliers || state.fusedEvidence?.suppliers || state.supplierRows,
         kbHits: state.fusedEvidence?.kbHits || state.kbHits,
         webHits: state.fusedEvidence?.webHits || state.webHits,
         intent: state.intent,
@@ -496,7 +550,7 @@ export function createPreciseSourcingLangGraph(tools) {
         }, {
           step: 'observe_llm',
           title: '观察',
-          detail: `已融合 DB(${(state.supplierRows || []).length}) + RAG(${(state.kbHits || []).length}) + WEB(${(state.webHits || []).length}) 证据并生成答复`,
+          detail: `已融合并重排候选：DB(${(state.supplierRows || []).length}) + RAG(${(state.kbHits || []).length}) + WEB(${(state.webHits || []).length})，并生成答复`,
         }),
       }
     })
@@ -555,7 +609,8 @@ export function createPreciseSourcingLangGraph(tools) {
     .addEdge('act_direct_answer', END)
     .addEdge('think_retrieval', 'act_retrieval')
     .addEdge('act_retrieval', 'fuse_evidence')
-    .addEdge('fuse_evidence', 'think_llm')
+    .addEdge('fuse_evidence', 'rerank_evidence')
+    .addEdge('rerank_evidence', 'think_llm')
     .addEdge('think_llm', 'act_llm')
     .addEdge('act_llm', 'act_tools')
     .addEdge('act_tools', END)
@@ -571,6 +626,7 @@ export function createPreciseSourcingLangGraph(tools) {
         kbId: input.kbId,
         kbIds: Array.isArray(input.kbIds) ? input.kbIds : [],
         topK: input.topK,
+        finalTopN: input.finalTopN,
         webTopK: input.webTopK,
         dbTopK: input.dbTopK,
         selectedDbTables: Array.isArray(input.selectedDbTables) ? input.selectedDbTables : [],
@@ -584,6 +640,7 @@ export function createPreciseSourcingLangGraph(tools) {
         reportTemplate: input.reportTemplate || null,
         temperature: Number(input.temperature || 0.2),
         fusionWeights: input.fusionWeights && typeof input.fusionWeights === 'object' ? input.fusionWeights : {},
+        sourceQuota: input.sourceQuota && typeof input.sourceQuota === 'object' ? input.sourceQuota : {},
         streamTokens: input.streamTokens === true,
         intent: 'supplier_search',
         demand: {},
@@ -593,6 +650,7 @@ export function createPreciseSourcingLangGraph(tools) {
         kbHits: [],
         webHits: [],
         fusedEvidence: { suppliers: [], kbHits: [] },
+        rerankedEvidence: { suppliers: [], meta: {} },
         artifacts: [],
         answer: '',
       })
@@ -601,9 +659,10 @@ export function createPreciseSourcingLangGraph(tools) {
       return {
         traces,
         react: { rounds: needsTools ? buildReActRoundsFromTraces(traces) : [] },
-        supplierRows: result.fusedEvidence?.suppliers || result.supplierRows || [],
+        supplierRows: result.rerankedEvidence?.suppliers || result.fusedEvidence?.suppliers || result.supplierRows || [],
         kbHits: result.fusedEvidence?.kbHits || result.kbHits || [],
         webHits: result.fusedEvidence?.webHits || result.webHits || [],
+        rerankMeta: result.rerankedEvidence?.meta || result.fusedEvidence?.rerankMeta || null,
         intent: result.intent || 'supplier_search',
         demand: result.demand || {},
         executionPlan: result.executionPlan || {},

@@ -88,6 +88,7 @@ export async function chatPreciseSourcingAgentStream(payload = {}, handlers = {}
         }
       }
     }
+    if (typeof onDone === 'function') onDone({ ok: true, degraded: false, streamClosed: true })
   } catch (error) {
     if (typeof onError === 'function') onError({ message: `流式连接中断：${error?.message || 'unknown error'}` })
     if (typeof onDone === 'function') onDone({ ok: false, degraded: false, streamOnly: true })

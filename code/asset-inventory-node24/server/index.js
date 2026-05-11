@@ -739,6 +739,7 @@ const supplierOemDictTable = `"${schemaName}"."supplier_oem_dict"`
 const supplierCountryDictTable = `"${schemaName}"."supplier_country_dict"`
 const supplierCertDictTable = `"${schemaName}"."supplier_certification_dict"`
 const gasSupplierPortraitSettingTable = `"${schemaName}"."gas_supplier_portrait_setting"`
+const searchConfigTable = `"${schemaName}"."search_config"`
 const chatSessionTable = `"${schemaName}"."chat_session"`
 const chatMessageTable = `"${schemaName}"."chat_message"`
 const langchainSessionStateTable = `"${schemaName}"."langchain_multi_chat_state"`
@@ -2361,6 +2362,15 @@ async function initDatabase() {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
+    CREATE TABLE IF NOT EXISTS ${searchConfigTable} (
+      id SMALLINT PRIMARY KEY DEFAULT 1,
+      search_tool VARCHAR(32) NOT NULL DEFAULT 'serpapi',
+      api_key TEXT NOT NULL DEFAULT '3792a177349a630c263994796a6c461fd503273f1fe704a18bea7398b078e7be',
+      site_whitelist_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      CHECK (id = 1)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_crawl_info_source_file ON ${crawlInfoTable}(source_file, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_crawl_info_business_entity ON ${crawlInfoTable}(business_entity);
     CREATE INDEX IF NOT EXISTS idx_supply_chain_node_parent ON ${supplyChainNodeTable}(parent_id, node_level);
@@ -2394,6 +2404,7 @@ async function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_supplier_country_dict_sort ON ${supplierCountryDictTable}(sort_order ASC, id ASC);
     CREATE INDEX IF NOT EXISTS idx_supplier_cert_dict_sort ON ${supplierCertDictTable}(sort_order ASC, id ASC);
     CREATE INDEX IF NOT EXISTS idx_gas_supplier_portrait_setting_updated_at ON ${gasSupplierPortraitSettingTable}(updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_search_config_updated_at ON ${searchConfigTable}(updated_at DESC);
     DROP INDEX IF EXISTS idx_supply_chain_node_unique;
     CREATE UNIQUE INDEX IF NOT EXISTS idx_supply_chain_node_unique
       ON ${supplyChainNodeTable}(COALESCE(parent_id, 0), node_level, node_title, source_url);
@@ -16488,6 +16499,38 @@ app.put('/api/menu-visibility-settings', authMiddleware, async (req, res) => {
   }
 })
 
+app.get('/api/search-settings', authMiddleware, async (_req, res) => {
+  try {
+    const settings = await loadSearchSettings()
+    return res.json({ code: 200, message: 'success', data: settings })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `读取搜索设置失败: ${error.message}`, data: null })
+  }
+})
+
+app.put('/api/search-settings', authMiddleware, async (req, res) => {
+  try {
+    const normalized = normalizeSearchSettings(req.body || {})
+    await pool.query(
+      `
+      INSERT INTO ${searchConfigTable} (id, search_tool, api_key, site_whitelist_json, updated_at)
+      VALUES (1, $1, $2, $3::jsonb, NOW())
+      ON CONFLICT (id)
+      DO UPDATE SET
+        search_tool = EXCLUDED.search_tool,
+        api_key = EXCLUDED.api_key,
+        site_whitelist_json = EXCLUDED.site_whitelist_json,
+        updated_at = NOW()
+      `,
+      [normalized.searchTool, normalized.apiKey, JSON.stringify(normalized.siteWhitelist || [])],
+    )
+    const merged = { ...defaultSearchSettings, ...normalized }
+    return res.json({ code: 200, message: 'success', data: merged })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `保存搜索设置失败: ${error.message}`, data: null })
+  }
+})
+
 app.get('/api/stocks/overview', authMiddleware, async (req, res) => {
   const limit = Math.min(Math.max(Number(req.query.limit || 500), 1), 2000)
   try {
@@ -16584,9 +16627,9 @@ async function callPreciseSourcingLlm(state) {
   const customSystemPrompt = toText(state?.systemPrompt)
   const presetKey = toText(state?.systemPromptPresetKey || 'default')
   const promptPresetMap = {
-    default: '你是汽车供应链精准寻源助手。目标：基于数据库/知识库/互联网证据输出可执行候选建议。要求：先结论后证据；输出TopN；每条含名称、匹配理由、风险提示；无证据要明确说明；中文简洁结构化输出。',
-    risk: '你是汽车供应链采购风控助手。目标：优先识别风险再推荐候选。要求：先给风险等级与原因，再给TopN候选；每条包含匹配点、主要风险、核验项；证据不足必须标注“待核验”；中文简洁输出。',
-    fast: '你是汽车供应链线索筛选助手。目标：快速给出可跟进线索。要求：先直接回答，再给TopN；每条只写名称+一句理由+推荐动作；控制篇幅；无命中给替代关键词；中文输出。',
+    default: '你是汽车供应链精准寻源助手。目标：基于数据库/知识库/互联网证据输出可执行候选建议。要求：先结论后证据；默认输出Top10（不足10条时明确说明）；优先按rerank分与证据强度排序；输出必须为Markdown结构且优先表格化，不要大段连写；至少包含两张表：候选供应商TopN表（排名｜供应商｜关联主机厂｜结论等级｜Rerank分｜证据强度｜主要依据｜风险/缺口｜建议动作）与证据摘要表（来源(DB/RAG/WEB)｜证据片段｜关联供应商｜匹配类型｜置信度｜可追溯链接）；另附“明确不足/待核验”和“下一步检索建议”编号列表；无证据要明确说明；中文输出。',
+    risk: '你是汽车供应链采购风控助手。目标：优先识别风险再推荐候选。要求：先给风险等级与原因，再给Top10候选（不足10条时明确说明）；候选按风险优先级与rerank分排序；输出使用Markdown表格，候选表字段：排名｜供应商｜风险等级｜Rerank分｜关键风险｜证据依据｜核验项；证据表字段：来源｜证据片段｜关联供应商｜置信度｜可追溯链接；证据不足必须标注“待核验”；中文输出。',
+    fast: '你是汽车供应链线索筛选助手。目标：快速给出可跟进线索。要求：先直接回答，再给Top10（不足10条时明确说明）；输出使用Markdown，候选列表必须为表格（排名｜供应商｜Rerank分｜一句话理由｜推荐动作）；再补一张证据简表（来源｜证据片段｜关联供应商）；控制篇幅，优先高相关结果；无命中给替代关键词；中文输出。',
   }
   const resolvedSystemPrompt = customSystemPrompt || promptPresetMap[presetKey] || promptPresetMap.default
   const resolveSupplierDisplayName = (item = {}) => toText(
@@ -16607,36 +16650,58 @@ async function callPreciseSourcingLlm(state) {
     || item?.website
     || '',
   )
+  const maxContextRows = 80
+  const supplierRowsAll = Array.isArray(state?.supplierRows) ? state.supplierRows : []
+  const kbHitsAll = Array.isArray(state?.kbHits) ? state.kbHits : []
+  const webHitsAll = Array.isArray(state?.webHits) ? state.webHits : []
   const evidencePayload = {
     intent: toText(state.intent || 'supplier_search'),
     generateCharts: state.generateCharts !== false,
     reportTemplateType: toText(state?.reportTemplate?.type || ''),
     userInput: state.userInput,
-    supplierRows: (state.supplierRows || []).slice(0, 5).map((item) => ({
+    supplierRows: supplierRowsAll.slice(0, maxContextRows).map((item) => ({
       name: resolveSupplierDisplayName(item),
       sourceUrl: resolveSupplierSourceUrl(item),
       matchScore: Number(item?._matchScore || 0),
+      fusedScore: Number(item?._fusedScore || item?._matchScore || 0),
+      rerankScore: Number(item?._rerankScore || 0),
+      rerankIndex: Number(item?._rerankIndex || 0),
+      rerankSource: toText(item?._rerankSource || ''),
+      rerankReason: toText(item?._rerankReason || ''),
+      kbSupportCount: Number(item?._kbSupportCount || 0),
+      webSupportCount: Number(item?._webSupportCount || 0),
       matchFields: Array.isArray(item?._matchFieldScores)
-        ? item._matchFieldScores.slice(0, 5).map((entry) => ({
+        ? item._matchFieldScores.slice(0, 3).map((entry) => ({
           label: toText(entry?.field).split('.').filter(Boolean).pop() || '多字段',
           relevance: Number(entry?.score || 0) >= 1.6 ? '高相关' : (Number(entry?.score || 0) >= 0.9 ? '中相关' : '低相关'),
         }))
         : [],
     })),
-    kbHits: (state.kbHits || []).slice(0, 5).map((item) => ({
+    kbHits: kbHitsAll.slice(0, maxContextRows).map((item) => ({
       docName: toText(item.docName || item.docId),
       cosineDistance: Number(item.cosineDistance || 0),
-      snippet: toText(item.chunkText).slice(0, 80),
+      snippet: toText(item.chunkText || item.snippetPreview || item.snippet || '').slice(0, 120),
+      supplierCandidates: Array.isArray(item?._supplierCandidates) ? item._supplierCandidates.slice(0, 8) : (Array.isArray(item?.supplierCandidates) ? item.supplierCandidates.slice(0, 8) : []),
     })),
-    webHits: (state.webHits || []).slice(0, 5).map((item) => ({
+    webHits: webHitsAll.slice(0, maxContextRows).map((item) => ({
       title: toText(item.title || item.name || ''),
       url: toText(item.url || item.link || ''),
-      snippet: toText(item.snippet || item.content || '').slice(0, 100),
+      snippet: toText(item.snippet || item.content || '').slice(0, 140),
+      provider: toText(item._provider || ''),
+      supplierCandidates: Array.isArray(item?._supplierCandidates) ? item._supplierCandidates.slice(0, 8) : (Array.isArray(item?.supplierCandidates) ? item.supplierCandidates.slice(0, 8) : []),
     })),
+    contextStats: {
+      supplierRows: supplierRowsAll.length,
+      kbHits: kbHitsAll.length,
+      webHits: webHitsAll.length,
+      maxContextRows,
+      truncated: supplierRowsAll.length > maxContextRows || kbHitsAll.length > maxContextRows || webHitsAll.length > maxContextRows,
+    },
   }
   const humanPrompt = `你将收到检索召回上下文，请仅基于上下文回答用户问题。
 若上下文不足，请明确说明“证据不足/待核验”，不要编造。
 输出风格优先遵循系统提示词；若系统提示词未指定格式，则使用清晰分段的中文回答。
+请优先依据 supplierRows 中的 rerankScore/rerankIndex 进行最终排序输出；若 rerank 字段缺失，再参考 matchScore/fusedScore 与证据片段。
 ${state?.generateCharts === false ? '本轮不需要图表建议。' : '可在结尾补充图表建议（可选）。'}
 ${toText(state?.reportTemplate?.type) ? `可参考报告模板：${toText(state.reportTemplate.type)}。` : ''}
 
@@ -17338,10 +17403,173 @@ const preciseSourcingOps = {
     const webHits = Array.isArray(state?.webHits) ? state.webHits : []
     const webSuppliers = []
     return {
-      suppliers: supplierRows.slice(0, 20),
-      kbHits: kbHits.slice(0, 20),
-      webHits: webHits.slice(0, 20),
+      suppliers: supplierRows.slice(0, 50),
+      kbHits: kbHits.slice(0, 50),
+      webHits: webHits.slice(0, 50),
       webDerivedSuppliers: webSuppliers,
+    }
+  },
+  async rerankEvidence(state = {}) {
+    const query = toText(state?.userInput || state?.query || '').trim()
+    const fused = state?.fusedEvidence && typeof state.fusedEvidence === 'object' ? state.fusedEvidence : {}
+    const supplierRows = Array.isArray(fused?.suppliers) ? fused.suppliers : []
+    const kbHits = Array.isArray(fused?.kbHits) ? fused.kbHits : []
+    const webHits = Array.isArray(fused?.webHits) ? fused.webHits : []
+    const requestedTopN = Math.min(Math.max(Number(state?.requestedTopN || 30), 1), 50)
+    const boundaryCount = Math.min(Math.max(Number(state?.boundaryCount || 3), 1), 10)
+    const candidateMap = new Map()
+    const pushCandidate = (name = '', source = 'unknown', payload = {}) => {
+      const normalized = normalizeSupplierCandidateName(toText(name))
+      if (!normalized) return
+      if (!isStrictCompanyEntityName(normalized)) return
+      const prev = candidateMap.get(normalized) || {
+        id: normalized,
+        name: normalized,
+        sourceSet: new Set(),
+        evidenceParts: [],
+        raw: {},
+      }
+      prev.sourceSet.add(source)
+      const evidenceText = toText(payload?.evidence || payload?.snippet || payload?.text || '')
+      if (evidenceText) prev.evidenceParts.push(evidenceText.slice(0, 280))
+      if (payload && typeof payload === 'object') prev.raw = { ...prev.raw, ...payload }
+      candidateMap.set(normalized, prev)
+    }
+    for (const row of supplierRows) {
+      const name = toText(row?.companyName || row?.company_name || row?.name || row?.supplier_name || row?.oem_name || '')
+      pushCandidate(name, 'db', { ...row, evidence: toText(row?.mainProducts || row?.main_products || row?.region || '') })
+    }
+    for (const hit of kbHits) {
+      const names = Array.from(new Set([
+        ...(Array.isArray(hit?._supplierCandidates) ? hit._supplierCandidates : []),
+        ...(Array.isArray(hit?.supplierCandidates) ? hit.supplierCandidates : []),
+      ]))
+      for (const n of names) pushCandidate(n, 'rag', { ...hit, evidence: toText(hit?.chunkText || hit?.snippetPreview || hit?.chunk || '') })
+    }
+    for (const hit of webHits) {
+      const names = Array.from(new Set([
+        ...(Array.isArray(hit?._supplierCandidates) ? hit._supplierCandidates : []),
+        ...(Array.isArray(hit?.supplierCandidates) ? hit.supplierCandidates : []),
+      ]))
+      for (const n of names) pushCandidate(n, 'web', { ...hit, evidence: toText(hit?.snippet || hit?.title || hit?.url || '') })
+    }
+    const candidates = Array.from(candidateMap.values()).map((item) => ({
+      id: item.id,
+      name: item.name,
+      source: Array.from(item.sourceSet).join('+'),
+      sourceList: Array.from(item.sourceSet),
+      evidence: item.evidenceParts.slice(0, 3).join(' | ').slice(0, 840),
+      ...item.raw,
+    }))
+    if (candidates.length === 0) {
+      const fallbackRowsAll = supplierRows
+        .slice(0, Math.min(requestedTopN + boundaryCount, 50))
+        .map((row, idx) => ({
+          ...(row && typeof row === 'object' ? row : {}),
+          companyName: toText(row?.companyName || row?.company_name || row?.name || ''),
+          _rerankScore: Number(row?._fusedScore || row?._matchScore || (requestedTopN + boundaryCount - idx)),
+          _rerankReason: 'fallback_from_fused_suppliers',
+          _rerankIndex: idx + 1,
+          _rerankSource: 'db',
+        }))
+      const topRows = fallbackRowsAll.slice(0, requestedTopN)
+      const boundaryRows = fallbackRowsAll.slice(requestedTopN, requestedTopN + boundaryCount)
+      return {
+        suppliers: topRows,
+        meta: {
+          totalCandidates: 0,
+          rerankedCount: fallbackRowsAll.length,
+          topN: requestedTopN,
+          boundary: boundaryRows.map((x) => toText(x?.companyName || x?.name || '')).filter(Boolean),
+        },
+      }
+    }
+    let rerankedRows = []
+    try {
+      const raw = await invokeRunnableTool(preciseSourcingToolbox.byName.rerankTool, {
+        query,
+        candidates,
+        topN: Math.min(requestedTopN + boundaryCount, 50),
+      }, { tool: 'rerank_supplier_candidates' })
+      const parsed = normalizeToolJsonResult(raw)
+      rerankedRows = Array.isArray(parsed?.data?.rows) ? parsed.data.rows : []
+    } catch {
+      rerankedRows = candidates.slice(0, Math.min(requestedTopN + boundaryCount, 50, candidates.length))
+    }
+    const rerankRowsNormalized = rerankedRows
+      .map((row, idx) => {
+        const name = normalizeSupplierCandidateName(toText(row?.name || row?.companyName || row?.company_name || row?.id || ''))
+        if (!name) return null
+        const base = supplierRows.find((x) => normalizeSupplierCandidateName(toText(x?.companyName || x?.company_name || x?.name || '')) === name)
+        return {
+          ...(base && typeof base === 'object' ? base : {}),
+          companyName: name,
+          _rerankScore: Number(row?.score ?? row?.rerankScore ?? (rerankedRows.length - idx)),
+          _rerankReason: toText(row?.reason || row?.evidence || row?.snippet || ''),
+          _rerankIndex: idx + 1,
+          _rerankSource: toText(row?.source || ''),
+        }
+      })
+      .filter(Boolean)
+    const pickRowsBySourceQuota = (rows = [], topN = 10) => {
+      const quotaConfig = state?.sourceQuota && typeof state.sourceQuota === 'object'
+        ? state.sourceQuota
+        : { db: 3, rag: 2, web: 2 }
+      const quota = {
+        db: Math.max(0, Number(quotaConfig.db || 0)),
+        rag: Math.max(0, Number(quotaConfig.rag || 0)),
+        web: Math.max(0, Number(quotaConfig.web || 0)),
+      }
+      const selected = []
+      const used = new Set()
+      const matchesSource = (row, sourceKey) => {
+        const src = toText(row?._rerankSource || '').toLowerCase()
+        return src.split('+').includes(sourceKey)
+      }
+      const pickOne = (predicate) => {
+        for (let i = 0; i < rows.length; i += 1) {
+          if (used.has(i)) continue
+          if (!predicate(rows[i])) continue
+          used.add(i)
+          selected.push(rows[i])
+          return true
+        }
+        return false
+      }
+      ;['db', 'rag', 'web'].forEach((sourceKey) => {
+        let need = quota[sourceKey]
+        while (need > 0 && selected.length < topN) {
+          const ok = pickOne((row) => matchesSource(row, sourceKey))
+          if (!ok) break
+          need -= 1
+        }
+      })
+      for (let i = 0; i < rows.length && selected.length < topN; i += 1) {
+        if (used.has(i)) continue
+        used.add(i)
+        selected.push(rows[i])
+      }
+      return selected
+    }
+    const topRows = pickRowsBySourceQuota(rerankRowsNormalized, requestedTopN)
+    const topNameSet = new Set(topRows.map((x) => toText(x?.companyName || x?.name || '')).filter(Boolean))
+    const boundaryRows = rerankRowsNormalized
+      .filter((x) => !topNameSet.has(toText(x?.companyName || x?.name || '')))
+      .slice(0, boundaryCount)
+    const countBySource = (rows = [], key = '') => rows.filter((x) => toText(x?._rerankSource || '').toLowerCase().split('+').includes(key)).length
+    return {
+      suppliers: topRows,
+      meta: {
+        totalCandidates: candidates.length,
+        rerankedCount: rerankRowsNormalized.length,
+        topN: requestedTopN,
+        sourceQuotaApplied: {
+          db: countBySource(topRows, 'db'),
+          rag: countBySource(topRows, 'rag'),
+          web: countBySource(topRows, 'web'),
+        },
+        boundary: boundaryRows.map((x) => toText(x?.companyName || x?.name || '')).filter(Boolean),
+      },
     }
   },
   async searchWeb(query = '', topK = 10) {
@@ -17374,6 +17602,148 @@ const preciseSourcingOps = {
   },
 }
 
+function normalizeSupplierWebQuery(input = '') {
+  const raw = toText(input)
+  if (!raw) return '汽车 配套供应商'
+  const cleaned = raw
+    .replace(/[，。！？、；;,.!?]/g, ' ')
+    .replace(/\b(帮我|请|麻烦|帮忙|一下|查下|查一下|搜下|搜一下|找下|找一下|看看|是否|可以|给我)\b/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  const tokens = Array.from(new Set(
+    cleaned
+      .split(/\s+/)
+      .map((x) => toText(x))
+      .filter(Boolean)
+      .filter((x) => x.length >= 2)
+      .filter((x) => !/^(配套|供应商|企业|公司|名单|汽车|检索|搜索)$/.test(x)),
+  ))
+  const core = tokens.slice(0, 6).join(' ')
+  return `${core || cleaned || raw} 配套供应商 Tier1 汽车零部件`
+}
+
+const defaultSearchSettings = {
+  searchTool: 'google_ai_overview',
+  apiKey: '',
+  siteWhitelist: ['i.gasgoo.com', 'auto.gasgoo.com', 'qcgys.com', 'marklines.com', 'globalnevs.com', 'd1ev.com', 'evpartner.com', 'ecaigou.com'],
+}
+
+function normalizeSearchSettings(input = {}) {
+  const body = input && typeof input === 'object' ? input : {}
+  const tool = toText(body.searchTool || 'google_ai_overview').toLowerCase()
+  const apiKey = toText(body.apiKey || '')
+  const sites = Array.isArray(body.siteWhitelist) ? body.siteWhitelist : []
+  const normalizeHost = (raw = '') => {
+    const text = toText(raw).toLowerCase()
+    if (!text) return ''
+    try {
+      const withProtocol = /^https?:\/\//i.test(text) ? text : `https://${text}`
+      return toText(new URL(withProtocol).hostname).toLowerCase()
+    } catch {
+      return text
+        .replace(/^https?:\/\//i, '')
+        .replace(/\/.*$/, '')
+        .trim()
+    }
+  }
+  const normalizedSites = Array.from(new Set(
+    sites
+      .map((x) => normalizeHost(x))
+      .filter(Boolean),
+  ))
+  return {
+    searchTool: (tool === 'google_ai_overview' || tool === 'serpapi') ? tool : 'google_ai_overview',
+    apiKey,
+    siteWhitelist: normalizedSites.length > 0 ? normalizedSites : [...defaultSearchSettings.siteWhitelist],
+  }
+}
+
+async function loadSearchSettings() {
+  try {
+    const result = await pool.query(
+      `SELECT search_tool AS "searchTool", api_key AS "apiKey", site_whitelist_json AS "siteWhitelist" FROM ${searchConfigTable} WHERE id = 1 LIMIT 1`,
+    )
+    const row = result.rows[0]
+    if (!row) {
+      const legacy = await pool.query(
+        `SELECT settings_json AS "settingsJson" FROM ${gasSupplierPortraitSettingTable} WHERE setting_key = $1 LIMIT 1`,
+        ['search_settings_v1'],
+      )
+      const legacyRaw = legacy.rows[0]?.settingsJson || {}
+      const legacyNormalized = normalizeSearchSettings(legacyRaw)
+      await pool.query(
+        `
+        INSERT INTO ${searchConfigTable} (id, search_tool, api_key, site_whitelist_json, updated_at)
+        VALUES (1, $1, $2, $3::jsonb, NOW())
+        ON CONFLICT (id)
+        DO UPDATE SET
+          search_tool = EXCLUDED.search_tool,
+          api_key = EXCLUDED.api_key,
+          site_whitelist_json = EXCLUDED.site_whitelist_json,
+          updated_at = NOW()
+        `,
+        [legacyNormalized.searchTool, legacyNormalized.apiKey, JSON.stringify(legacyNormalized.siteWhitelist || [])],
+      )
+      return {
+        ...defaultSearchSettings,
+        ...legacyNormalized,
+        apiKey: legacyNormalized.apiKey || toText(process.env.SERPAPI_API_KEY || ''),
+      }
+    }
+    const raw = row
+      ? {
+          searchTool: row.searchTool,
+          apiKey: row.apiKey,
+          siteWhitelist: row.siteWhitelist,
+        }
+      : {}
+    const normalized = normalizeSearchSettings(raw)
+    return {
+      ...defaultSearchSettings,
+      ...normalized,
+      apiKey: normalized.apiKey || toText(process.env.SERPAPI_API_KEY || ''),
+    }
+  } catch {
+    return {
+      ...defaultSearchSettings,
+      apiKey: toText(process.env.SERPAPI_API_KEY || ''),
+    }
+  }
+}
+
+async function fetchWebPageTextForSupplier(urlText = '', maxChars = 2000) {
+  const url = toText(urlText)
+  if (!/^https?:\/\//i.test(url)) return ''
+  try {
+    const requestInit = {
+      method: 'GET',
+      headers: {
+        'User-Agent': 'Mozilla/5.0',
+        Accept: 'text/html,application/xhtml+xml',
+      },
+    }
+    let html = ''
+    try {
+      const directResp = await withTimeout(fetch(url, requestInit), 15000, 'web_page_fetch_timeout_direct')
+      if (directResp.ok) html = await directResp.text()
+    } catch {
+      // fallback below
+    }
+    if (!html) {
+      const resp = await withTimeout(fetchByNetworkPolicy(url, requestInit), 15000, 'web_page_fetch_timeout')
+      if (!resp.ok) return ''
+      html = await resp.text()
+    }
+    const cleanedHtml = String(html || '')
+      .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+      .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    const text = decodeHtmlEntities(stripHtmlBasic(cleanedHtml)).replace(/\s+/g, ' ').trim()
+    return text.slice(0, Math.max(200, Number(maxChars || 2000)))
+  } catch {
+    return ''
+  }
+}
+
 const preciseSourcingLangGraph = createPreciseSourcingLangGraph(preciseSourcingOps)
 
 async function runPreciseSourcingFastPipeline({
@@ -17385,10 +17755,31 @@ async function runPreciseSourcingFastPipeline({
   topK = 20,
   dbTopK = 10,
   strictMode = false,
+  model = '',
+  systemPrompt = '',
+  systemPromptPresetKey = 'default',
+  temperature = 0.2,
+  reportTemplate = null,
+  generateCharts = true,
+  streamTokens = false,
+  onDelta = null,
+  sourceQuota = null,
+  requestedTopN = 10,
 } = {}) {
+  const summarizeWebProviders = (hits = []) => {
+    const list = Array.isArray(hits) ? hits : []
+    const stat = new Map()
+    for (const item of list) {
+      const key = toText(item?._provider || 'unknown')
+      stat.set(key, Number(stat.get(key) || 0) + 1)
+    }
+    const parts = Array.from(stat.entries()).map(([k, v]) => `${k}:${v}`)
+    return parts.length > 0 ? parts.join(', ') : 'none'
+  }
   const selectedSet = new Set((Array.isArray(selectedTools) ? selectedTools : []).map((x) => toText(x)))
   const useDb = selectedSet.size === 0 || selectedSet.has('db_chat')
   const useRag = selectedSet.size === 0 || selectedSet.has('local_kb')
+  const useWeb = selectedSet.has('web_search')
   const demand = await preciseSourcingOps.parseDemand(userInput)
   const dbPromise = useDb
     ? preciseSourcingOps.searchSuppliers(userInput, authHeader, { dbTopK, selectedDbTables, strictMode, demand })
@@ -17396,44 +17787,106 @@ async function runPreciseSourcingFastPipeline({
   const ragPromise = useRag
     ? preciseSourcingOps.searchRag(targetKbIds, userInput, topK, authHeader, demand, strictMode)
     : Promise.resolve([])
-  const [supplierRows, kbHits] = await Promise.all([dbPromise, ragPromise])
+  const webQuery = normalizeSupplierWebQuery(userInput)
+  const webPromise = useWeb
+    ? withTimeout(
+      preciseSourcingOps.searchWeb(webQuery, Math.min(Math.max(Number(topK || 10), 1), 50)),
+      30000,
+      'precise_sourcing_fast_web_timeout',
+    ).catch(() => [])
+    : Promise.resolve([])
+  const [supplierRows, kbHits, webHits] = await Promise.all([dbPromise, ragPromise, webPromise])
+  const keywordList = Array.isArray(demand?.keywords)
+    ? demand.keywords.map((x) => toText(x)).filter(Boolean)
+    : []
+  const plannedSteps = [
+    useDb ? '1) 并行数据库候选召回' : null,
+    useRag ? '2) 并行知识库证据召回' : null,
+    useWeb ? '3) 并行互联网线索召回' : null,
+    '4) 证据融合（全量候选入池）',
+    '5) 候选重排（Rerank）',
+    '6) TopN+边界样本交给LLM生成结构化答复',
+  ].filter(Boolean)
   const fused = await preciseSourcingOps.fuseEvidence({
     supplierRows: Array.isArray(supplierRows) ? supplierRows : [],
     kbHits: Array.isArray(kbHits) ? kbHits : [],
-    webHits: [],
+    webHits: Array.isArray(webHits) ? webHits : [],
     demand,
     userInput,
   })
+  const reranked = await preciseSourcingOps.rerankEvidence({
+    userInput,
+    fusedEvidence: fused,
+    requestedTopN: Math.min(Math.max(Number(requestedTopN || 10), 1), 50),
+    boundaryCount: 3,
+    sourceQuota: sourceQuota && typeof sourceQuota === 'object' ? sourceQuota : undefined,
+  })
   const traces = [
-    { step: 'plan_fast', title: '规划', detail: 'Fast模式：并行执行 DB+RAG，跳过 Plan-then-ReAct 与 Web。' },
+    {
+      step: 'plan_fast',
+      title: '规划',
+      detail: `Fast模式：并行执行已选检索分支，跳过 Plan-then-ReAct。意图=supplier_search；关键词=${keywordList.join(',') || '未提取到显式关键词'}；已选工具=${selectedSet.size > 0 ? Array.from(selectedSet).join(',') : '默认(DB+RAG)'}；计划分解=${plannedSteps.join('；')}；执行开关(DB=${useDb ? '是' : '否'}, RAG=${useRag ? '是' : '否'}, WEB=${useWeb ? '是' : '否'})`,
+    },
     { step: 'act_db', title: '执行', detail: `DB命中 ${Array.isArray(supplierRows) ? supplierRows.length : 0} 条`, tool: 'db.searchSuppliers' },
     { step: 'act_rag', title: '执行', detail: `RAG命中 ${Array.isArray(kbHits) ? kbHits.length : 0} 条`, tool: 'rag.searchKnowledgeBase' },
+    {
+      step: 'act_web',
+      title: '执行',
+      detail: `WEB命中 ${Array.isArray(webHits) ? webHits.length : 0} 条；provider分布=${summarizeWebProviders(webHits)}`,
+      tool: 'web.searchSupplierSignals',
+    },
     { step: 'act_fuse', title: '执行', detail: `融合候选 ${Array.isArray(fused?.suppliers) ? fused.suppliers.length : 0} 条`, tool: 'evidence.fuse' },
+    { step: 'act_rerank', title: '执行', detail: `Rerank候选 ${Array.isArray(reranked?.suppliers) ? reranked.suppliers.length : 0} 条（TopN+边界）`, tool: 'rerank_supplier_candidates' },
   ]
-  return {
+  const fastState = {
     intent: 'supplier_search',
+    userInput,
+    model: toText(model),
+    systemPrompt: toText(systemPrompt),
+    systemPromptPresetKey: toText(systemPromptPresetKey || 'default'),
+    temperature: Number(temperature),
+    reportTemplate: reportTemplate && typeof reportTemplate === 'object' ? reportTemplate : null,
+    generateCharts: generateCharts !== false,
+    streamTokens: streamTokens === true,
+    onDelta: typeof onDelta === 'function' ? onDelta : null,
     demand,
     executionPlan: {
       needsTools: true,
       routeReason: 'Fast并行召回',
       useDb,
       useRag,
-      useWeb: false,
+      useWeb,
       dbQuery: userInput,
       ragQuery: userInput,
-      webQuery: '',
+      webQuery: useWeb ? webQuery : '',
     },
-    supplierRows: Array.isArray(fused?.suppliers) ? fused.suppliers : [],
+    supplierRows: Array.isArray(reranked?.suppliers) ? reranked.suppliers : (Array.isArray(fused?.suppliers) ? fused.suppliers : []),
     kbHits: Array.isArray(fused?.kbHits) ? fused.kbHits : [],
-    webHits: [],
+    webHits: Array.isArray(fused?.webHits) ? fused.webHits : [],
+  }
+  const llmAnswer = await withTimeout(
+    preciseSourcingOps.generateAnswer(fastState),
+    12000,
+    'precise_sourcing_fast_llm_timeout',
+  ).catch(() => buildPreciseSourcingFallbackAnswer({
+    userInput,
     fusedEvidence: fused,
-    answer: buildPreciseSourcingFallbackAnswer({
-      userInput,
-      fusedEvidence: fused,
-      supplierRows: Array.isArray(fused?.suppliers) ? fused.suppliers : [],
-      kbHits: Array.isArray(fused?.kbHits) ? fused.kbHits : [],
-      webHits: [],
-    }),
+    supplierRows: Array.isArray(reranked?.suppliers) ? reranked.suppliers : (Array.isArray(fused?.suppliers) ? fused.suppliers : []),
+    kbHits: Array.isArray(fused?.kbHits) ? fused.kbHits : [],
+    webHits: Array.isArray(fused?.webHits) ? fused.webHits : [],
+  }))
+  return {
+    intent: 'supplier_search',
+    demand,
+    executionPlan: fastState.executionPlan,
+    supplierRows: Array.isArray(reranked?.suppliers) ? reranked.suppliers : (Array.isArray(fused?.suppliers) ? fused.suppliers : []),
+    kbHits: Array.isArray(fused?.kbHits) ? fused.kbHits : [],
+    webHits: Array.isArray(fused?.webHits) ? fused.webHits : [],
+    fusedEvidence: {
+      ...(fused && typeof fused === 'object' ? fused : {}),
+      rerankMeta: reranked?.meta || null,
+    },
+    answer: llmAnswer,
     artifacts: [],
     react: { rounds: [] },
     traces,
@@ -17461,10 +17914,12 @@ app.post('/api/agents/precise-sourcing/chat', authMiddleware, async (req, res) =
   const temperature = Math.max(0, Math.min(1, Number(req.body?.temperature ?? 0.2)))
   const reportTemplate = req.body?.reportTemplate && typeof req.body.reportTemplate === 'object' ? req.body.reportTemplate : null
   const strictMode = req.body?.strictMode === true
+  const sourceQuota = req.body?.sourceQuota && typeof req.body.sourceQuota === 'object' ? req.body.sourceQuota : null
   const selectedModel = toText(req.body?.model)
   const systemPrompt = toText(req.body?.systemPrompt)
   const systemPromptPresetKey = toText(req.body?.systemPromptPresetKey || 'default')
-  const requestedCount = resolveRequestedCount({ userInput, systemPrompt, defaultCount: 10, min: 1, max: 50 })
+  const finalTopN = Math.min(Math.max(Number(req.body?.finalTopN || 10), 1), 50)
+  const requestedCount = resolveRequestedCount({ userInput, systemPrompt, defaultCount: finalTopN, min: 1, max: 50 })
   const enableSecondaryWebVerification = req.body?.enableSecondaryWebVerification === true
   const enablePostEnrichment = req.body?.enablePostEnrichment === true
   const executionMode = toText(req.body?.executionMode || 'fast').toLowerCase()
@@ -17498,9 +17953,11 @@ app.post('/api/agents/precise-sourcing/chat', authMiddleware, async (req, res) =
         selectedDbTables,
         selectedTools,
         topK: Math.min(topK, 20),
+        requestedTopN: finalTopN,
         dbTopK,
         strictMode,
-      }), 120000, 'precise_sourcing_chat_timeout')
+        sourceQuota,
+      }), 180000, 'precise_sourcing_chat_timeout')
       : await withTimeout(preciseSourcingLangGraph.run({
         userInput,
         authHeader,
@@ -17508,6 +17965,7 @@ app.post('/api/agents/precise-sourcing/chat', authMiddleware, async (req, res) =
         kbIds: targetKbIds,
         topK: Math.min(topK, 20),
         webTopK: requestedCount,
+        finalTopN,
         dbTopK,
         selectedDbTables,
         strictMode,
@@ -17519,7 +17977,8 @@ app.post('/api/agents/precise-sourcing/chat', authMiddleware, async (req, res) =
         generateCharts,
         temperature,
         reportTemplate,
-      }), 120000, 'precise_sourcing_chat_timeout')
+        sourceQuota,
+      }), 180000, 'precise_sourcing_chat_timeout')
     const payload = await buildPreciseSourcingResponsePayload({
       graphResult,
       traceVersion,
@@ -17529,7 +17988,7 @@ app.post('/api/agents/precise-sourcing/chat', authMiddleware, async (req, res) =
       targetKbIds,
       selectedDbTables,
       reportTemplate,
-      requestedTopN: requestedCount,
+      requestedTopN: finalTopN,
       modelName: selectedModel,
       enableSecondaryWebVerification,
       enablePostEnrichment,
@@ -17627,6 +18086,8 @@ function extractSupplierCandidatesFromText(text = '', limit = 5, options = {}) {
       .filter((x) => x.length >= 2),
   ))
   const pattern = /([\u4e00-\u9fa5A-Za-z0-9（）()·\-]{2,40}(?:股份有限公司|有限责任公司|有限公司|集团有限公司|集团|公司))/g
+  const loosePattern = /([\u4e00-\u9fa5A-Za-z0-9][\u4e00-\u9fa5A-Za-z0-9（）()·\-]{2,28}(?:科技|电子|汽车|零部件|工业|实业|材料|机械|动力|能源|智造|制造))/g
+  const tierListPattern = /(?:Tier\s*1|供应商|配套客户|客户包括)[:：\s]*([\u4e00-\u9fa5A-Za-z0-9、，,\/\s\-]{4,120})/gi
   const stopPrefix = /^(在|还在|并在|并于|尽管|同时|预计|预测|此外|另外|其中|以及|与|和|对|将|已|为|被|由|于|至于|关于)/
   const stopContains = /(公告|新闻|财经|报道|日讯|今日|昨日|今年|明年|季度|年度|项目|合作|会议|发布|消息|称|表示|指出|认为|证券|银行|保险|基金|期货|交易所|传媒|电视台|报社|研究院|人民政府|委员会|合计|控制公司|截至|万元|亿元|月公司|年公司)/
   const invalidChars = /[\s"'“”‘’《》【】\[\]{}<>|/\\]/
@@ -17653,6 +18114,29 @@ function extractSupplierCandidatesFromText(text = '', limit = 5, options = {}) {
   while ((match = pattern.exec(content)) !== null) {
     const name = normalizeCompany(match?.[1] || '')
     if (!isValidCompany(name)) continue
+    if (seen.has(name)) continue
+    seen.add(name)
+    list.push(name)
+    if (list.length >= Math.max(1, Number(limit || 5))) break
+  }
+  // 允许从“供应商名单/配套客户”段落中提取简称（后续还会经过 isLikelySupplierCompanyName/LLM 再筛）
+  let listMatch = null
+  while ((listMatch = tierListPattern.exec(content)) !== null) {
+    const seg = toText(listMatch?.[1] || '')
+    if (!seg) continue
+    const parts = seg.split(/[、，,\/\s]+/).map((x) => normalizeCompany(x)).filter(Boolean)
+    for (const p of parts) {
+      if (p.length < 3 || p.length > 24) continue
+      if (seen.has(p)) continue
+      seen.add(p)
+      list.push(p)
+      if (list.length >= Math.max(1, Number(limit || 5))) break
+    }
+    if (list.length >= Math.max(1, Number(limit || 5))) break
+  }
+  while ((match = loosePattern.exec(content)) !== null) {
+    const name = normalizeCompany(match?.[1] || '')
+    if (!name || name.length < 4 || name.length > 30) continue
     if (seen.has(name)) continue
     seen.add(name)
     list.push(name)
@@ -17726,10 +18210,27 @@ function isLikelySupplierCompanyName(name = '', query = '') {
   if (isLikelyOemEntity(value)) return false
   const zhLegal = /(股份有限公司|有限责任公司|有限公司|集团有限公司|集团|公司)$/.test(value)
   const enLegal = /\b(inc|corp|corporation|co\.?,?\s*ltd|ltd\.?|limited|group|holdings?)\b/i.test(value)
-  if (!zhLegal && !enLegal) return false
+  const looseSupplierLike = /(?:科技|电子|汽车|零部件|工业|实业|材料|机械|动力|能源|智造|制造)$/.test(value)
+  if (!zhLegal && !enLegal && !looseSupplierLike) return false
   const queryText = toText(query)
   if (queryText && value.length <= 6 && queryText.includes(value)) return false
   return true
+}
+
+function isStrictCompanyEntityName(name = '') {
+  const value = normalizeSupplierCandidateName(name)
+  if (!value) return false
+  if (value.length < 4 || value.length > 64) return false
+  if (/(行业|上市及融资|名录|目录|概览|盘点|企业库|供应链|产业链)/.test(value)) return false
+  const zhLegal = /(股份有限公司|有限责任公司|有限公司|集团有限公司|集团|公司)$/.test(value)
+  const enLegal = /\b(inc|corp|corporation|co\.?,?\s*ltd|ltd\.?|limited|group|holdings?)\b/i.test(value)
+  return zhLegal || enLegal
+}
+
+function isObviousNonEntityTerm(name = '') {
+  const v = normalizeSupplierCandidateName(name)
+  if (!v) return true
+  return /(完善公司|我的公司|上市公司|行业公司|企业名录|供应链企业|相关公司|头部公司|龙头公司|多家公司|若干公司)/.test(v)
 }
 
 async function refineSupplierCandidatesByContext(candidates = [], options = {}) {
@@ -17739,7 +18240,7 @@ async function refineSupplierCandidatesByContext(candidates = [], options = {}) 
   if (rows.length === 0) return []
   const apiKey = toText(process.env.OPENAI_API_KEY || process.env.LLM_API_KEY || process.env.QWEN_API_KEY)
   const queryText = toText(options?.query || '')
-  if (!apiKey) return rows.filter((x) => isLikelySupplierCompanyName(x, queryText))
+  if (!apiKey) return rows.filter((x) => isLikelySupplierCompanyName(x, queryText) && !isObviousNonEntityTerm(x))
   const baseUrl = toText(process.env.OPENAI_BASE_URL || process.env.LLM_BASE_URL || 'https://api.openai.com')
   const model = toText(options?.model || process.env.LANGCHAIN_CHAT_MODEL || process.env.OPENAI_CHAT_MODEL || process.env.DEFAULT_LLM_MODEL || 'gpt-4.1-mini')
   const apiBase = /\/v\d+$/i.test(baseUrl.replace(/\/+$/, '')) ? baseUrl.replace(/\/+$/, '') : `${baseUrl.replace(/\/+$/, '')}/v1`
@@ -17747,7 +18248,9 @@ async function refineSupplierCandidatesByContext(candidates = [], options = {}) 
   try {
     const prompt = [
       '你是企业实体语义判别器。请结合用户问题与上下文，判断候选是否为真实企业主体且可能是供应商。',
-      '输出JSON：{"items":[{"name":"候选","isCompany":true/false,"isSupplierLike":true/false,"isOem":true/false,"confidence":0-1}]}',
+      '输出JSON：{"items":[{"name":"候选","isCompany":true/false,"isSupplierLike":true/false,"isOem":true/false,"isGenericTerm":true/false,"confidence":0-1}]}',
+      '严禁把“完善公司/我的公司/上市公司/行业公司/企业名录/供应链企业”等泛词判为企业主体。',
+      '若候选不是可工商注册的唯一组织名称，isCompany 必须为 false。',
       `用户问题: ${queryText}`,
       `上下文: ${contextText}`,
       `候选: ${JSON.stringify(rows.slice(0, 80))}`,
@@ -17767,22 +18270,26 @@ async function refineSupplierCandidatesByContext(candidates = [], options = {}) 
         ],
       }),
     })
-    if (!resp.ok) return rows.filter((x) => isLikelySupplierCompanyName(x, queryText))
+    if (!resp.ok) return rows.filter((x) => isLikelySupplierCompanyName(x, queryText) && !isObviousNonEntityTerm(x))
     const payload = await resp.json().catch(() => ({}))
     const raw = toText(payload?.choices?.[0]?.message?.content || '')
     const first = raw.indexOf('{')
     const last = raw.lastIndexOf('}')
-    if (first < 0 || last <= first) return rows.filter((x) => isLikelySupplierCompanyName(x, queryText))
+    if (first < 0 || last <= first) return rows.filter((x) => isLikelySupplierCompanyName(x, queryText) && !isObviousNonEntityTerm(x))
     const obj = JSON.parse(raw.slice(first, last + 1))
     const allow = new Set(
       (Array.isArray(obj?.items) ? obj.items : [])
-        .filter((it) => it?.isCompany === true && it?.isSupplierLike === true && it?.isOem !== true && Number(it?.confidence || 0) >= 0.65)
+        .filter((it) => it?.isCompany === true
+          && it?.isSupplierLike === true
+          && it?.isOem !== true
+          && it?.isGenericTerm !== true
+          && Number(it?.confidence || 0) >= 0.65)
         .map((it) => normalizeSupplierCandidateName(it?.name))
         .filter(Boolean),
     )
-    return rows.filter((x) => allow.has(x) && isLikelySupplierCompanyName(x, queryText))
+    return rows.filter((x) => allow.has(x) && isLikelySupplierCompanyName(x, queryText) && !isObviousNonEntityTerm(x))
   } catch {
-    return rows.filter((x) => isLikelySupplierCompanyName(x, queryText))
+    return rows.filter((x) => isLikelySupplierCompanyName(x, queryText) && !isObviousNonEntityTerm(x))
   }
 }
 
@@ -17889,6 +18396,54 @@ async function extractSupplierCandidatesByLlmBatch(items = [], perItemLimit = 5,
   }
 }
 
+async function extractSupplierCandidatesFromWebHitDeep(hit = {}, options = {}) {
+  const queryText = toText(options?.query || '')
+  const modelName = toText(options?.model || '')
+  const title = toText(hit?.title || hit?.name || '')
+  const snippet = toText(hit?.snippet || hit?.content || '')
+  const url = toText(hit?.url || hit?.href || hit?.link || '')
+  const pageText = await fetchWebPageTextForSupplier(url, 2400)
+  const extractCompanyEntitiesFromPageText = (text = '', query = '') => {
+    const raw = toText(text)
+    if (!raw) return []
+    const entities = []
+    const normalizeEntityFromChunk = (chunk = '') => {
+      const src = toText(chunk)
+      if (!src) return ''
+      const parts = [...src.matchAll(/([\u4e00-\u9fa5A-Za-z0-9（）()·\-]{2,60}?(?:股份有限公司|有限责任公司|有限公司|集团有限公司))/g)]
+        .map((x) => toText(x?.[1]))
+        .filter(Boolean)
+      return parts.length > 0 ? parts[parts.length - 1] : src
+    }
+    const re = /([\u4e00-\u9fa5A-Za-z0-9（）()·\-\s]{2,60}?(?:股份有限公司|有限责任公司|有限公司|集团有限公司))/g
+    let m = null
+    while ((m = re.exec(raw)) !== null) {
+      const name = normalizeSupplierCandidateName(normalizeEntityFromChunk(m[1]))
+      if (!name) continue
+      entities.push(name)
+    }
+    return Array.from(new Set(entities))
+  }
+  const pageEntities = extractCompanyEntitiesFromPageText(pageText, queryText)
+  const ruleCandidates = extractSupplierCandidatesFromText(`${title} ${snippet} ${pageText}`, 10, { query: queryText })
+  let llmCandidates = []
+  if (ruleCandidates.length < 2) {
+    const llmRows = await extractSupplierCandidatesByLlmBatch([{
+      title,
+      snippet: `${snippet} ${pageText}`.slice(0, 1800),
+      url,
+    }], 8, modelName, { query: queryText })
+    llmCandidates = Array.isArray(llmRows?.[0]) ? llmRows[0] : []
+  }
+  const candidates = Array.from(new Set([...ruleCandidates, ...pageEntities, ...llmCandidates]
+    .map((x) => normalizeSupplierCandidateName(x))
+    .filter(Boolean)
+    .filter((x) => isStrictCompanyEntityName(x))
+    .filter((x) => !isObviousNonEntityTerm(x))))
+    .slice(0, 12)
+  return { pageText, candidates }
+}
+
 function toLangchainMessages(history = [], userMessage = '', userImageDataUrl = '') {
   const mapped = Array.isArray(history)
     ? history
@@ -17978,60 +18533,232 @@ const preciseSourcingToolbox = buildLangChainToolbox({
     return rows
   },
   async webSearch({ query = '', topK = 10 }) {
-    const apiKey = toText(process.env.TAVILY_API_KEY)
+    const searchSettings = await loadSearchSettings()
+    const serpapiKey = toText(searchSettings.apiKey || process.env.SERPAPI_API_KEY)
+    const searchTool = toText(searchSettings.searchTool || defaultSearchSettings.searchTool).toLowerCase()
+    const q = toText(query)
     const limit = Math.min(Math.max(Number(topK || 10), 1), 50)
-    let tavilyError = ''
-    if (apiKey) {
+    const domains = Array.isArray(searchSettings.siteWhitelist) && searchSettings.siteWhitelist.length > 0
+      ? searchSettings.siteWhitelist
+      : defaultSearchSettings.siteWhitelist
+    const siteExpr = domains.map((d) => `site:${d}`).join(' OR ')
+    const tokens = Array.from(new Set(
+      q.split(/\s+/)
+        .map((x) => toText(x))
+        .filter(Boolean)
+        .filter((x) => x.length >= 2)
+        .slice(0, 5),
+    ))
+    const queryVariants = [
+      `${q} 配套客户 供应商 Tier1 企业名单 (${siteExpr}) -新闻 -快讯`,
+      ...tokens.map((tk) => `${tk} 配套客户 供应商 企业 (${siteExpr}) -新闻 -快讯`),
+      ...domains.slice(0, 6).map((d) => `${q} 配套客户 供应商 site:${d} -新闻 -快讯`),
+      `${q} 供应商 名录 公司 (${siteExpr}) -新闻 -快讯`,
+    ]
+    const rows = []
+    const seen = new Set()
+    const perDomainCap = 20
+    const domainCount = new Map()
+    const badUrlPattern = /(\/news\/|\/article\/|\/mobile\/|\/share|\/kuaixun|\/topic\/|\/zhuanlan\/)/i
+    const goodPathPattern = /(supplier|suppliers|company|companies|oesuppliers|detail|profile|enterprise|corp)/i
+    const prefersSupplierTitle = (titleText = '') => /(供应商|配套客户|tier1|企业|公司|厂商)/i.test(toText(titleText))
+    const isVerticalHost = (urlText = '') => {
       try {
-        const response = await fetchByNetworkPolicy('https://api.tavily.com/search', {
+        const host = new URL(toText(urlText)).hostname.toLowerCase()
+        return /(gasgoo\.com|qcgys\.com|marklines\.com|d1ev\.com)/i.test(host)
+      } catch {
+        return false
+      }
+    }
+    const pushRow = (item = {}, provider = 'serpapi', variant = '') => {
+      const url = toText(item?.url || item?.link)
+      const title = toText(item?.title || item?.source || item?.name)
+      const snippet = toText(item?.snippet || item?.content || item?.text || '')
+      const key = `${url}@@${title}`.toLowerCase()
+      if (!url || !title || seen.has(key)) return
+      if (/\/robots\.txt($|\?)/i.test(url)) return
+      if (/(\/forum\/|\/answers\/|\/help\/|\/support\/)/i.test(url)) return
+      if (badUrlPattern.test(url)) return
+      try {
+        const host = new URL(url).hostname.toLowerCase()
+        const currentDomainCount = Number(domainCount.get(host) || 0)
+        if (currentDomainCount >= perDomainCap) return
+        const rankBoost = (isVerticalHost(url) ? 100 : 0)
+          + (goodPathPattern.test(url) ? 30 : 0)
+          + (prefersSupplierTitle(title) ? 20 : 0)
+        domainCount.set(host, currentDomainCount + 1)
+        seen.add(key)
+        rows.push({
+          title,
+          url,
+          snippet,
+          score: Number(item?.position || item?.score || 0),
+          _rankBoost: rankBoost,
+          _provider: provider,
+          _query: variant,
+        })
+      } catch {
+        // ignore invalid URL rows
+      }
+    }
+    const runSerpGoogle = async (variants = [], provider = 'serpapi_google') => {
+      if (!serpapiKey) return
+      for (const variant of variants) {
+        const endpoint = `https://serpapi.com/search.json?engine=google&hl=zh-cn&gl=cn&num=${Math.min(8, limit)}&q=${encodeURIComponent(variant)}&api_key=${encodeURIComponent(serpapiKey)}`
+        const resp = await fetchByNetworkPolicy(endpoint, { method: 'GET', headers: { Accept: 'application/json' } })
+        const payload = await resp.json().catch(() => ({}))
+        if (!resp.ok) continue
+        const list = Array.isArray(payload?.organic_results) ? payload.organic_results : []
+        for (const item of list) pushRow({
+          title: item?.title,
+          link: item?.link || item?.url,
+          snippet: item?.snippet || item?.snippet_highlighted_words?.join(' ') || '',
+          position: item?.position,
+        }, provider, variant)
+        if (rows.length >= limit) break
+      }
+    }
+    const runSerpGoogleAiOverview = async (variants = []) => {
+      if (!serpapiKey) return
+      for (const variant of variants) {
+        const endpoints = [
+          `https://serpapi.com/search.json?engine=google_ai_overview&hl=zh-cn&gl=cn&q=${encodeURIComponent(variant)}&api_key=${encodeURIComponent(serpapiKey)}`,
+        ]
+        for (const endpoint of endpoints) {
+          const resp = await withTimeout(
+            fetchByNetworkPolicy(endpoint, { method: 'GET', headers: { Accept: 'application/json' } }),
+            3500,
+            'serp_google_ai_overview_timeout',
+          ).catch(() => null)
+          const payload = resp ? await resp.json().catch(() => ({})) : {}
+          const ai = payload?.ai_overview || payload?.google_ai_overview || payload?.overview || {}
+          const aiSources = []
+          if (Array.isArray(ai?.sources)) aiSources.push(...ai.sources)
+          if (Array.isArray(ai?.reference_links)) aiSources.push(...ai.reference_links)
+          for (const src of aiSources) pushRow({
+            title: src?.title || src?.source,
+            link: src?.link || src?.url,
+            snippet: src?.snippet || ai?.summary || ai?.text || '',
+            position: src?.position || 0,
+          }, 'google_ai_overview', variant)
+          const topSights = Array.isArray(payload?.top_sights) ? payload.top_sights : []
+          for (const row of topSights) pushRow(row, 'google_ai_overview', variant)
+          const organic = Array.isArray(payload?.organic_results) ? payload.organic_results : []
+          for (const row of organic.slice(0, 6)) pushRow({
+            title: row?.title,
+            link: row?.link || row?.url,
+            snippet: row?.snippet || '',
+            position: row?.position,
+          }, 'google_ai_overview', variant)
+          if (rows.length >= limit) break
+        }
+        if (rows.length >= limit) break
+      }
+    }
+    if (serpapiKey) {
+      if (searchTool === 'google_ai_overview') {
+        await runSerpGoogleAiOverview(queryVariants.slice(0, 1))
+      } else {
+        await runSerpGoogle(queryVariants.slice(0, 6), 'serpapi_google')
+      }
+    }
+    if (rows.length === 0 && serpapiKey && searchTool === 'google_ai_overview') {
+      const splitTasks = ['比亚迪 配套供应商 site:gasgoo.com', '东风 配套供应商 site:gasgoo.com', '奇瑞 配套供应商 site:gasgoo.com']
+      await runSerpGoogleAiOverview(splitTasks.slice(0, 2))
+    }
+    if (rows.length === 0 && serpapiKey) {
+      await runSerpGoogle(queryVariants.slice(0, 6), 'serpapi_google_fallback')
+    }
+    if (rows.length === 0 && serpapiKey) {
+      const emergencyQuery = `${q} 配套供应商`
+      const endpoint = `https://serpapi.com/search.json?engine=google&hl=zh-cn&gl=cn&num=${Math.min(30, limit)}&q=${encodeURIComponent(emergencyQuery)}&api_key=${encodeURIComponent(serpapiKey)}`
+      const resp = await fetchByNetworkPolicy(endpoint, { method: 'GET', headers: { Accept: 'application/json' } }).catch(() => null)
+      const payload = resp ? await resp.json().catch(() => ({})) : {}
+      const organic = Array.isArray(payload?.organic_results) ? payload.organic_results : []
+      for (const item of organic) {
+        const url = toText(item?.link || item?.url)
+        const title = toText(item?.title)
+        const snippet = toText(item?.snippet || '')
+        const key = `${url}@@${title}`.toLowerCase()
+        if (!url || !title || seen.has(key)) continue
+        seen.add(key)
+        rows.push({
+          title,
+          url,
+          snippet,
+          score: Number(item?.position || 0),
+          _rankBoost: 0,
+          _provider: 'serpapi_emergency_raw',
+          _query: emergencyQuery,
+        })
+        if (rows.length >= limit) break
+      }
+    }
+    if (rows.length === 0) {
+      const tavilyKey = toText(process.env.TAVILY_API_KEY || '')
+      if (tavilyKey) {
+        const tavilyQuery = `${q} 配套供应商 公司 名录`
+        const resp = await fetchByNetworkPolicy('https://api.tavily.com/search', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
+            Accept: 'application/json',
           },
           body: JSON.stringify({
-            api_key: apiKey,
-            query: toText(query),
-            max_results: limit,
+            api_key: tavilyKey,
+            query: tavilyQuery,
             topic: 'general',
+            max_results: Math.min(10, limit),
+            include_domains: domains,
             search_depth: 'advanced',
           }),
         })
-        const payload = await response.json().catch(() => ({}))
-        if (!response.ok) {
-          tavilyError = toText(payload?.error || payload?.message || `Tavily HTTP ${response.status}`)
-        } else {
-          const results = Array.isArray(payload?.results) ? payload.results : []
-          const normalized = results.map((item) => ({
-            title: toText(item?.title),
-            url: toText(item?.url),
-            snippet: toText(item?.content || ''),
+        const payload = await resp.json().catch(() => ({}))
+        const list = Array.isArray(payload?.results) ? payload.results : []
+        for (const item of list) {
+          const url = toText(item?.url)
+          const title = toText(item?.title)
+          const snippet = toText(item?.content || '')
+          const key = `${url}@@${title}`.toLowerCase()
+          if (!url || seen.has(key)) continue
+          if (badUrlPattern.test(url)) continue
+          seen.add(key)
+          rows.push({
+            title,
+            url,
+            snippet,
             score: Number(item?.score || 0),
+            _rankBoost: isVerticalHost(url) ? 100 : 0,
             _provider: 'tavily',
-          }))
-          if (normalized.length > 0) return normalized
-          tavilyError = 'Tavily returned empty results'
+            _query: tavilyQuery,
+          })
+          if (rows.length >= limit) break
         }
-      } catch (error) {
-        tavilyError = toText(error?.message || error)
       }
-    } else {
-      tavilyError = 'TAVILY_API_KEY 未配置'
     }
-    // 第二选择：openclaw-grok-search（若可用）
-    try {
-      const grokRows = await searchWebSnippets(toText(query), 'openclaw-grok-search')
-      const normalized = (Array.isArray(grokRows) ? grokRows : []).slice(0, limit).map((item) => ({
-        title: toText(item?.title),
-        url: toText(item?.href || item?.url),
-        snippet: toText(item?.snippet || item?.summary || ''),
-        score: Number(item?.score || 0),
-        _provider: 'openclaw-grok-search',
-      }))
-      if (normalized.length > 0) return normalized
-    } catch {
-      // ignore and fall through
-    }
-    throw new Error(`Web搜索无可用结果（tavily优先失败：${tavilyError || 'unknown'}；grok回退无结果）`)
+    if (!serpapiKey && rows.length === 0) throw new Error('SERPAPI_API_KEY 未配置且 Tavily 无可用结果')
+    return rows
+      .sort((a, b) => (Number(b?._rankBoost || 0) - Number(a?._rankBoost || 0)) || (Number(a?.score || 0) - Number(b?.score || 0)))
+      .slice(0, limit)
+  },
+  async rerank({ query = '', candidates = [], topN = 10 }) {
+    const q = toText(query)
+    const rows = Array.isArray(candidates) ? candidates : []
+    const limit = Math.min(Math.max(Number(topN || 10), 1), 20)
+    // 轻量回退：优先含“企业/公司/供应商”且有证据文本的候选，避免空跑。
+    const fallback = [...rows]
+      .map((item, idx) => {
+        const name = toText(item?.name || item?.companyName || item?.company_name || item?.id || '')
+        const evidence = toText(item?.evidence || item?.snippet || item?.text || '')
+        const base = Number(item?.score || 0)
+        const nameBoost = /(公司|集团|股份|有限)/.test(name) ? 1 : 0
+        const evidenceBoost = evidence ? 0.5 : 0
+        const queryBoost = q && name.includes(q) ? 1 : 0
+        return { ...item, name, score: base + nameBoost + evidenceBoost + queryBoost, _fallbackRank: idx + 1 }
+      })
+      .sort((a, b) => Number(b?.score || 0) - Number(a?.score || 0))
+      .slice(0, limit)
+    return fallback
   },
   async trace({ step, payload }) {
     console.log(`[precise-sourcing.trace] ${toText(step)}`, payload || {})
@@ -18106,13 +18833,14 @@ async function buildPreciseSourcingResponsePayload({
           },
         },
         { step: 7, name: '证据整合与去重', status: isDirectAnswer ? 'skipped' : 'done' },
-        { step: 8, name: '系统提示词 + 召回上下文交给LLM生成', status: 'done', meta: { model: toText(modelName || '') } },
-        { step: 9, name: '返回最终结果', status: 'done' },
+        { step: 8, name: '候选重排(Rerank)', status: isDirectAnswer ? 'skipped' : 'done' },
+        { step: 9, name: '系统提示词 + 召回上下文交给LLM生成', status: 'done', meta: { model: toText(modelName || '') } },
+        { step: 10, name: '返回最终结果', status: 'done' },
       ],
       selectedTools: selected,
     }
   }
-  const safeSuppliers = toJsonSafe(Array.isArray(graphResult.supplierRows) ? graphResult.supplierRows.slice(0, 20) : [])
+  const safeSuppliers = toJsonSafe(Array.isArray(graphResult.supplierRows) ? graphResult.supplierRows.slice(0, 50) : [])
     .filter((row) => {
       const name = toText(row?.companyName || row?.company_name || row?.name || row?.supplier_name || row?.oem_name || '')
       return isLikelySupplierCompanyName(name, toText(userInput)) && !isNameInOemSet(name, oemNameSet)
@@ -18137,7 +18865,10 @@ async function buildPreciseSourcingResponsePayload({
         model: toText(modelName),
         context: `${toText(hit?.docName)} ${toText(hit?.chunkText)}`,
       })
-      const supplierCandidates = (Array.isArray(ctx) && ctx.length > 0 ? ctx : seed).slice(0, 5)
+      const supplierCandidatesRaw = (Array.isArray(ctx) && ctx.length > 0 ? ctx : seed)
+      const supplierCandidates = supplierCandidatesRaw
+        .filter((x) => isStrictCompanyEntityName(x))
+        .slice(0, 5)
       safeKbHits.push({
         ...hit,
         supplierCandidates,
@@ -18154,20 +18885,45 @@ async function buildPreciseSourcingResponsePayload({
       })
     }
     const safeKbHitsEffective = safeKbHits.filter((hit) => Array.isArray(hit?.supplierCandidates) && hit.supplierCandidates.length > 0)
-    const safeWebHits = toJsonSafe((Array.isArray(graphResult.webHits) ? graphResult.webHits : []).slice(0, resultLimit)).map((hit) => ({
-      ...hit,
-      supplierCandidates: [],
-      candidateAudit: {
-        source: 'web',
-        seed: [],
-        contextPassed: [],
-        webVerified: [],
-        droppedByContext: [],
-        droppedByVerify: [],
-        keepReasons: [],
-        dropReasons: [],
-      },
-    }))
+    const rawWebHits = toJsonSafe((Array.isArray(graphResult.webHits) ? graphResult.webHits : []).slice(0, resultLimit))
+    const webLlmCandidates = await extractSupplierCandidatesByLlmBatch(rawWebHits, 5, toText(modelName), { query: toText(userInput) })
+    const safeWebHits = []
+    for (let webIdx = 0; webIdx < rawWebHits.length; webIdx += 1) {
+      const hit = rawWebHits[webIdx]
+      const title = toText(hit?.title || hit?.name || '')
+      const snippet = toText(hit?.snippet || hit?.content || '')
+      const seedRule = extractSupplierCandidatesFromText(`${title} ${snippet}`, 5, { query: toText(userInput) })
+      const seedLlm = Array.isArray(webLlmCandidates?.[webIdx]) ? webLlmCandidates[webIdx] : []
+      // eslint-disable-next-line no-await-in-loop
+      const deep = await extractSupplierCandidatesFromWebHitDeep(hit, { query: toText(userInput), model: toText(modelName) })
+      const seed = Array.from(new Set([...seedLlm, ...seedRule, ...(Array.isArray(deep?.candidates) ? deep.candidates : [])]
+        .map((x) => normalizeSupplierCandidateName(x))
+        .filter((x) => isLikelySupplierCompanyName(x, toText(userInput)))
+        .filter((x) => !isObviousNonEntityTerm(x))))
+      // eslint-disable-next-line no-await-in-loop
+      const ctx = await refineSupplierCandidatesByContext(seed, {
+        query: toText(userInput),
+        model: toText(modelName),
+        context: `${title} ${snippet} ${toText(deep?.pageText || '')}`,
+      })
+      const supplierCandidates = (Array.isArray(ctx) && ctx.length > 0 ? ctx : seed)
+        .filter((x) => isStrictCompanyEntityName(x))
+        .slice(0, 5)
+      safeWebHits.push({
+        ...hit,
+        supplierCandidates,
+        candidateAudit: {
+          source: 'web',
+          seed,
+          contextPassed: supplierCandidates,
+          webVerified: [],
+          droppedByContext: seed.filter((name) => !supplierCandidates.includes(name)),
+          droppedByVerify: [],
+          keepReasons: supplierCandidates.map((name) => ({ name, reasons: ['LLM+网页正文语义判定通过'] })),
+          dropReasons: [],
+        },
+      })
+    }
     const tracesWithVersion = Array.isArray(graphResult.traces)
       ? graphResult.traces.map((item) => ({ ...item, traceVersion }))
       : []
@@ -18190,7 +18946,7 @@ async function buildPreciseSourcingResponsePayload({
       },
       web: {
         keyword: toText(graphResult?.executionPlan?.webQuery || ''),
-        provider: 'tavily -> openclaw-grok-search(fallback)',
+        provider: 'serpapi',
       },
       fusion: {
         requestedTopN: Number(requestedTopN || 10),
@@ -18232,6 +18988,7 @@ async function buildPreciseSourcingResponsePayload({
         kbHits: safeKbHitsEffective,
         webHits: safeWebHits,
         webDerivedSuppliers: [],
+        rerankMeta: graphResult?.rerankMeta || graphResult?.fusedEvidence?.rerankMeta || null,
       },
       executionProtocol: buildExecutionProtocol({
         suppliers: safeSuppliers,
@@ -18261,7 +19018,9 @@ async function buildPreciseSourcingResponsePayload({
       const fromRule = extractSupplierCandidatesFromText(`${title} ${snippet}`, 5, { query: toText(userInput) })
       const suppliers = Array.from(new Set([...fromLlm, ...fromRule]
         .map((x) => normalizeSupplierCandidateName(x))
-        .filter((x) => isLikelySupplierCompanyName(x, toText(userInput))))).slice(0, 8)
+        .filter((x) => isLikelySupplierCompanyName(x, toText(userInput)))
+        .filter((x) => isStrictCompanyEntityName(x))
+        .filter((x) => !isObviousNonEntityTerm(x)))).slice(0, 8)
       return {
         ...item,
         supplierCandidates: suppliers,
@@ -18270,15 +19029,18 @@ async function buildPreciseSourcingResponsePayload({
   )
   const safeWebHits = []
   for (const hit of safeWebHitsDraft) {
-    const seed = Array.isArray(hit?.supplierCandidates) ? hit.supplierCandidates : []
-    const ctx = await refineSupplierCandidatesByContext(hit?.supplierCandidates || [], {
+    // eslint-disable-next-line no-await-in-loop
+    const deep = await extractSupplierCandidatesFromWebHitDeep(hit, { query: toText(userInput), model: toText(modelName) })
+    const seed = Array.from(new Set([...(Array.isArray(hit?.supplierCandidates) ? hit.supplierCandidates : []), ...(Array.isArray(deep?.candidates) ? deep.candidates : [])]))
+    const ctx = await refineSupplierCandidatesByContext(seed, {
       query: toText(userInput),
       model: toText(modelName),
-      context: `${toText(hit?.title || hit?.name)} ${toText(hit?.snippet || hit?.content)}`,
+      context: `${toText(hit?.title || hit?.name)} ${toText(hit?.snippet || hit?.content)} ${toText(deep?.pageText)}`,
     })
+    const ctxOrSeed = Array.isArray(ctx) && ctx.length > 0 ? ctx : seed
     const verified = enableSecondaryWebVerification
-      ? await verifySupplierCandidatesViaWeb(ctx, { query: toText(userInput) })
-      : ctx
+      ? await verifySupplierCandidatesViaWeb(ctxOrSeed, { query: toText(userInput) })
+      : ctxOrSeed
     const verifiedFiltered = verified.filter((name) => !isNameInOemSet(name, oemNameSet))
     const candidateAudit = buildCandidateAudit(seed, ctx, verifiedFiltered, 'web')
     if (verifiedFiltered.length > 0) safeWebHits.push({ ...hit, supplierCandidates: verifiedFiltered.slice(0, 5), candidateAudit })
@@ -18313,7 +19075,7 @@ async function buildPreciseSourcingResponsePayload({
     },
     web: {
       keyword: toText(graphResult?.executionPlan?.webQuery || ''),
-      provider: 'tavily -> openclaw-grok-search(fallback)',
+      provider: 'serpapi',
     },
     fusion: {
       requestedTopN: Number(requestedTopN || 10),
@@ -18357,6 +19119,7 @@ async function buildPreciseSourcingResponsePayload({
       kbHits: safeKbHits,
       webHits: safeWebHits,
       webDerivedSuppliers,
+      rerankMeta: graphResult?.rerankMeta || graphResult?.fusedEvidence?.rerankMeta || null,
     },
     executionProtocol: buildExecutionProtocol({
       suppliers: safeSuppliers,
@@ -18826,10 +19589,12 @@ app.post('/api/agents/precise-sourcing/chat-stream', authMiddleware, async (req,
   const temperature = Math.max(0, Math.min(1, Number(req.body?.temperature ?? 0.2)))
   const reportTemplate = req.body?.reportTemplate && typeof req.body.reportTemplate === 'object' ? req.body.reportTemplate : null
   const strictMode = req.body?.strictMode === true
+  const sourceQuota = req.body?.sourceQuota && typeof req.body.sourceQuota === 'object' ? req.body.sourceQuota : null
   const selectedModel = toText(req.body?.model)
   const systemPrompt = toText(req.body?.systemPrompt)
   const systemPromptPresetKey = toText(req.body?.systemPromptPresetKey || 'default')
-  const requestedCount = resolveRequestedCount({ userInput, systemPrompt, defaultCount: 10, min: 1, max: 50 })
+  const finalTopN = Math.min(Math.max(Number(req.body?.finalTopN || 10), 1), 50)
+  const requestedCount = resolveRequestedCount({ userInput, systemPrompt, defaultCount: finalTopN, min: 1, max: 50 })
   const enableSecondaryWebVerification = req.body?.enableSecondaryWebVerification === true
   const enablePostEnrichment = req.body?.enablePostEnrichment === true
   const executionMode = toText(req.body?.executionMode || 'fast').toLowerCase()
@@ -18849,6 +19614,7 @@ app.post('/api/agents/precise-sourcing/chat-stream', authMiddleware, async (req,
       // ignore broken pipe
     }
   }
+  let streamDeltaCount = 0
   sendEvent('start', { traceVersion, message: '开始执行' })
 
   try {
@@ -18862,9 +19628,24 @@ app.post('/api/agents/precise-sourcing/chat-stream', authMiddleware, async (req,
         selectedDbTables,
         selectedTools: primaryTools,
         topK: Math.min(topK, 20),
+        requestedTopN: finalTopN,
         dbTopK,
         strictMode,
-      }), 120000, 'precise_sourcing_stream_timeout')
+        model: selectedModel,
+        systemPrompt,
+        systemPromptPresetKey,
+        temperature,
+        reportTemplate,
+        sourceQuota,
+        generateCharts,
+        streamTokens: true,
+        onDelta: (delta) => {
+          const text = toText(delta)
+          if (!text) return
+          streamDeltaCount += 1
+          sendEvent('delta', { text })
+        },
+      }), 180000, 'precise_sourcing_stream_timeout')
       : await withTimeout(preciseSourcingLangGraph.run({
         onEvent: (evt) => {
           if (evt?.type === 'trace' && evt?.trace) {
@@ -18879,6 +19660,7 @@ app.post('/api/agents/precise-sourcing/chat-stream', authMiddleware, async (req,
         kbIds: targetKbIds,
         topK: Math.min(topK, 20),
         webTopK: requestedCount,
+        finalTopN,
         dbTopK,
         selectedDbTables,
         strictMode,
@@ -18890,8 +19672,9 @@ app.post('/api/agents/precise-sourcing/chat-stream', authMiddleware, async (req,
         generateCharts,
         temperature,
         reportTemplate,
+        sourceQuota,
         streamTokens: true,
-      }), 120000, 'precise_sourcing_stream_timeout')
+      }), 180000, 'precise_sourcing_stream_timeout')
     if (executionMode === 'fast') {
       for (const tr of (Array.isArray(graphResult?.traces) ? graphResult.traces : [])) {
         sendEvent('trace', { traceVersion, trace: tr })
@@ -18908,7 +19691,7 @@ app.post('/api/agents/precise-sourcing/chat-stream', authMiddleware, async (req,
       targetKbIds,
       selectedDbTables,
       reportTemplate,
-      requestedTopN: requestedCount,
+      requestedTopN: finalTopN,
       modelName: selectedModel,
       enableSecondaryWebVerification,
       enablePostEnrichment,
@@ -18923,6 +19706,15 @@ app.post('/api/agents/precise-sourcing/chat-stream', authMiddleware, async (req,
       selectedDbTables,
       modelName: selectedModel,
     }).catch(() => {})
+    if (streamDeltaCount === 0) {
+      const fallbackText = toText(payload?.answer || '')
+      if (fallbackText) {
+        const chunkSize = 80
+        for (let i = 0; i < fallbackText.length; i += chunkSize) {
+          sendEvent('delta', { text: fallbackText.slice(i, i + chunkSize) })
+        }
+      }
+    }
     sendEvent('final', payload)
     const routeNeedWeb = graphResult?.executionPlan?.useWeb === true
     const routeNeedTools = graphResult?.executionPlan?.needsTools === true
@@ -18931,7 +19723,7 @@ app.post('/api/agents/precise-sourcing/chat-stream', authMiddleware, async (req,
       try {
         const oemNameSet = await loadGasOemNameSet()
         const webRaw = await invokeRunnableTool(preciseSourcingToolbox.byName.webSearchTool, {
-          query: toText(graphResult?.executionPlan?.webQuery || userInput),
+          query: normalizeSupplierWebQuery(toText(graphResult?.executionPlan?.webQuery || userInput)),
           topK: requestedCount,
         }, { tool: 'web_search_supplier_signals_async' })
         const webParsed = normalizeToolJsonResult(webRaw)
@@ -18943,12 +19735,39 @@ app.post('/api/agents/precise-sourcing/chat-stream', authMiddleware, async (req,
           const supplierCandidates = Array.from(new Set([...fromLlm, ...fromRule]
             .map((x) => normalizeSupplierCandidateName(x))
             .filter((x) => isLikelySupplierCompanyName(x, toText(userInput)))
+            .filter((x) => isStrictCompanyEntityName(x))
+            .filter((x) => !isObviousNonEntityTerm(x))
             .filter((x) => !isNameInOemSet(x, oemNameSet)))).slice(0, 5)
           return {
             ...item,
             supplierCandidates,
           }
         })
+        for (let i = 0; i < webHits.length; i += 1) {
+          const row = webHits[i]
+          // eslint-disable-next-line no-await-in-loop
+          const deep = await extractSupplierCandidatesFromWebHitDeep(row, { query: toText(userInput), model: toText(selectedModel) })
+          const mergedSeed = Array.from(new Set([...(Array.isArray(row?.supplierCandidates) ? row.supplierCandidates : []), ...(Array.isArray(deep?.candidates) ? deep.candidates : [])]))
+            .filter((x) => !isNameInOemSet(x, oemNameSet))
+            .filter((x) => !isObviousNonEntityTerm(x))
+            .slice(0, 10)
+          // eslint-disable-next-line no-await-in-loop
+          const llmFiltered = await refineSupplierCandidatesByContext(mergedSeed, {
+            query: toText(userInput),
+            model: toText(selectedModel),
+            context: `${toText(row?.title || '')} ${toText(row?.snippet || row?.content || '')} ${toText(deep?.pageText || '')}`.slice(0, 2200),
+          })
+          const merged = Array.from(new Set(
+            (Array.isArray(llmFiltered) && llmFiltered.length > 0 ? llmFiltered : mergedSeed),
+          ))
+            .filter((x) => !isNameInOemSet(x, oemNameSet))
+            .filter((x) => !isObviousNonEntityTerm(x))
+            .slice(0, 6)
+          webHits[i] = {
+            ...row,
+            supplierCandidates: merged,
+          }
+        }
         const uniqueCandidates = Array.from(new Set(
           webHits
             .flatMap((x) => (Array.isArray(x?.supplierCandidates) ? x.supplierCandidates : []))
@@ -18958,12 +19777,18 @@ app.post('/api/agents/precise-sourcing/chat-stream', authMiddleware, async (req,
         const webDerivedSuppliers = await refineSupplierCandidatesByContext(uniqueCandidates, {
           query: toText(userInput),
           model: toText(selectedModel),
-          context: webHits.map((x) => `${toText(x?.title || '')} ${toText(x?.snippet || x?.content || '')}`).join('\n').slice(0, 3000),
+          context: (await Promise.all(
+            webHits.slice(0, 5).map(async (x) => {
+              const pageText = await fetchWebPageTextForSupplier(toText(x?.url || x?.href || x?.link), 1200)
+              return `${toText(x?.title || '')} ${toText(x?.snippet || x?.content || '')} ${pageText}`
+            }),
+          )).join('\n').slice(0, 5000),
         })
         const webDerivedSuppliersFiltered = Array.isArray(webDerivedSuppliers)
           ? webDerivedSuppliers
             .map((x) => normalizeSupplierCandidateName(x))
             .filter(Boolean)
+            .filter((x) => isStrictCompanyEntityName(x))
             .filter((x) => !isNameInOemSet(x, oemNameSet))
           : []
         sendEvent('enrich', {

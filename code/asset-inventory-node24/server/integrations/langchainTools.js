@@ -297,7 +297,7 @@ export function buildLangChainToolbox({
 export function getLangChainIntegrationHealth() {
   const keys = {
     openai: Boolean(process.env.OPENAI_API_KEY),
-    tavily: Boolean(process.env.TAVILY_API_KEY),
+    serpapi: Boolean(process.env.SERPAPI_API_KEY),
     langsmith: Boolean(process.env.LANGSMITH_API_KEY),
     unstructured: Boolean(process.env.UNSTRUCTURED_API_KEY),
   }
@@ -327,8 +327,8 @@ export function getLangchainToolCatalog() {
     {
       key: 'web_search',
       label: '互联网搜索',
-      available: Boolean(health.keys.tavily),
-      reason: health.keys.tavily ? '' : '未配置 TAVILY_API_KEY',
+      available: Boolean(health.keys.serpapi),
+      reason: health.keys.serpapi ? '' : '未配置 SERPAPI_API_KEY',
       scopes: ['precise_sourcing', 'langchain_shell'],
     },
     {

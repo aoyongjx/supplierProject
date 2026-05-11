@@ -43,6 +43,7 @@ import LangchainMultiChatPage from './pages/LangchainMultiChatPage'
 import LangchainRagChatPage from './pages/LangchainRagChatPage'
 import KnowledgeBaseManagementPage from './pages/KnowledgeBaseManagementPage'
 import ModelManagementPage from './pages/ModelManagementPage'
+import SearchSettingsPage from './pages/SearchSettingsPage'
 import SessionChatPage from './pages/SessionChatPage'
 import SessionHistoryPage from './pages/SessionHistoryPage'
 import StockKlinePage from './pages/StockKlinePage'
@@ -438,6 +439,7 @@ const baseMenuGroups = [
       { id: 'capability-knowledge-base', key: '/capability-center/knowledge-base', label: '知识库管理' },
       { id: 'capability-vector-search', key: '/capability-center/vector-search', label: '向量检索' },
       { id: 'capability-model-management', key: '/capability-center/model-management', label: '模型管理' },
+      { id: 'capability-search-settings', key: '/capability-center/search-settings', label: '搜索配置' },
     ],
   },
   {
@@ -504,6 +506,7 @@ const menuPermissionSections = [
       { id: 'capability-knowledge-base', label: '知识库管理' },
       { id: 'capability-vector-search', label: '向量检索' },
       { id: 'capability-model-management', label: '模型管理' },
+      { id: 'capability-search-settings', label: '搜索配置' },
     ],
   },
   {
@@ -541,6 +544,9 @@ function readVisibleMenuIds() {
     }
     if (!next.has('capability-model-management') && next.has('capability-center')) {
       next.add('capability-model-management')
+    }
+    if (!next.has('capability-search-settings') && next.has('capability-center')) {
+      next.add('capability-search-settings')
     }
     if (!next.has('langchain-dialog') && next.has('langchain-chatchat-link')) {
       next.add('langchain-dialog')
@@ -609,6 +615,21 @@ function getOpenMenuKeys(pathname) {
 function normalizeVisibleIds(input) {
   if (!Array.isArray(input)) return []
   const set = new Set(input.map((item) => String(item)))
+  if (!set.has('capability-search-settings') && set.has('capability-center')) {
+    set.add('capability-search-settings')
+  }
+  if (!set.has('capability-vector-search') && set.has('capability-center')) {
+    set.add('capability-vector-search')
+  }
+  if (!set.has('capability-model-management') && set.has('capability-center')) {
+    set.add('capability-model-management')
+  }
+  if (!set.has('langchain-multi-chat') && set.has('langchain-dialog')) {
+    set.add('langchain-multi-chat')
+  }
+  if (!set.has('langchain-rag-chat') && set.has('langchain-dialog')) {
+    set.add('langchain-rag-chat')
+  }
   return defaultVisibleMenuIds.filter((id) => set.has(id))
 }
 
@@ -822,6 +843,7 @@ function App() {
     if (location.pathname.startsWith('/capability-center/knowledge-base')) return '/capability-center/knowledge-base'
     if (location.pathname.startsWith('/capability-center/vector-search')) return '/capability-center/vector-search'
     if (location.pathname.startsWith('/capability-center/model-management')) return '/capability-center/model-management'
+    if (location.pathname.startsWith('/capability-center/search-settings')) return '/capability-center/search-settings'
     if (location.pathname.startsWith('/langchain-chatchat/multi-chat')) return '/langchain-chatchat/multi-chat'
     if (location.pathname.startsWith('/langchain-chatchat/rag-chat')) return '/langchain-chatchat/rag-chat'
     if (location.pathname.startsWith('/langchain-chatchat/knowledge-base')) return '/langchain-chatchat/knowledge-base'
@@ -880,6 +902,7 @@ function App() {
     if (location.pathname.startsWith('/capability-center/knowledge-base')) return { title: '知识库管理', breadcrumb: ['能力中心', '知识库管理'] }
     if (location.pathname.startsWith('/capability-center/vector-search')) return { title: '向量检索', breadcrumb: ['能力中心', '向量检索'] }
     if (location.pathname.startsWith('/capability-center/model-management')) return { title: '模型管理', breadcrumb: ['能力中心', '模型管理'] }
+    if (location.pathname.startsWith('/capability-center/search-settings')) return { title: '搜索配置', breadcrumb: ['能力中心', '搜索配置'] }
     if (location.pathname.startsWith('/langchain-chatchat/multi-chat')) return { title: '多功能对话', breadcrumb: ['Langchain对话', '多功能对话'] }
     if (location.pathname.startsWith('/langchain-chatchat/rag-chat')) return { title: 'RAG对话', breadcrumb: ['Langchain对话', 'RAG对话'] }
     if (location.pathname.startsWith('/langchain-chatchat/knowledge-base')) return { title: '知识库管理', breadcrumb: ['Langchain对话', '知识库管理'] }
@@ -1023,6 +1046,7 @@ function App() {
               <Route path="/capability-center/knowledge-base" element={<KnowledgeBaseManagementPage />} />
               <Route path="/capability-center/vector-search" element={<Suspense fallback={<Card className="app-elevated-card">加载中...</Card>}><VectorSearchPage /></Suspense>} />
               <Route path="/capability-center/model-management" element={<ModelManagementPage />} />
+              <Route path="/capability-center/search-settings" element={<SearchSettingsPage />} />
               <Route path="/langchain-chatchat/multi-chat" element={<LangchainMultiChatPage />} />
               <Route path="/langchain-chatchat/rag-chat" element={<LangchainRagChatPage />} />
               <Route path="/langchain-chatchat/knowledge-base" element={<LangchainKnowledgeBasePage />} />
