@@ -27,7 +27,10 @@ const dbConfig = {
   database: process.env.DB_NAME || 'training_exercises',
   user: process.env.DB_USER || 'aoyong',
   password: process.env.DB_PASSWORD || 'aoyong',
-  connectionTimeoutMillis: Number(process.env.DB_CONNECT_TIMEOUT_MS || 6000),
+  connectionTimeoutMillis: Number(process.env.DB_CONNECT_TIMEOUT_MS || 15000),
+  idleTimeoutMillis: Number(process.env.DB_IDLE_TIMEOUT_MS || 30000),
+  keepAlive: (process.env.DB_KEEPALIVE || 'true') === 'true',
+  max: Math.max(2, Number(process.env.DB_POOL_MAX || 20)),
   ssl: (process.env.DB_SSL || 'false') === 'true' ? { rejectUnauthorized: false } : false,
 }
 
@@ -151,6 +154,19 @@ function buildPlaywrightLaunchArgs(targetUrl = '') {
     args.push(`--proxy-bypass-list=${supplierDirectHosts.join(';')}`)
   }
   return args
+}
+
+function normalizeGasgooSupplierSeedUrl(input = '') {
+  const raw = toText(input)
+  if (!raw) return ''
+  try {
+    const parsed = new URL(raw)
+    if (parsed.hostname.toLowerCase() !== 'i.gasgoo.com') return parsed.toString()
+    parsed.pathname = parsed.pathname.replace(/^\/supplier\/boom\/(c-\d+\.html)$/i, '/supplier/$1')
+    return parsed.toString()
+  } catch {
+    return raw
+  }
 }
 
 const cdpProxyBaseUrl = (process.env.WEB_ACCESS_CDP_BASE_URL || 'http://localhost:3456').replace(/\/+$/, '')
@@ -462,27 +478,42 @@ async function fetchCdpByChromeDirect(endpoint = '', init = {}, timeoutMs = 1500
 }
 
 async function fetchCdpProxyJson(endpoint = '', init = {}, timeoutMs = 15000) {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), Math.max(1000, Number(timeoutMs || 15000)))
-  try {
-    const response = await fetchByNetworkPolicy(`${cdpProxyBaseUrl}${endpoint}`, {
-      ...init,
-      signal: controller.signal,
-    })
-    if (!response.ok) {
+  const maxAttempts = 3
+  let lastError = null
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), Math.max(1000, Number(timeoutMs || 15000)))
+    try {
+      const response = await fetchByNetworkPolicy(`${cdpProxyBaseUrl}${endpoint}`, {
+        ...init,
+        signal: controller.signal,
+      })
       const text = await response.text().catch(() => '')
-      throw new Error(`CDP proxy HTTP ${response.status}${text ? `: ${text.slice(0, 200)}` : ''}`)
+      if (!response.ok) {
+        throw new Error(`CDP proxy HTTP ${response.status}${text ? `: ${text.slice(0, 200)}` : ''}`)
+      }
+      try {
+        return text ? JSON.parse(text) : {}
+      } catch (parseError) {
+        throw new Error(`CDP proxy JSON parse failed: ${toText(parseError?.message || parseError)}${text ? ` | body=${text.slice(0, 180)}` : ''}`)
+      }
+    } catch (error) {
+      lastError = error
+      const message = toText(error?.message || '')
+      const retryable = /Unexpected end of JSON input|JSON parse failed|fetch failed|aborted|timed out|socket hang up|ECONNRESET|ECONNREFUSED|CDP proxy HTTP 5/i.test(message)
+      if (attempt < maxAttempts && retryable) {
+        await new Promise((resolve) => setTimeout(resolve, 350 * attempt))
+        continue
+      }
+      if (/CDP proxy HTTP|ECONNREFUSED|fetch failed|aborted|timed out|JSON parse failed|Unexpected end of JSON input/i.test(message)) {
+        return await fetchCdpByChromeDirect(endpoint, init, timeoutMs)
+      }
+      throw error
+    } finally {
+      clearTimeout(timer)
     }
-    return await response.json()
-  } catch (error) {
-    const message = toText(error?.message || '')
-    if (/CDP proxy HTTP|ECONNREFUSED|fetch failed|aborted|timed out/i.test(message)) {
-      return await fetchCdpByChromeDirect(endpoint, init, timeoutMs)
-    }
-    throw error
-  } finally {
-    clearTimeout(timer)
   }
+  throw lastError || new Error('CDP proxy request failed')
 }
 
 async function pathExists(targetPath = '') {
@@ -865,7 +896,8 @@ const supplierLlmApiKey = process.env.OPENAI_API_KEY || process.env.LLM_API_KEY 
 const supplierLlmBaseUrl = (process.env.OPENAI_BASE_URL || process.env.LLM_BASE_URL || 'https://api.openai.com/v1').replace(/\/+$/, '')
 const supplierLlmTimeoutMs = Math.max(3000, Number(process.env.SUPPLIER_LLM_TIMEOUT_MS || 18000))
 const supplierHttpTimeoutMs = Math.max(4000, Number(process.env.SUPPLIER_HTTP_TIMEOUT_MS || 12000))
-const supplierHttpRetryCount = Math.max(1, Number(process.env.SUPPLIER_HTTP_RETRY_COUNT || 1))
+const supplierHttpRetryCount = Math.max(1, Number(process.env.SUPPLIER_HTTP_RETRY_COUNT || 3))
+const supplierListPageIntervalMs = Math.max(0, Number(process.env.SUPPLIER_LIST_PAGE_INTERVAL_MS || 250))
 const supplierPlaywrightGotoTimeoutMs = Math.max(8000, Number(process.env.SUPPLIER_PW_GOTO_TIMEOUT_MS || 25000))
 const supplierPlaywrightWaitMs = Math.max(400, Number(process.env.SUPPLIER_PW_WAIT_MS || 1800))
 const supplierDetailConcurrency = Math.max(1, Math.min(6, Number(process.env.SUPPLIER_DETAIL_CONCURRENCY || 3)))
@@ -1870,6 +1902,30 @@ async function tryInitializeDatabaseIfNeeded(reason = 'unknown') {
   })()
   await dbReconnectInFlight
   return dbReady
+}
+
+function isTransientDbError(error) {
+  const message = String(error?.message || '').toLowerCase()
+  const code = String(error?.code || '').toUpperCase()
+  return (
+    code === 'ETIMEDOUT'
+    || code === 'ECONNRESET'
+    || code === 'EPIPE'
+    || code === '57P01'
+    || message.includes('connection timeout')
+    || message.includes('terminating connection')
+    || message.includes('connection terminated')
+  )
+}
+
+async function safeDbQuery(queryText, params = [], context = 'db-query') {
+  try {
+    return await pool.query(queryText, params)
+  } catch (error) {
+    if (!isTransientDbError(error)) throw error
+    await tryInitializeDatabaseIfNeeded(`${context}:transient`)
+    return await pool.query(queryText, params)
+  }
 }
 
 async function initDatabase() {
@@ -3068,6 +3124,33 @@ function normalizeGasSupplyChainTaskRows(inputRows = [], taskMeta = {}, fallback
     if (normalized) rows.push(normalized)
   }
   return rows
+}
+
+function filterGasSupplyChainRowsByCategoryBranch(rows = [], sourceUrl = '') {
+  const categoryCode = extractGasgooCategoryCodeFromUrl(sourceUrl)
+  if (!categoryCode || !Array.isArray(rows) || rows.length === 0) return rows
+  const normalized = String(categoryCode)
+  const level2Rows = rows.filter((row) => (
+    Number(row?.nodeLevel) === 2
+    && (
+      toText(row?.nodeCode) === normalized
+      || toText(row?.level2Code) === normalized
+    )
+  ))
+  if (level2Rows.length === 0) return rows
+  const level1Codes = new Set(level2Rows.map((row) => toText(row?.level1Code || row?.parentCode)).filter(Boolean))
+  const filtered = rows.filter((row) => {
+    const nodeLevel = Number(row?.nodeLevel || 0)
+    const nodeCode = toText(row?.nodeCode)
+    const level1Code = toText(row?.level1Code)
+    const level2Code = toText(row?.level2Code)
+    const parentCode = toText(row?.parentCode)
+    if (nodeLevel === 1) return level1Codes.size > 0 && level1Codes.has(nodeCode || level1Code)
+    if (nodeLevel === 2) return nodeCode === normalized || level2Code === normalized
+    if (nodeLevel >= 3) return parentCode === normalized || level2Code === normalized
+    return false
+  })
+  return filtered.length > 0 ? filtered : rows
 }
 
 function parsePositiveBigintId(value) {
@@ -5558,6 +5641,14 @@ async function fetchGasSupplyChainHtmlWithCdp(url, context = {}) {
   let shouldCloseTarget = false
   try {
     const preferredUrl = toText(url)
+    const preferredHost = safeHostFromUrl(preferredUrl)
+    const preferredPath = (() => {
+      try {
+        return new URL(preferredUrl).pathname || ''
+      } catch {
+        return ''
+      }
+    })()
     let registeredTarget = null
     try {
       const raw = await fs.readFile(gasgooCdpTargetFile, 'utf8')
@@ -5569,23 +5660,71 @@ async function fetchGasSupplyChainHtmlWithCdp(url, context = {}) {
       registeredTarget = null
     }
     const targetsPayload = await fetchCdpProxyJson('/targets', {}, 15000).catch(() => ({ value: [] }))
-    const targets = Array.isArray(targetsPayload?.value) ? targetsPayload.value : []
-    const matchedTarget = registeredTarget?.targetId
-      ? { targetId: toText(registeredTarget.targetId), url: toText(registeredTarget.url) || preferredUrl }
-      : (targets.find((item) => toText(item?.url) === preferredUrl)
-        || targets.find((item) => safeHostFromUrl(item?.url || '').includes('gasgoo.com')))
-    if (matchedTarget?.targetId) {
-      targetId = toText(matchedTarget.targetId)
+    const targets = normalizeCdpTargetsPayload(targetsPayload)
+    const forceNewTarget = Boolean(context?.forceNewTarget)
+    const targetByExactUrl = targets.find((item) => toText(item?.url) === preferredUrl)
+    const targetBySamePath = preferredPath
+      ? targets.find((item) => {
+        try {
+          const u = new URL(toText(item?.url))
+          return safeHostFromUrl(u.toString()) === preferredHost && (u.pathname || '') === preferredPath
+        } catch {
+          return false
+        }
+      })
+      : null
+    const targetByRegistered = registeredTarget?.targetId
+      ? targets.find((item) => getCdpTargetId(item) === toText(registeredTarget.targetId))
+      : null
+    const targetByGasgooHost = targets.find((item) => safeHostFromUrl(item?.url || '').includes('gasgoo.com'))
+    const matchedTarget = forceNewTarget ? null : (targetByExactUrl || targetBySamePath || targetByRegistered || targetByGasgooHost)
+    const matchedTargetId = getCdpTargetId(matchedTarget)
+    if (matchedTargetId) {
+      targetId = matchedTargetId
     } else {
       const created = await fetchCdpProxyJson(`/new?url=${encodeURIComponent(url)}`, {}, 20000)
-      targetId = toText(created?.targetId)
+      targetId = getCdpTargetId(created)
       shouldCloseTarget = true
     }
     if (!targetId) {
       throw new Error('CDP proxy did not return targetId')
     }
-    await new Promise((resolve) => setTimeout(resolve, 2500))
-    const info = await fetchCdpProxyJson(`/info?target=${encodeURIComponent(targetId)}`, {}, 10000)
+    await fs.mkdir(path.dirname(gasgooCdpTargetFile), { recursive: true }).catch(() => {})
+    await fs.writeFile(
+      gasgooCdpTargetFile,
+      JSON.stringify({ targetId, url: preferredUrl }, null, 2),
+      'utf8',
+    ).catch(() => {})
+    await fetchCdpProxyJson(
+      `/navigate?target=${encodeURIComponent(targetId)}&url=${encodeURIComponent(preferredUrl)}`,
+      {},
+      15000,
+    ).catch(() => ({}))
+    await fetchCdpProxyJson(
+      `/eval?target=${encodeURIComponent(targetId)}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+        body: `(() => {
+          const desired = ${JSON.stringify(preferredUrl)}
+          const current = String(location.href || '')
+          if (desired && current !== desired) {
+            location.href = desired
+            return { redirected: true, from: current, to: desired }
+          }
+          return { redirected: false, from: current, to: desired }
+        })()`,
+      },
+      12000,
+    ).catch(() => ({}))
+    await new Promise((resolve) => setTimeout(resolve, 2600))
+    let info = await fetchCdpProxyJson(`/info?target=${encodeURIComponent(targetId)}`, {}, 10000).catch(() => ({}))
+    for (let i = 0; i < 6; i += 1) {
+      const currentUrl = toText(info?.url)
+      if (currentUrl && !/^about:blank$/i.test(currentUrl) && !/^chrome-error:\/\//i.test(currentUrl)) break
+      await new Promise((resolve) => setTimeout(resolve, 500))
+      info = await fetchCdpProxyJson(`/info?target=${encodeURIComponent(targetId)}`, {}, 10000).catch(() => info)
+    }
     const evaluated = await fetchCdpProxyJson(
       `/eval?target=${encodeURIComponent(targetId)}`,
       {
@@ -5606,7 +5745,16 @@ async function fetchGasSupplyChainHtmlWithCdp(url, context = {}) {
           }
           try {
             const records = []
-            const roots = Array.from(document.querySelectorAll('#container > li[id]'))
+            let roots = Array.from(document.querySelectorAll('#container > li[id]'))
+            if (roots.length === 0) {
+              roots = Array.from(document.querySelectorAll('li[id]')).filter((li) => {
+                const id = clean(li.id)
+                if (!id) return false
+                if (!/^\d+$/.test(id)) return false
+                const anchor = li.querySelector(':scope > a[href], :scope > a > span')
+                return Boolean(anchor)
+              })
+            }
             for (const rootLi of roots) {
               const rootCode = clean(rootLi.id)
               const rootAnchor = rootLi.querySelector('a[href]')
@@ -5636,13 +5784,116 @@ async function fetchGasSupplyChainHtmlWithCdp(url, context = {}) {
                 status: 'success',
                 errorMessage: '',
               })
-              const secondItems = Array.from(rootLi.querySelectorAll('.secLeven > ol > li'))
-              for (const secondLi of secondItems) {
-                const secondA = secondLi.querySelector('a[href]')
-                const secondTitle = clean(secondA?.textContent)
-                const secondUrl = toAbs(secondA?.getAttribute('href'))
+              const walkChildren = (items, parent, pathTitles) => {
+                for (const li of items) {
+                  const directA = li.querySelector(':scope > a[href]')
+                  const title = clean(directA?.textContent)
+                  const url = toAbs(directA?.getAttribute('href'))
+                  const code = clean(codeOf(url))
+                  if (!title) continue
+                  const nodeLevel = Math.min(5, Number(parent.level || 1) + 1)
+                  const nextPath = [...pathTitles, title]
+                  records.push({
+                    sourceUrl: location.href,
+                    pageUrl: location.href,
+                    nodeLevel,
+                    nodeCode: code,
+                    nodeTitle: title,
+                    nodeUrl: url,
+                    parentCode: parent.code || '',
+                    parentTitle: parent.title || '',
+                    parentUrl: parent.url || '',
+                    level1Code: rootCode,
+                    level1Title: rootTitle,
+                    level1Url: rootUrl,
+                    level2Code: nodeLevel >= 2 ? (nodeLevel === 2 ? code : (parent.level2Code || '')) : '',
+                    level2Title: nodeLevel >= 2 ? (nodeLevel === 2 ? title : (parent.level2Title || '')) : '',
+                    level2Url: nodeLevel >= 2 ? (nodeLevel === 2 ? url : (parent.level2Url || '')) : '',
+                    level3Code: nodeLevel >= 3 ? (nodeLevel === 3 ? code : (parent.level3Code || '')) : '',
+                    level3Title: nodeLevel >= 3 ? (nodeLevel === 3 ? title : (parent.level3Title || '')) : '',
+                    level3Url: nodeLevel >= 3 ? (nodeLevel === 3 ? url : (parent.level3Url || '')) : '',
+                    lineage: clean(nextPath.join(' > ')),
+                    status: 'success',
+                    errorMessage: '',
+                  })
+                  if (nodeLevel >= 5) continue
+                  const nextParent = {
+                    code,
+                    title,
+                    url,
+                    level: nodeLevel,
+                    level2Code: nodeLevel === 2 ? code : parent.level2Code || '',
+                    level2Title: nodeLevel === 2 ? title : parent.level2Title || '',
+                    level2Url: nodeLevel === 2 ? url : parent.level2Url || '',
+                    level3Code: nodeLevel === 3 ? code : parent.level3Code || '',
+                    level3Title: nodeLevel === 3 ? title : parent.level3Title || '',
+                    level3Url: nodeLevel === 3 ? url : parent.level3Url || '',
+                  }
+                  const nextItems = []
+                  const nextContainer = li.querySelector(':scope > div[class*="Leven"]')
+                  if (nextContainer) {
+                    nextItems.push(...Array.from(nextContainer.querySelectorAll(':scope > ol > li')))
+                  }
+                  const inlineOl = li.querySelector(':scope > ol')
+                  if (inlineOl) {
+                    nextItems.push(...Array.from(inlineOl.querySelectorAll(':scope > li')))
+                  }
+                  if (nextItems.length > 0) {
+                    walkChildren(nextItems, nextParent, nextPath)
+                  }
+                }
+              }
+              const secondItems = Array.from(rootLi.querySelectorAll(':scope > .secLeven > ol > li'))
+              walkChildren(secondItems, {
+                code: rootCode,
+                title: rootTitle,
+                url: rootUrl,
+                level: 1,
+                level2Code: '',
+                level2Title: '',
+                level2Url: '',
+                level3Code: '',
+                level3Title: '',
+                level3Url: '',
+              }, [rootTitle])
+            }
+            if (records.length === 0) {
+              const seedCode = codeOf(location.href)
+              const seedAnchor = seedCode
+                ? document.querySelector('a[href*="c-' + seedCode + '.html"]')
+                : null
+              const seedLi = seedAnchor ? seedAnchor.closest('li') : null
+              if (seedLi) {
+                const secondTitle = clean(seedAnchor.textContent)
+                const secondUrl = toAbs(seedAnchor.getAttribute('href'))
                 const secondCode = clean(codeOf(secondUrl))
-                if (!secondTitle) continue
+                const breadcrumbLinks = Array.from(document.querySelectorAll('.bread a[href], .breadcrumb a[href], .mianbao a[href]'))
+                const rootAnchor = breadcrumbLinks.find((a) => /\\/supplier\\/(?:boom\\/)?c-\\d+\\.html/i.test(String(a.getAttribute('href') || '')))
+                const rootTitle = clean(rootAnchor?.textContent) || '供应链分类'
+                const rootUrl = toAbs(rootAnchor?.getAttribute('href'))
+                records.push({
+                  sourceUrl: location.href,
+                  pageUrl: location.href,
+                  nodeLevel: 1,
+                  nodeCode: clean(codeOf(rootUrl)),
+                  nodeTitle: rootTitle,
+                  nodeUrl: rootUrl,
+                  parentCode: '',
+                  parentTitle: '',
+                  parentUrl: '',
+                  level1Code: clean(codeOf(rootUrl)),
+                  level1Title: rootTitle,
+                  level1Url: rootUrl,
+                  level2Code: '',
+                  level2Title: '',
+                  level2Url: '',
+                  level3Code: '',
+                  level3Title: '',
+                  level3Url: '',
+                  lineage: rootTitle,
+                  status: 'success',
+                  errorMessage: '',
+                })
                 records.push({
                   sourceUrl: location.href,
                   pageUrl: location.href,
@@ -5650,10 +5901,10 @@ async function fetchGasSupplyChainHtmlWithCdp(url, context = {}) {
                   nodeCode: secondCode,
                   nodeTitle: secondTitle,
                   nodeUrl: secondUrl,
-                  parentCode: rootCode,
+                  parentCode: clean(codeOf(rootUrl)),
                   parentTitle: rootTitle,
                   parentUrl: rootUrl,
-                  level1Code: rootCode,
+                  level1Code: clean(codeOf(rootUrl)),
                   level1Title: rootTitle,
                   level1Url: rootUrl,
                   level2Code: secondCode,
@@ -5666,36 +5917,56 @@ async function fetchGasSupplyChainHtmlWithCdp(url, context = {}) {
                   status: 'success',
                   errorMessage: '',
                 })
-                const thirdItems = Array.from(secondLi.querySelectorAll('.threeLeven > ol > li > a[href]'))
-                for (const thirdA of thirdItems) {
-                  const thirdTitle = clean(thirdA.textContent)
-                  const thirdUrl = toAbs(thirdA.getAttribute('href'))
-                  const thirdCode = clean(codeOf(thirdUrl))
-                  if (!thirdTitle) continue
-                  records.push({
-                    sourceUrl: location.href,
-                    pageUrl: location.href,
-                    nodeLevel: 3,
-                    nodeCode: thirdCode,
-                    nodeTitle: thirdTitle,
-                    nodeUrl: thirdUrl,
-                    parentCode: secondCode,
-                    parentTitle: secondTitle,
-                    parentUrl: secondUrl,
-                    level1Code: rootCode,
-                    level1Title: rootTitle,
-                    level1Url: rootUrl,
-                    level2Code: secondCode,
-                    level2Title: secondTitle,
-                    level2Url: secondUrl,
-                    level3Code: thirdCode,
-                    level3Title: thirdTitle,
-                    level3Url: thirdUrl,
-                    lineage: clean([rootTitle, secondTitle, thirdTitle].join(' > ')),
-                    status: 'success',
-                    errorMessage: '',
-                  })
+                const walkSeed = (items, parent, pathTitles) => {
+                  for (const li of items) {
+                    const a = li.querySelector(':scope > a[href]')
+                    const t = clean(a?.textContent)
+                    const u = toAbs(a?.getAttribute('href'))
+                    const c = clean(codeOf(u))
+                    if (!t) continue
+                    const lv = Math.min(5, Number(parent.level || 2) + 1)
+                    const nextPath = [...pathTitles, t]
+                    records.push({
+                      sourceUrl: location.href,
+                      pageUrl: location.href,
+                      nodeLevel: lv,
+                      nodeCode: c,
+                      nodeTitle: t,
+                      nodeUrl: u,
+                      parentCode: parent.code || '',
+                      parentTitle: parent.title || '',
+                      parentUrl: parent.url || '',
+                      level1Code: clean(codeOf(rootUrl)),
+                      level1Title: rootTitle,
+                      level1Url: rootUrl,
+                      level2Code: secondCode,
+                      level2Title: secondTitle,
+                      level2Url: secondUrl,
+                      level3Code: lv === 3 ? c : (parent.level3Code || ''),
+                      level3Title: lv === 3 ? t : (parent.level3Title || ''),
+                      level3Url: lv === 3 ? u : (parent.level3Url || ''),
+                      lineage: clean(nextPath.join(' > ')),
+                      status: 'success',
+                      errorMessage: '',
+                    })
+                    if (lv >= 5) continue
+                    const childOl = li.querySelector(':scope > ol')
+                    const childItems = childOl ? Array.from(childOl.querySelectorAll(':scope > li')) : []
+                    if (childItems.length > 0) {
+                      walkSeed(childItems, {
+                        code: c,
+                        title: t,
+                        url: u,
+                        level: lv,
+                        level3Code: lv === 3 ? c : (parent.level3Code || ''),
+                        level3Title: lv === 3 ? t : (parent.level3Title || ''),
+                        level3Url: lv === 3 ? u : (parent.level3Url || ''),
+                      }, nextPath)
+                    }
+                  }
                 }
+                const seedChildren = Array.from(seedLi.querySelectorAll(':scope > ol > li'))
+                walkSeed(seedChildren, { code: secondCode, title: secondTitle, url: secondUrl, level: 2, level3Code: '', level3Title: '', level3Url: '' }, [rootTitle, secondTitle])
               }
             }
             return {
@@ -5726,16 +5997,17 @@ async function fetchGasSupplyChainHtmlWithCdp(url, context = {}) {
     if (!html && records.length === 0) {
       throw new Error(`CDP returned empty payload for ${finalUrl}`)
     }
-    if (finalUrl.startsWith('chrome-error://')) {
+    if (finalUrl.startsWith('chrome-error://') || /\/error\.html(?:$|\?)/i.test(finalUrl)) {
       throw new Error(`CDP opened browser error page: ${toText(payload.title || info?.title) || finalUrl}`)
     }
     return {
       html,
       records,
       finalUrl,
+      targetId,
       pageTitle: toText(payload.title || info?.title),
       readyState: toText(payload.readyState || info?.ready),
-      sessionMode: shouldCloseTarget ? 'cdp-proxy' : 'cdp-existing-tab',
+      sessionMode: forceNewTarget ? 'cdp-new-target' : (shouldCloseTarget ? 'cdp-proxy' : 'cdp-existing-tab'),
       profileLabel: 'chrome:remote-debugging',
       launchError: '',
       skill: toText(context?.skill) || 'web-access',
@@ -5794,15 +6066,24 @@ async function runGasSupplyChainSyncTask(task) {
         if (effectiveRows.length === 0) {
           task.runLogs.push(`${nowText()} | HTTP 未解析到节点，尝试使用 CDP Proxy 复用真实 Chrome 会话`)
           try {
+            try {
+              const opened = await openTargetUrlInWebAccessCdp(currentUrl)
+              if (opened?.targetId) {
+                task.runLogs.push(`${nowText()} | 会话绑定：target=${opened.targetId}，url=${opened.url || currentUrl}`)
+              }
+            } catch (openError) {
+              task.runLogs.push(`${nowText()} | 会话绑定提示：${toText(openError?.message || openError)}`)
+            }
             const cdpResult = await withTimeout(
               fetchGasSupplyChainHtmlWithCdp(currentUrl, { skill: 'web-access' }),
               30000,
               'cdp gas supply chain timeout',
             )
             task.runLogs.push(
-              `${nowText()} | CDP会话：${cdpResult.sessionMode || 'unknown'}${cdpResult.profileLabel ? `，profile=${cdpResult.profileLabel}` : ''}${cdpResult.pageTitle ? `，title=${cdpResult.pageTitle}` : ''}${cdpResult.readyState ? `，ready=${cdpResult.readyState}` : ''}`,
+              `${nowText()} | CDP会话：${cdpResult.sessionMode || 'unknown'}${cdpResult.profileLabel ? `，profile=${cdpResult.profileLabel}` : ''}${cdpResult.pageTitle ? `，title=${cdpResult.pageTitle}` : ''}${cdpResult.readyState ? `，ready=${cdpResult.readyState}` : ''}${cdpResult.targetId ? `，target=${cdpResult.targetId}` : ''}`,
             )
             effectiveUrl = cdpResult.finalUrl || currentUrl
+            task.runLogs.push(`${nowText()} | URL对齐：目标=${currentUrl}，实际=${effectiveUrl}`)
             const cdpHtml = String(cdpResult.html || '')
             if (isGasgooCaptchaPage(cdpHtml)) {
               throw new Error('验证码拦截：请先在 web-access 浏览器会话中完成验证，然后重试同步任务')
@@ -5821,15 +6102,80 @@ async function runGasSupplyChainSyncTask(task) {
                   skill: 'web-access',
                   mode: task.mode,
                 })
+            if (effectiveRows.length === 0) {
+              task.runLogs.push(`${nowText()} | CDP 首次解析为空，强制新开目标页重试`)
+              const retryCdp = await fetchGasSupplyChainHtmlWithCdp(currentUrl, { skill: 'web-access', forceNewTarget: true })
+              task.runLogs.push(
+                `${nowText()} | CDP重试会话：${retryCdp.sessionMode || 'unknown'}${retryCdp.pageTitle ? `，title=${retryCdp.pageTitle}` : ''}${retryCdp.readyState ? `，ready=${retryCdp.readyState}` : ''}${retryCdp.targetId ? `，target=${retryCdp.targetId}` : ''}`,
+              )
+              effectiveUrl = retryCdp.finalUrl || currentUrl
+              task.runLogs.push(`${nowText()} | URL对齐(重试)：目标=${currentUrl}，实际=${effectiveUrl}`)
+              const retryRows = Array.isArray(retryCdp.records) && retryCdp.records.length > 0
+                ? retryCdp.records.map((item) => ({
+                    ...item,
+                    sourceUrl: item.sourceUrl || effectiveUrl,
+                    pageUrl: item.pageUrl || effectiveUrl,
+                    model: task.model || item.model || '',
+                    skill: 'web-access',
+                    mode: task.mode || item.mode || 'full',
+                  }))
+                : parseGasgooSupplyChainNodesUnified(String(retryCdp.html || ''), effectiveUrl, {
+                    model: task.model,
+                    skill: 'web-access',
+                    mode: task.mode,
+                  })
+              effectiveRows = retryRows
+            }
             task.runLogs.push(`${nowText()} | CDP 解析结果：${effectiveRows.length} 条`)
           } catch (cdpError) {
             const rawMsg = toText(cdpError?.message || '')
+            if (rawMsg.includes('Unexpected end of JSON input')) {
+              task.runLogs.push(`${nowText()} | CDP JSON 截断，自动重试（同一会话标签）`)
+              let retryRows = []
+              let retryUrl = currentUrl
+              for (let retryIndex = 1; retryIndex <= 2; retryIndex += 1) {
+                const retryCdp = await fetchGasSupplyChainHtmlWithCdp(currentUrl, { skill: 'web-access' })
+                task.runLogs.push(
+                  `${nowText()} | CDP重试#${retryIndex}：${retryCdp.sessionMode || 'unknown'}${retryCdp.pageTitle ? `，title=${retryCdp.pageTitle}` : ''}${retryCdp.readyState ? `，ready=${retryCdp.readyState}` : ''}${retryCdp.targetId ? `，target=${retryCdp.targetId}` : ''}`,
+                )
+                retryUrl = retryCdp.finalUrl || currentUrl
+                const parsed = Array.isArray(retryCdp.records) && retryCdp.records.length > 0
+                  ? retryCdp.records.map((item) => ({
+                      ...item,
+                      sourceUrl: item.sourceUrl || retryUrl,
+                      pageUrl: item.pageUrl || retryUrl,
+                      model: task.model || item.model || '',
+                      skill: 'web-access',
+                      mode: task.mode || item.mode || 'full',
+                    }))
+                  : parseGasgooSupplyChainNodesUnified(String(retryCdp.html || ''), retryUrl, {
+                      model: task.model,
+                      skill: 'web-access',
+                      mode: task.mode,
+                    })
+                if (parsed.length > 0) {
+                  retryRows = parsed
+                  break
+                }
+              }
+              effectiveUrl = retryUrl
+              task.runLogs.push(`${nowText()} | URL对齐(重试)：目标=${currentUrl}，实际=${effectiveUrl}`)
+              effectiveRows = retryRows
+              task.runLogs.push(`${nowText()} | CDP 解析结果(重试)：${effectiveRows.length} 条`)
+              if (effectiveRows.length === 0) throw cdpError
+            } else {
             const friendly = rawMsg.includes('{"error":"Uncaught"}')
               ? 'CDP Proxy 执行脚本异常（Uncaught），请先在 web-access 浏览器中打开目标页并确保页面已完成加载后重试'
               : (rawMsg || 'unknown error')
             task.runLogs.push(`${nowText()} | CDP Proxy 抓取失败：${friendly}`)
             throw cdpError
+            }
           }
+        }
+        const beforeFilterCount = effectiveRows.length
+        effectiveRows = filterGasSupplyChainRowsByCategoryBranch(effectiveRows, effectiveUrl || sourceUrl)
+        if (beforeFilterCount !== effectiveRows.length) {
+          task.runLogs.push(`${nowText()} | 分类分支过滤：${beforeFilterCount} -> ${effectiveRows.length}（按 ${effectiveUrl || sourceUrl}）`)
         }
         if (effectiveRows.length === 0) {
           throw new Error('web-access 会话下仍未解析到供应链节点，请确认该 URL 是否为分类页，或先在浏览器完成验证码后重试')
@@ -5954,6 +6300,43 @@ async function upsertGasSupplyChainNode(client, payload) {
     )
     return { id: current.id, created: false, syncedSupplierCount: Number(current.syncedSupplierCount || 0) }
   }
+  // 兜底 saveOrUpdate：避免二级节点因 parent_id 丢失被错误插入为孤立根。
+  // 当 (parent_id, level, title) 未命中时，再按 level + (node_url 或 title) 查已存在节点并更新。
+  const fallbackExisting = await client.query(
+    `
+    SELECT id, parent_id AS "parentId", synced_supplier_count AS "syncedSupplierCount"
+    FROM ${gasSupplyChainNodeTable}
+    WHERE node_level = $1
+      AND (
+        ($2 <> '' AND node_url = $2)
+        OR node_title = $3
+      )
+    ORDER BY
+      CASE WHEN parent_id IS NULL THEN 1 ELSE 0 END,
+      id ASC
+    LIMIT 1
+    `,
+    [payload.nodeLevel, payload.nodeUrl || '', payload.nodeTitle],
+  )
+  if (fallbackExisting.rowCount > 0) {
+    const fallback = fallbackExisting.rows[0]
+    // 若传入 parentId 有值而库中 parent 为空，则回补 parent 关系；否则保留现有关联，防止误改层级关系。
+    const mergedParentId = fallback.parentId || payload.parentId || null
+    await client.query(
+      `
+      UPDATE ${gasSupplyChainNodeTable}
+      SET
+        parent_id = $2,
+        node_url = $3,
+        source_url = $4,
+        synced_at = $5,
+        updated_at = NOW()
+      WHERE id = $1
+      `,
+      [fallback.id, mergedParentId, payload.nodeUrl || '', payload.sourceUrl || '', payload.syncedAt || null],
+    )
+    return { id: fallback.id, created: false, syncedSupplierCount: Number(fallback.syncedSupplierCount || 0) }
+  }
   const inserted = await client.query(
     `
     INSERT INTO ${gasSupplyChainNodeTable}
@@ -5978,83 +6361,129 @@ async function importGasSupplyChainTaskRows(records, mode = 'full') {
     level1Inserted: 0,
     level2Inserted: 0,
     level3Inserted: 0,
+    level4Inserted: 0,
+    level5Inserted: 0,
     level1Updated: 0,
     level2Updated: 0,
     level3Updated: 0,
+    level4Updated: 0,
+    level5Updated: 0,
     syncedSuppliers: 0,
   }
   try {
     await client.query('BEGIN')
-    if (mode === 'full') {
-      await client.query(`DELETE FROM ${gasSupplyChainNodeTable}`)
-    }
+    // Safety: hard-delete of gas_supply_chain_node can cascade gas_node_id -> NULL on gas_supplier
+    // and may violate unique index idx_gas_supplier_unique (COALESCE(gas_node_id,0), company_name, detail_url).
+    // Keep full mode as "full refresh via upsert" without destructive delete.
     const importTime = new Date().toISOString()
-    const level1Rows = records.filter((item) => Number(item.nodeLevel) === 1)
-    const level2Rows = records.filter((item) => Number(item.nodeLevel) === 2)
-    const level3Rows = records.filter((item) => Number(item.nodeLevel) === 3)
-    const level1Map = new Map()
-    const level2Map = new Map()
+    const rowsByLevel = [...records]
+      .filter((item) => Number(item?.nodeLevel) >= 1 && Number(item?.nodeLevel) <= 5 && toText(item?.nodeTitle))
+      .sort((a, b) => Number(a.nodeLevel || 0) - Number(b.nodeLevel || 0))
+    const levelMaps = new Map()
+    for (let lv = 1; lv <= 5; lv += 1) levelMaps.set(lv, new Map())
+    const lineageMap = new Map()
 
-    for (const row of level1Rows) {
-      const result = await upsertGasSupplyChainNode(client, {
-        parentId: null,
-        nodeLevel: 1,
-        nodeTitle: toText(row.level1Title || row.nodeTitle),
-        nodeUrl: toText(row.level1Url || row.nodeUrl),
-        sourceUrl: toText(row.sourceUrl),
-        syncedAt: importTime,
-      })
-      level1Map.set(toText(row.level1Code || row.nodeCode || row.level1Title || row.nodeTitle), result.id)
-      if (result.created) {
-        summary.inserted += 1
-        summary.level1Inserted += 1
-      } else {
-        summary.updated += 1
-        summary.level1Updated += 1
-        summary.syncedSuppliers += Number(result.syncedSupplierCount || 0)
+    const makeCodeKey = (value) => `code:${toText(value)}`
+    const makeTitleKey = (value) => `title:${toText(value)}`
+    const makeLevelTag = (level, title) => `L${level}:${toText(title)}`
+    const splitLineageTitles = (lineageText = '') => toText(lineageText)
+      .split('>')
+      .map((item) => toText(item).trim())
+      .filter(Boolean)
+    const buildLineageTags = (nodeLevel, row) => {
+      const parts = splitLineageTitles(row?.lineage)
+      if (parts.length >= nodeLevel) {
+        return parts.slice(0, nodeLevel).map((title, idx) => makeLevelTag(idx + 1, title))
       }
+      const fallback = []
+      for (let lv = 1; lv <= nodeLevel; lv += 1) {
+        if (lv === 1) fallback.push(makeLevelTag(1, toText(row.level1Title || row.nodeTitle)))
+        else if (lv === 2) fallback.push(makeLevelTag(2, toText(row.level2Title || row.parentTitle || row.nodeTitle)))
+        else if (lv === 3) fallback.push(makeLevelTag(3, toText(row.level3Title || row.nodeTitle)))
+        else if (lv === nodeLevel) fallback.push(makeLevelTag(lv, toText(row.nodeTitle)))
+        else fallback.push(makeLevelTag(lv, ''))
+      }
+      return fallback
     }
+    const levelCodeField = { 1: 'level1Code', 2: 'level2Code', 3: 'level3Code' }
+    const levelTitleField = { 1: 'level1Title', 2: 'level2Title', 3: 'level3Title' }
 
-    for (const row of level2Rows) {
-      const level1Key = toText(row.level1Code || row.level1Title)
-      const parentId = level1Map.get(level1Key) || null
+    for (const row of rowsByLevel) {
+      const nodeLevel = Number(row.nodeLevel || 0)
+      const nodeCode = toText(row.nodeCode)
+      const nodeTitle = toText(row.nodeTitle)
+      const lineageTags = buildLineageTags(nodeLevel, row)
+      const lineageKey = lineageTags.join('>')
+      let parentId = null
+      if (nodeLevel > 1) {
+        const parentLineageKey = lineageTags.slice(0, -1).join('>')
+        parentId = lineageMap.get(parentLineageKey) || null
+        if (!parentId) {
+          const parentMap = levelMaps.get(nodeLevel - 1) || new Map()
+          const parentCode = toText(row.parentCode)
+          const parentTitle = toText(row.parentTitle)
+          parentId = parentMap.get(makeCodeKey(parentCode)) || parentMap.get(makeTitleKey(parentTitle)) || null
+        }
+      }
+      // 防止因抓取记录缺少 level1 行导致二级节点成为孤立根节点（parent_id=null）。
+      // 若二级父级缺失，尝试回补到库中已有同名/同URL二级节点的父级。
+      if (nodeLevel === 2 && !parentId) {
+        const fallbackRes = await client.query(
+          `
+          SELECT id, parent_id AS "parentId"
+          FROM ${gasSupplyChainNodeTable}
+          WHERE node_level = 2
+            AND (
+              (node_url <> '' AND node_url = $1)
+              OR node_title = $2
+            )
+          ORDER BY
+            CASE WHEN parent_id IS NULL THEN 1 ELSE 0 END,
+            id ASC
+          LIMIT 1
+          `,
+          [toText(row.nodeUrl), nodeTitle],
+        )
+        if (fallbackRes.rowCount > 0) {
+          parentId = fallbackRes.rows[0].parentId ? Number(fallbackRes.rows[0].parentId) : null
+        }
+      }
       const result = await upsertGasSupplyChainNode(client, {
         parentId,
-        nodeLevel: 2,
-        nodeTitle: toText(row.level2Title || row.nodeTitle),
-        nodeUrl: toText(row.level2Url || row.nodeUrl),
+        nodeLevel,
+        nodeTitle,
+        nodeUrl: toText(row.nodeUrl),
         sourceUrl: toText(row.sourceUrl),
         syncedAt: importTime,
       })
-      level2Map.set(toText(row.level2Code || row.nodeCode || row.level2Title || row.nodeTitle), result.id)
-      if (result.created) {
-        summary.inserted += 1
-        summary.level2Inserted += 1
-      } else {
-        summary.updated += 1
-        summary.level2Updated += 1
-        summary.syncedSuppliers += Number(result.syncedSupplierCount || 0)
+      const currentMap = levelMaps.get(nodeLevel) || new Map()
+      if (nodeCode) currentMap.set(makeCodeKey(nodeCode), result.id)
+      if (nodeTitle) currentMap.set(makeTitleKey(nodeTitle), result.id)
+      if (lineageKey) lineageMap.set(lineageKey, result.id)
+      if (nodeLevel <= 3) {
+        const codeField = levelCodeField[nodeLevel]
+        const titleField = levelTitleField[nodeLevel]
+        const chainCode = toText(row[codeField])
+        const chainTitle = toText(row[titleField])
+        if (chainCode) currentMap.set(makeCodeKey(chainCode), result.id)
+        if (chainTitle) currentMap.set(makeTitleKey(chainTitle), result.id)
       }
-    }
-
-    for (const row of level3Rows) {
-      const level2Key = toText(row.level2Code || row.parentCode || row.level2Title || row.parentTitle)
-      const parentId = level2Map.get(level2Key) || null
-      const result = await upsertGasSupplyChainNode(client, {
-        parentId,
-        nodeLevel: 3,
-        nodeTitle: toText(row.level3Title || row.nodeTitle),
-        nodeUrl: toText(row.level3Url || row.nodeUrl),
-        sourceUrl: toText(row.sourceUrl),
-        syncedAt: importTime,
-      })
+      levelMaps.set(nodeLevel, currentMap)
       if (result.created) {
         summary.inserted += 1
-        summary.level3Inserted += 1
+        if (nodeLevel === 1) summary.level1Inserted += 1
+        if (nodeLevel === 2) summary.level2Inserted += 1
+        if (nodeLevel === 3) summary.level3Inserted += 1
+        if (nodeLevel === 4) summary.level4Inserted += 1
+        if (nodeLevel === 5) summary.level5Inserted += 1
       } else {
         summary.updated += 1
-        summary.level3Updated += 1
         summary.syncedSuppliers += Number(result.syncedSupplierCount || 0)
+        if (nodeLevel === 1) summary.level1Updated += 1
+        if (nodeLevel === 2) summary.level2Updated += 1
+        if (nodeLevel === 3) summary.level3Updated += 1
+        if (nodeLevel === 4) summary.level4Updated += 1
+        if (nodeLevel === 5) summary.level5Updated += 1
       }
     }
 
@@ -8040,15 +8469,66 @@ async function importGasSupplierRows(records, fileName = '') {
   const client = await pool.connect()
   let inserted = 0
   let updated = 0
+  const categoryNodeCache = new Map()
   try {
     await client.query('BEGIN')
     for (const item of records) {
       const companyName = sanitizeSupplierCompanyName(toText(item.companyName))
       if (!companyName) continue
-      const gasNodeId = item.nodeId ? Number(item.nodeId) : null
-      const gasNodeName = toText(item.nodeName)
+      const inputGasNodeId = item.nodeId ? Number(item.nodeId) : null
       const detailUrl = toText(item.detailUrl || item.website)
       const sourceUrl = toText(item.listPageUrl || item.sourceUrl)
+      const categoryCode = extractGasgooCategoryCodeFromUrl(sourceUrl) || extractGasgooCategoryCodeFromUrl(detailUrl)
+      let resolvedNodeId = Number.isInteger(inputGasNodeId) && inputGasNodeId > 0 ? inputGasNodeId : null
+      let resolvedNodeName = toText(item.nodeName)
+      if (categoryCode) {
+        const categoryKey = `c-${categoryCode}`
+        let resolvedByCategory = categoryNodeCache.get(categoryKey) || null
+        if (!resolvedByCategory) {
+          const likePattern = `%c-${categoryCode}.html%`
+          const matchRes = await client.query(
+            `
+            SELECT id, node_title AS "nodeTitle", node_level AS "nodeLevel"
+            FROM ${gasSupplyChainNodeTable}
+            WHERE node_url ILIKE $1
+               OR source_url ILIKE $1
+            ORDER BY
+              CASE
+                WHEN node_level = 2 THEN 0
+                WHEN node_level = 3 THEN 1
+                WHEN node_level = 1 THEN 2
+                ELSE 3
+              END,
+              id ASC
+            LIMIT 1
+            `,
+            [likePattern],
+          )
+          if (matchRes.rowCount > 0) {
+            resolvedByCategory = {
+              nodeId: Number(matchRes.rows[0].id),
+              nodeName: toText(matchRes.rows[0].nodeTitle),
+              nodeLevel: Number(matchRes.rows[0].nodeLevel || 0),
+            }
+            categoryNodeCache.set(categoryKey, resolvedByCategory)
+          }
+        }
+        if (resolvedByCategory?.nodeId) {
+          resolvedNodeId = resolvedByCategory.nodeId
+          resolvedNodeName = resolvedByCategory.nodeName || resolvedNodeName
+        }
+      }
+      const gasNodeId = resolvedNodeId
+      const gasNodeName = resolvedNodeName
+      const safeGasNodeId = Number.isInteger(gasNodeId) && gasNodeId > 0 ? gasNodeId : null
+      const region = toText(item.region)
+      const registeredCapital = toText(item.registeredCapital)
+      const establishedDate = toText(item.establishedDate)
+      const mainProducts = cleanSupplierFieldText(toText(item.mainProducts))
+      const listPageUrl = toText(item.listPageUrl)
+      const model = toText(item.model)
+      const skill = toText(item.skill)
+
       const result = await client.query(
         `
         INSERT INTO ${gasSupplierTable} (
@@ -8088,22 +8568,22 @@ async function importGasSupplierRows(records, fileName = '') {
         RETURNING (xmax = 0) AS inserted
         `,
         [
-          Number.isInteger(gasNodeId) && gasNodeId > 0 ? gasNodeId : null,
+          safeGasNodeId,
           gasNodeName,
           companyName,
-          toText(item.region),
-          toText(item.registeredCapital),
-          toText(item.establishedDate),
-          cleanSupplierFieldText(toText(item.mainProducts)),
+          region,
+          registeredCapital,
+          establishedDate,
+          mainProducts,
           detailUrl,
           sourceUrl,
-          toText(item.listPageUrl),
-          toText(item.model),
-          toText(item.skill),
+          listPageUrl,
+          model,
+          skill,
           fileName,
         ],
       )
-      if (Boolean(result.rows[0]?.inserted)) inserted += 1
+      if (result.rows[0]?.inserted) inserted += 1
       else updated += 1
     }
     await client.query('COMMIT')
@@ -9407,8 +9887,16 @@ async function extractSupplierPageDataByHttp(pageUrl, context = {}) {
       }
     }
     return { rows, totalCount, paginationUrls: mergedPaginationUrls, finalUrl, perPage, source: 'http', diagnostics }
-  } catch {
-    return { rows: [], totalCount: 0, paginationUrls: [], finalUrl: pageUrl, source: 'http', diagnostics: {} }
+  } catch (error) {
+    return {
+      rows: [],
+      totalCount: 0,
+      paginationUrls: [],
+      finalUrl: pageUrl,
+      source: 'http',
+      diagnostics: {},
+      errorMessage: toText(error?.message || 'http fetch failed'),
+    }
   }
 }
 
@@ -10255,6 +10743,9 @@ async function crawlSupplierRowsByUrlVariants(url, context, task, nowText) {
       const pageUrl = pendingPages.shift()
       const pageKey = buildSupplierPaginationPageKey(pageUrl)
       if (!pageUrl || seenPages.has(pageUrl) || (pageKey && seenPageKeys.has(pageKey))) continue
+      if (seenPages.size > 0 && supplierListPageIntervalMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, supplierListPageIntervalMs))
+      }
       seenPages.add(pageUrl)
       if (pageKey) seenPageKeys.add(pageKey)
       task?.runLogs?.push(`${nowText()} | 抓取分页：${pageUrl}（第 ${seenPages.size} 页）`)
@@ -15977,7 +16468,7 @@ app.get('/api/supply-chain/tree', authMiddleware, async (req, res) => {
 
 app.get('/api/gas-supply-chain/tree', authMiddleware, async (_req, res) => {
   try {
-    const result = await pool.query(
+    const result = await safeDbQuery(
       `
       SELECT
         id,
@@ -16039,7 +16530,7 @@ app.get('/api/gas-supply-chain/records', authMiddleware, async (req, res) => {
   params.push(limit)
   const whereSql = filters.length > 0 ? `WHERE ${filters.join(' AND ')}` : ''
   try {
-    const result = await pool.query(
+    const result = await safeDbQuery(
       `
       SELECT
         child.id,
@@ -16073,7 +16564,7 @@ app.get('/api/gas-supply-chain/records/:id', authMiddleware, async (req, res) =>
     return res.status(400).json({ code: 400, message: '无效记录ID', data: null })
   }
   try {
-    const result = await pool.query(
+    const result = await safeDbQuery(
       `
       SELECT
         child.id,
@@ -16243,6 +16734,8 @@ app.delete('/api/gas-supply-chain/clear-all', authMiddleware, async (_req, res) 
 app.post('/api/gas-supply-chain/sync-tasks', authMiddleware, async (req, res) => {
   try {
     const urlsText = toText(req.body?.urlsText)
+    // GAS 供应链抓取必须保留用户输入的原始分类URL（尤其 /supplier/boom/c-xxxx.html）。
+    // 这里不做 boom -> c-xxxx 规范化，避免跳转到错误页/社区页。
     const urls = parseUrlText(urlsText).filter((item) => {
       try {
         const parsed = new URL(item)
@@ -16386,13 +16879,19 @@ app.post('/api/gas-supply-chain/sync-tasks/:taskId/import', authMiddleware, asyn
         errorMessage: toText(item.error_message),
       }))
     }
-    const validRecords = records.filter((item) => Number(item.nodeLevel) >= 1 && Number(item.nodeLevel) <= 3 && toText(item.nodeTitle))
+    const validRecords = records.filter((item) => Number(item.nodeLevel) >= 1 && Number(item.nodeLevel) <= 5 && toText(item.nodeTitle))
     const importSummary = await importGasSupplyChainTaskRows(validRecords, task.mode || 'full')
     task.imported = true
     task.importSummary = importSummary
     schedulePersistGasSupplyChainTaskStore()
     return res.json({ code: 200, message: 'imported', data: importSummary })
   } catch (error) {
+    try {
+      const line = `[${new Date().toISOString()}] taskId=${taskId} message=${toText(error?.message)} code=${toText(error?.code)} detail=${toText(error?.detail)} stack=${toText(error?.stack)}\n`
+      await fs.appendFile(path.join(process.cwd(), 'logs', 'gas-supply-chain-import.debug.log'), line, 'utf8')
+    } catch {
+      // ignore debug logging failures
+    }
     return res.status(500).json({ code: 500, message: `GAS 供应链入库失败: ${error.message}`, data: null })
   }
 })

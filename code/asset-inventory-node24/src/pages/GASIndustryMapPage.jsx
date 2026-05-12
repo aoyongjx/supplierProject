@@ -20,6 +20,7 @@ const MODE_OPTIONS = [
   { label: '2D力导关系', value: '2d-force' },
   { label: 'GraphRAG Visualizer', value: 'graphrag' },
 ]
+const GRAPHRAG_ORIGIN = 'http://localhost:3190'
 
 function flattenTreeToGraph(roots = []) {
   const nodes = []
@@ -158,7 +159,7 @@ function GASIndustryMapPage() {
   const [loading, setLoading] = useState(false)
   const [rawGraphData, setRawGraphData] = useState({ nodes: [], links: [] })
   const [graphThemeMode, setGraphThemeMode] = useState('system')
-  const [visualMode, setVisualMode] = useState('3d-structured')
+  const [visualMode, setVisualMode] = useState('3d-tree')
   const [selectedNodeId, setSelectedNodeId] = useState('')
   const [systemTheme, setSystemTheme] = useState(() => (
     document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light'
@@ -271,7 +272,7 @@ function GASIndustryMapPage() {
     graphRagFrameRef.current.contentWindow.postMessage({
       type: 'graphrag-load-custom-graph',
       graphData: graphRagPayload,
-    }, 'http://localhost:3190')
+    }, GRAPHRAG_ORIGIN)
   }, [visualMode, graphRagPayload])
 
   const indexes = useMemo(() => buildIndexes(graphData), [graphData])
@@ -445,7 +446,7 @@ function GASIndustryMapPage() {
             {visualMode === 'graphrag' ? (
               <Button
                 icon={<LinkOutlined />}
-                onClick={() => window.open('http://localhost:3190', '_blank', 'noopener,noreferrer')}
+                onClick={() => window.open(GRAPHRAG_ORIGIN, '_blank', 'noopener,noreferrer')}
               >
                 新窗口打开
               </Button>
@@ -479,13 +480,13 @@ function GASIndustryMapPage() {
             <iframe
               ref={graphRagFrameRef}
               title="GraphRAG Visualizer"
-              src="http://localhost:3190"
+              src={GRAPHRAG_ORIGIN}
               onLoad={() => {
                 if (!graphRagFrameRef.current?.contentWindow) return
                 graphRagFrameRef.current.contentWindow.postMessage({
                   type: 'graphrag-load-custom-graph',
                   graphData: graphRagPayload,
-                }, 'http://localhost:3190')
+                }, GRAPHRAG_ORIGIN)
               }}
               style={{ width: '100%', minHeight: 620, border: 0, background: 'transparent' }}
             />

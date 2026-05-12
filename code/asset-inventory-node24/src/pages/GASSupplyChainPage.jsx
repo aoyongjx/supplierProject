@@ -1126,7 +1126,9 @@ function GASSupplyChainPage() {
                     入库结果：新建 {syncTask.importSummary.inserted || 0} 条，覆盖 {syncTask.importSummary.updated || 0} 条，
                     一级 {syncTask.importSummary.level1Inserted || 0}/{syncTask.importSummary.level1Updated || 0}，
                     二级 {syncTask.importSummary.level2Inserted || 0}/{syncTask.importSummary.level2Updated || 0}，
-                    三级 {syncTask.importSummary.level3Inserted || 0}/{syncTask.importSummary.level3Updated || 0}
+                    三级 {syncTask.importSummary.level3Inserted || 0}/{syncTask.importSummary.level3Updated || 0}，
+                    四级 {syncTask.importSummary.level4Inserted || 0}/{syncTask.importSummary.level4Updated || 0}，
+                    五级 {syncTask.importSummary.level5Inserted || 0}/{syncTask.importSummary.level5Updated || 0}
                   </Text>
                 ) : null}
                 <List
