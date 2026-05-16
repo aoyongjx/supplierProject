@@ -1,5 +1,5 @@
 import { AppstoreOutlined, DeploymentUnitOutlined, FullscreenExitOutlined, FullscreenOutlined, InfoCircleOutlined, MenuFoldOutlined, MenuUnfoldOutlined, MessageOutlined, UserOutlined } from '@ant-design/icons'
-import { Avatar, Button, Card, Checkbox, Collapse, Empty, Input, Modal, Select, Slider, Space, Tabs, Tag, Tooltip, Typography, Upload, message } from 'antd'
+import { Avatar, Button, Card, Checkbox, Collapse, Empty, Input, Modal, Select, Slider, Space, Table, Tabs, Tag, Tooltip, Typography, Upload, message } from 'antd'
 import { CanvasWidget, SelectionBoxLayerFactory } from '@projectstorm/react-canvas-core'
 import { DefaultDiagramState, DiagramEngine, DiagramModel, LinkLayerFactory, NodeLayerFactory } from '@projectstorm/react-diagrams-core'
 import { DefaultLinkFactory, DefaultLinkModel, DefaultNodeFactory, DefaultNodeModel, DefaultPortFactory } from '@projectstorm/react-diagrams-defaults'
@@ -99,18 +99,35 @@ const PROMPT_PRESETS = [
 ]
 
 function normalizeLlmMarkdownForRender(text = '') {
-  let s = String(text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim()
+  let s = String(text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+  // Some model outputs contain escaped newlines as literal "\n".
+  s = s.replace(/\\n/g, '\n').trim()
   if (!s) return ''
+  // Normalize bracketed section headers like 【RAG参考】 -> markdown headings.
+  s = s.replace(/^\s*【\s*([^】\n]+)\s*】\s*$/gm, '## $1')
+  s = s.replace(/([^\n])\s*【\s*([^】\n]+)\s*】/g, '$1\n\n## $2')
+  // Convert full-width separators to ASCII pipes for table normalization.
+  s = s.replace(/｜/g, '|')
   // Some model outputs collapse blocks into one line: "||" often indicates table row boundaries.
   s = s.replace(/\|\|/g, '|\n|')
   // Ensure section headings can start on new lines.
   s = s.replace(/---\s*##/g, '\n\n##')
   s = s.replace(/([^\n])\s*(##{1,6}\s*)/g, '$1\n\n$2')
   s = s.replace(/([^\n])\s*(#{1,6}\s*)/g, '$1\n\n$2')
+  // Break glued tail after similarity score, e.g. "...| 相似度=0.4901歌恩电子..."
+  s = s.replace(/(\|\s*相似度\s*=\s*\d+(?:\.\d+)?)(?=[\u4e00-\u9fa5A-Za-z#])/g, '$1\n')
   // Ensure horizontal separators are isolated.
   s = s.replace(/([^\n])---([^\n])/g, '$1\n---\n$2')
-  // Normalize excessive spaces around table pipes.
-  s = s.replace(/[ \t]*\|[ \t]*/g, ' | ').replace(/\n[ \t]+/g, '\n')
+  // Only normalize pipe spacing for real markdown table rows.
+  s = s
+    .split('\n')
+    .map((line) => {
+      const t = String(line || '')
+      if (!t.trim().startsWith('|')) return t
+      return t.replace(/[ \t]*\|[ \t]*/g, ' | ')
+    })
+    .join('\n')
+    .replace(/\n[ \t]+/g, '\n')
   // Force common table section titles onto their own lines.
   s = s.replace(/##\s*候选供应商TopN表\s*\|/g, '## 候选供应商TopN表\n|')
   s = s.replace(/##\s*证据摘要表\s*\|/g, '## 证据摘要表\n|')
@@ -189,8 +206,306 @@ function normalizeLlmMarkdownForRender(text = '') {
   }
   s = splitTableRowsByStarter(s, '候选供应商TopN表', ['\\d+'])
   s = splitTableRowsByStarter(s, '证据摘要表', ['DB', 'RAG', 'WEB'])
+  // Convert loose pipe-delimited lines into proper markdown tables.
+  const convertLoosePipeBlocks = (input) => {
+    const lines = input.split('\n')
+    const out = []
+    let i = 0
+    while (i < lines.length) {
+      const line = String(lines[i] || '')
+      const loose = !line.trim().startsWith('|') && (line.split('|').length - 1) >= 3
+      if (!loose) {
+        out.push(line)
+        i += 1
+        continue
+      }
+      const block = []
+      while (i < lines.length) {
+        const cur = String(lines[i] || '')
+        const isLoose = !cur.trim().startsWith('|') && (cur.split('|').length - 1) >= 3
+        if (!isLoose) break
+        block.push(cur)
+        i += 1
+      }
+      const rows = block
+        .map((raw) => raw.split('|').map((x) => x.trim()).filter(Boolean))
+        .filter((arr) => arr.length >= 3)
+      if (rows.length === 0) continue
+      const width = rows[0].length
+      const normalizedRows = rows
+        .map((r) => (r.length === width ? r : r.slice(0, width)))
+        .filter((r) => r.length === width)
+      if (normalizedRows.length === 0) continue
+      const header = `| ${normalizedRows[0].join(' | ')} |`
+      const sep = `| ${Array.from({ length: width }).map(() => '---').join(' | ')} |`
+      out.push(header, sep)
+      for (let k = 1; k < normalizedRows.length; k += 1) out.push(`| ${normalizedRows[k].join(' | ')} |`)
+    }
+    return out.join('\n')
+  }
+  s = convertLoosePipeBlocks(s)
+  // Split concatenated recommendation rows:
+  // e.g. "| 高 | 供应商A | ... || 中 | 供应商B | ..."
+  s = s.replace(/\|\|\s*(高|中|低)\s*\|/g, '\n| $1 |')
+  // If section has known header but body is a single long row, force row splitting by priority token.
+  const splitPriorityRows = (input) => {
+    const lines = input.split('\n')
+    for (let i = 0; i < lines.length; i += 1) {
+      const line = String(lines[i] || '')
+      if (!/\|\s*优先级\s*\|\s*供应商\s*\|/.test(line)) continue
+      const bodyIdx = i + 2
+      if (bodyIdx >= lines.length) continue
+      const body = String(lines[bodyIdx] || '')
+      if (!body.startsWith('|')) continue
+      if ((body.match(/\|\s*(高|中|低)\s*\|/g) || []).length <= 1) continue
+      const chunks = body
+        .replace(/^\|\s*/, '')
+        .split(/\|\s*(?=高\s*\||中\s*\||低\s*\|)/g)
+        .map((x) => x.trim())
+        .filter(Boolean)
+      if (chunks.length <= 1) continue
+      const rebuilt = chunks.map((c) => `| ${c}`)
+      lines.splice(bodyIdx, 1, ...rebuilt)
+      i += rebuilt.length
+    }
+    return lines.join('\n')
+  }
+  s = splitPriorityRows(s)
+  // Merge "header + one long concatenated body line" into one proper table:
+  // ##建议优先跟进名单 | 优先级 | 供应商 | 推荐原因 | 建议切入点
+  // | 高 | A | ... || 高 | B | ... || 中 | C | ...
+  const normalizeInlineRecommendationTable = (input) => {
+    const lines = input.split('\n')
+    for (let i = 0; i < lines.length; i += 1) {
+      const headerLine = String(lines[i] || '').trim()
+      if (!/^\s*##/.test(headerLine)) continue
+      if (!headerLine.includes('|')) continue
+      if (!/优先级/.test(headerLine) || !/供应商/.test(headerLine)) continue
+      const parts = headerLine.split('|').map((x) => String(x || '').trim()).filter(Boolean)
+      if (parts.length < 4) continue
+      const title = parts[0]
+      const cols = parts.slice(1)
+      const colCount = cols.length
+      let bodyIdx = i + 1
+      while (bodyIdx < lines.length) {
+        const probe = String(lines[bodyIdx] || '').trim()
+        if (!probe || /^[-—_]{3,}$/.test(probe)) {
+          bodyIdx += 1
+          continue
+        }
+        break
+      }
+      if (bodyIdx >= lines.length) continue
+      const bodyRaw = String(lines[bodyIdx] || '').trim()
+      if (!bodyRaw.startsWith('|')) continue
+      const body = bodyRaw
+        .replace(/\|\|\s*(高|中|低)\s*\|/g, '\n| $1 |')
+        .replace(/\|\|\s*/g, '\n| ')
+      const chunks = body
+        .split('\n')
+        .map((x) => x.trim())
+        .filter((x) => x.startsWith('|'))
+      if (chunks.length === 0) continue
+      const rows = []
+      for (const rowRaw of chunks) {
+        const tokens = rowRaw.split('|').map((x) => x.trim()).filter(Boolean)
+        if (tokens.length < colCount) continue
+        for (let k = 0; k + colCount <= tokens.length; k += colCount) {
+          const g = tokens.slice(k, k + colCount)
+          if (g.length !== colCount) continue
+          if (!/^(高|中|低)$/.test(g[0])) continue
+          rows.push(g)
+        }
+      }
+      if (rows.length === 0) continue
+      const tableLines = [
+        `${title}`,
+        `| ${cols.join(' | ')} |`,
+        `| ${Array.from({ length: colCount }).map(() => '---').join(' | ')} |`,
+        ...rows.map((r) => `| ${r.join(' | ')} |`),
+      ]
+      lines.splice(i, 2, ...tableLines)
+      i += tableLines.length - 1
+    }
+    return lines.join('\n')
+  }
+  s = normalizeInlineRecommendationTable(s)
+  // Strict fix: only normalize the "建议优先跟进名单" section into a real markdown table.
+  const normalizeRecommendSectionTable = (input) => {
+    const toAsciiPipe = (v = '') => String(v || '').replace(/[｜丨│﹨]/g, '|')
+    let text = String(input || '')
+    const lines = toAsciiPipe(text).split('\n')
+    const headerIdx = lines.findIndex((x) => {
+      const t = String(x || '').trim()
+      if (/^(#{1,6})\s*建议优先跟进名单\b/.test(t)) return true
+      if (/^\|/.test(t) && /建议优先跟进名单/.test(t) && /优先级/.test(t) && /供应商/.test(t)) return true
+      return false
+    })
+    if (headerIdx < 0) return text
+    let endIdx = lines.length
+    for (let i = headerIdx + 1; i < lines.length; i += 1) {
+      if (/^#{1,6}\s*/.test(String(lines[i] || '').trim())) {
+        endIdx = i
+        break
+      }
+    }
+    const sectionLines = lines.slice(headerIdx, endIdx)
+    const bodyJoined = sectionLines
+      .slice(1)
+      .map((x) => String(x || '').trim())
+      .filter((x) => x && !/^[-—_]{2,}$/.test(x))
+      .join(' ')
+      .replace(/\s+/g, ' ')
+    if (!bodyJoined) return text
+    // Support both "||" and single "|" concatenated rows.
+    const normalizedBody = bodyJoined
+      .replace(/\|\|\s*(高|中|低)\s*\|/g, '\n| $1 |')
+      .replace(/\|\|\s*/g, '\n| ')
+      .replace(/(?<!\n)\|\s*(高|中|低)\s*\|/g, '\n| $1 |')
+      .trim()
+    const chunks = normalizedBody
+      .split('\n')
+      .map((x) => x.trim())
+      .filter(Boolean)
+    const rows = []
+    for (const chunk of chunks) {
+      const cells = toAsciiPipe(chunk).split('|').map((x) => x.trim()).filter(Boolean)
+      if (cells.length < 4) continue
+      let idx = 0
+      while (idx + 3 < cells.length) {
+        if (!/^(高|中|低)$/.test(cells[idx])) { idx += 1; continue }
+        rows.push([
+          cells[idx],
+          cells[idx + 1] || '-',
+          cells[idx + 2] || '-',
+          cells[idx + 3] || '-',
+        ])
+        idx += 4
+      }
+    }
+    if (rows.length === 0) return text
+    const filteredRows = rows.filter((r, idx) => {
+      if (idx !== rows.length - 1) return true
+      const level = String(r?.[0] || '')
+      const supplier = String(r?.[1] || '')
+      const reason = String(r?.[2] || '')
+      const action = String(r?.[3] || '')
+      const isFallbackTail = /^(低)$/i.test(level) && /(其余候选|其他候选|剩余候选|其它候选)/.test(supplier)
+      const weakTail = /(证据不足|待补充|不建议|暂不建议)/.test(`${reason} ${action}`)
+      return !(isFallbackTail || weakTail)
+    })
+    const tableRows = filteredRows.length > 0 ? filteredRows : rows
+    const tableBlock = [
+      '## 建议优先跟进名单',
+      '| 优先级 | 供应商 | 推荐原因 | 建议切入点 |',
+      '| --- | --- | --- | --- |',
+      ...tableRows.map((r) => `| ${r[0]} | ${r[1]} | ${r[2]} | ${r[3]} |`),
+    ]
+    const merged = [
+      ...lines.slice(0, headerIdx),
+      ...tableBlock,
+      '',
+      ...lines.slice(endIdx),
+    ]
+    let out = merged.join('\n')
+    // If optional chart notes were accidentally prefixed with pipe, force them out of the table block.
+    out = out.replace(/\n\|\s*(#{1,6}\s*可选图表建议[^\n]*)/g, '\n\n$1')
+    out = out.replace(/\n\|\s*(图\s*[1-9]\s*[:：][^\n]*)/g, '\n$1')
+    return out
+  }
+  s = normalizeRecommendSectionTable(s)
+  const normalizeNumberedSectionAsTable = (input, sectionTitle, headers = []) => {
+    const lines = String(input || '').split('\n')
+    const idx = lines.findIndex((x) => String(x || '').trim().replace(/^#{1,6}\s*/, '').startsWith(sectionTitle))
+    if (idx < 0) return input
+    let end = lines.length
+    for (let i = idx + 1; i < lines.length; i += 1) {
+      if (/^#{1,6}\s*/.test(String(lines[i] || '').trim())) { end = i; break }
+    }
+    const body = lines.slice(idx + 1, end).join('\n')
+      .replace(/([^\n])(\d+\.)/g, '$1\n$2')
+    const rows = []
+    const re = /(?:^|\n)\s*(\d+)\.\s*([^\n]+?)(?=(?:\n\s*\d+\.\s*)|\n?$)/g
+    let m = null
+    while ((m = re.exec(body)) !== null) rows.push([m[1], String(m[2] || '').trim()])
+    if (rows.length === 0) return input
+    const table = [
+      `## ${sectionTitle}`,
+      `| ${headers[0] || '序号'} | ${headers[1] || '内容'} |`,
+      '| --- | --- |',
+      ...rows.map((r) => `| ${r[0]} | ${r[1]} |`),
+    ]
+    return [...lines.slice(0, idx), ...table, ...lines.slice(end)].join('\n')
+  }
+  const normalizeRagRefAsTable = (input) => {
+    const lines = String(input || '').split('\n')
+    const idx = lines.findIndex((x) => String(x || '').trim().replace(/^#{1,6}\s*/, '').startsWith('RAG参考'))
+    if (idx < 0) return input
+    let end = lines.length
+    for (let i = idx + 1; i < lines.length; i += 1) {
+      if (/^#{1,6}\s*/.test(String(lines[i] || '').trim())) { end = i; break }
+    }
+    const rows = []
+    for (const ln of lines.slice(idx + 1, end)) {
+      const t = String(ln || '').trim()
+      const m = t.match(/^(\d+)\.\s*(.+?)\s*\|\s*相似度\s*=\s*([\d.]+)/i)
+      if (m) rows.push([m[1], m[2], m[3]])
+    }
+    if (rows.length === 0) return input
+    const table = [
+      '## RAG参考',
+      '| 序号 | 来源 | 相似度 |',
+      '| --- | --- | --- |',
+      ...rows.map((r) => `| ${r[0]} | ${r[1]} | ${r[2]} |`),
+    ]
+    return [...lines.slice(0, idx), ...table, ...lines.slice(end)].join('\n')
+  }
+  s = normalizeRagRefAsTable(s)
+  s = s.replace(/(##\s*明确不足\/待核验)\s*(\d+\.)/g, '$1\n$2')
+  s = s.replace(/(##\s*下一步检索建议)\s*(\d+\.)/g, '$1\n$2')
+  s = normalizeNumberedSectionAsTable(s, '明确不足/待核验', ['序号', '问题说明'])
+  s = normalizeNumberedSectionAsTable(s, '下一步检索建议', ['序号', '建议'])
+  // Convert dense "URL | 相似度=0.xxx" blocks into markdown table for readability.
+  const normalizeSimilarityBlocks = (input) => {
+    const lines = String(input || '').split('\n')
+    const out = []
+    let i = 0
+    while (i < lines.length) {
+      const line = String(lines[i] || '').trim()
+      const isRow = /^\d+\.\s*https?:\/\/\S+\s*\|\s*相似度\s*=\s*[\d.]+/i.test(line)
+      if (!isRow) {
+        out.push(lines[i])
+        i += 1
+        continue
+      }
+      const rows = []
+      while (i < lines.length) {
+        const cur = String(lines[i] || '').trim()
+        if (!/^\d+\.\s*https?:\/\/\S+\s*\|\s*相似度\s*=\s*[\d.]+/i.test(cur)) break
+        const m = cur.match(/^\d+\.\s*(https?:\/\/\S+)\s*\|\s*相似度\s*=\s*([\d.]+)/i)
+        if (m) rows.push([m[1], m[2]])
+        i += 1
+      }
+      if (rows.length > 0) {
+        out.push('| 来源链接 | 相似度 |')
+        out.push('| --- | --- |')
+        rows.forEach((r) => out.push(`| ${r[0]} | ${r[1]} |`))
+      }
+    }
+    return out.join('\n')
+  }
+  s = normalizeSimilarityBlocks(s)
+  // Pull "图1/图2/图3" into a dedicated readable block.
+  s = s.replace(/(#{2,}\s*可选图表建议)\s*[-—–]?\s*(图\s*1\s*[:：])/g, '$1\n$2')
+  s = s.replace(/(图\s*[1-9]\s*[:：][^#\n]{0,200})\s+(图\s*[1-9]\s*[:：])/g, '$1\n$2')
+  const figMatches = [...s.matchAll(/图\s*([1-9])\s*[:：]\s*([^\n]+)/g)]
+  if (figMatches.length > 0 && !/##\s*图表建议/.test(s) && !/##\s*可选图表建议/.test(s)) {
+    const figLines = figMatches.map((m) => `- 图${m[1]}：${m[2]}`)
+    s += `\n\n## 图表建议\n${figLines.join('\n')}`
+  }
   // Keep blank lines tidy.
   s = s.replace(/\n{3,}/g, '\n\n')
+  s = s.replace(/^\s*#\s*$/m, '')
   return s
 }
 
@@ -207,6 +522,7 @@ export default function PreciseSourcingAgentPage() {
   const [loading, setLoading] = useState(false)
   const [showSidebar, setShowSidebar] = useState(true)
   const [sessionStateHydrated, setSessionStateHydrated] = useState(false)
+  const [sessionStateLoadFailed, setSessionStateLoadFailed] = useState(false)
 
   const [tools, setTools] = useState([])
   const [selectedTools, setSelectedTools] = useState([])
@@ -217,7 +533,7 @@ export default function PreciseSourcingAgentPage() {
   const [templateType, setTemplateType] = useState('none')
   const [templateFile, setTemplateFile] = useState(null)
   const [kbTopK, setKbTopK] = useState(3)
-  const [dbTopK, setDbTopK] = useState(10)
+  const [dbTopK, setDbTopK] = useState(30)
   const [temperature, setTemperature] = useState(0.7)
   const [sourceQuotaDb, setSourceQuotaDb] = useState(3)
   const [sourceQuotaRag, setSourceQuotaRag] = useState(2)
@@ -291,9 +607,13 @@ export default function PreciseSourcingAgentPage() {
           const exists = rows.some((item) => item.name === current)
           setCurrentSession(exists ? current : rows[0].name)
         }
+        setSessionStateLoadFailed(false)
+        setSessionStateHydrated(true)
       })
-      .catch((error) => message.error(error.message || '加载历史会话失败'))
-      .finally(() => setSessionStateHydrated(true))
+      .catch((error) => {
+        setSessionStateLoadFailed(true)
+        message.error(error.message || '加载历史会话失败')
+      })
   }, [])
 
   useEffect(() => {
@@ -305,7 +625,7 @@ export default function PreciseSourcingAgentPage() {
   }, [selectedModelName])
 
   useEffect(() => {
-    if (!sessionStateHydrated) return
+    if (!sessionStateHydrated || sessionStateLoadFailed) return
     const timer = window.setTimeout(() => {
       void saveLangchainSessionState({ chatType: 'precise_sourcing', sessions, currentSession }).catch((error) => {
         message.error(error.message || '保存会话失败')
@@ -801,7 +1121,16 @@ export default function PreciseSourcingAgentPage() {
   }
 
   function renderAssistantExtraText(item) {
-    return null
+    const runLogs = Array.isArray(item?.meta?.runLogs) ? item.meta.runLogs.map((x) => String(x || '').trim()).filter(Boolean) : []
+    if (runLogs.length === 0) return null
+    return (
+      <div style={{ marginTop: 10, border: '1px solid #e5e7eb', background: '#fff', borderRadius: 8, padding: 10 }}>
+        <div style={{ marginBottom: 8, fontWeight: 600 }}>过程数据</div>
+        <div style={{ fontSize: 12, color: '#334155', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
+          {runLogs.join('\n')}
+        </div>
+      </div>
+    )
   }
 
   function openArtifactPreview(title, url) {
@@ -894,20 +1223,29 @@ export default function PreciseSourcingAgentPage() {
     const executionPlanFromTrace = actPlanTrace?.input?.executionPlan && typeof actPlanTrace.input.executionPlan === 'object'
       ? actPlanTrace.input.executionPlan
       : null
-    const selectedToolSet = new Set(Array.isArray(item?.selectedTools) ? item.selectedTools.map((x) => String(x || '')) : [])
+    const selectedToolsFromMessage = Array.isArray(item?.selectedTools) ? item.selectedTools : []
+    const selectedToolsFromOrchestration = Array.isArray(item?.queryStatements?.orchestration?.selectedTools)
+      ? item.queryStatements.orchestration.selectedTools
+      : []
+    const selectedToolSet = new Set([...selectedToolsFromMessage, ...selectedToolsFromOrchestration].map((x) => String(x || '')))
 
     const hasTraceStep = (prefix) => traces.some((t) => String(t?.step || '').toLowerCase().startsWith(String(prefix || '').toLowerCase()))
     const hasFastPlan = hasTraceStep('plan_fast')
     const doneOrSkipped = (done, skipped = false) => (done ? 'done' : (skipped ? 'skipped' : 'pending'))
 
     const activeToolTasks = [
-      { key: 'db_chat', label: 'DB任务', enabled: selectedToolSet.has('db_chat') || intentDecision?.needDb === true, done: hasTraceStep('observe_db') },
-      { key: 'local_kb', label: 'RAG任务', enabled: selectedToolSet.has('local_kb') || intentDecision?.needRag === true, done: hasTraceStep('observe_rag') },
-      { key: 'web_search', label: 'WEB任务', enabled: selectedToolSet.has('web_search') || intentDecision?.needWeb === true, done: hasTraceStep('observe_web') },
+      { key: 'db_chat', label: 'DB任务', enabled: selectedToolSet.has('db_chat') || intentDecision?.needDb === true, done: hasTraceStep('observe_db') || hasTraceStep('act_db') },
+      { key: 'local_kb', label: 'RAG任务', enabled: selectedToolSet.has('local_kb') || intentDecision?.needRag === true, done: hasTraceStep('observe_rag') || hasTraceStep('act_rag') },
+      { key: 'web_search', label: 'WEB任务', enabled: selectedToolSet.has('web_search') || intentDecision?.needWeb === true, done: hasTraceStep('observe_web') || hasTraceStep('act_web') },
       { key: 'python_chart_generator', label: '图表任务', enabled: selectedToolSet.has('python_chart_generator'), done: hasTraceStep('observe_tools') },
       { key: 'file_exporter', label: '导出任务', enabled: selectedToolSet.has('file_exporter'), done: hasTraceStep('observe_tools') },
       { key: 'image_gen', label: '图片任务', enabled: selectedToolSet.has('image_gen'), done: hasTraceStep('observe_tools') },
     ].filter((x) => x.enabled)
+    if (activeToolTasks.length === 0) {
+      if (Array.isArray(item?.evidence?.suppliers) && item.evidence.suppliers.length > 0) activeToolTasks.push({ key: 'db_chat', label: 'DB任务', enabled: true, done: true })
+      if (Array.isArray(item?.evidence?.kbHits) && item.evidence.kbHits.length > 0) activeToolTasks.push({ key: 'local_kb', label: 'RAG任务', enabled: true, done: true })
+      if (Array.isArray(item?.evidence?.webHits) && item.evidence.webHits.length > 0) activeToolTasks.push({ key: 'web_search', label: 'WEB任务', enabled: true, done: true })
+    }
     const allActiveToolTasksDone = activeToolTasks.length > 0 && activeToolTasks.every((x) => x.done === true)
 
     const metricDbHits = Array.isArray(item?.evidence?.suppliers) ? item.evidence.suppliers.length : 0
@@ -916,25 +1254,58 @@ export default function PreciseSourcingAgentPage() {
     const dbCompanies = (Array.isArray(item?.evidence?.suppliers) ? item.evidence.suppliers : [])
       .map((x) => String(x?.companyName || x?.company_name || x?.name || '').trim())
       .filter(Boolean)
-    const isLikelyCompanyName = (name = '') => /(公司|集团|股份|有限责任)/.test(String(name || '').trim())
+    const isLikelyCompanyName = (name = '') => {
+      const n = String(name || '').trim()
+      if (!n) return false
+      if (n.length < 4 || n.length > 64) return false
+      if (/[：:；;，,。.!！?？]/.test(n)) return false
+      if (/\b(docx|pdf|pptx?|xlsx?|csv|md|txt)\b/i.test(n)) return false
+      if (/^\d+\s*/.test(n) && /(家上市公司|家公司|家企业|个公司|个企业|一个公司|一个企业)/.test(n)) return false
+      if (/(供应商是一个公司|一个公司|一个企业|这些公司|有这些公司|以下公司|上述公司)/.test(n)) return false
+      if (/^(关于|有关|Rankings|ranking|排行|排名)/i.test(n)) return false
+      if (/(我收藏的公司|收藏的公司|我的公司|示例公司|推荐公司|样例公司|这些公司|有这些公司|\d+家上市公司|等公司$|等企业$)/.test(n)) return false
+      if (/(建议|用于|使用|基于|参考|例如|包含|包括|方面|相关|优先|自动|获取|样例|建筑材料)/.test(n)) return false
+      if (/(完善公司|我的公司|上市公司|行业公司|企业名录|供应链企业|相关公司|头部公司|龙头公司|多家公司|若干公司|保证公司)/.test(n)) return false
+      if (/(收藏|排名|榜单|图表|建议|示例|样例|模板|文档|报告|清单)$/.test(n)) return false
+      const zhLegal = /(股份有限公司|有限责任公司|有限公司|集团有限公司|集团|公司)$/.test(n)
+      const enLegal = /\b(inc|corp|corporation|co\.?,?\s*ltd|ltd\.?|limited|group|holdings?)\b/i.test(n)
+      return zhLegal || enLegal
+    }
+    const extractLooseCompanies = (text = '') => {
+      const src = String(text || '')
+      const matches = src.match(/[\u4e00-\u9fa5A-Za-z0-9（）()·\s]{3,48}(?:股份有限公司|有限责任公司|有限公司|集团有限公司|集团|公司)/g) || []
+      return matches.map((x) => String(x || '').trim()).filter((x) => isLikelyCompanyName(x))
+    }
     const kbCompanies = Array.from(new Set((Array.isArray(item?.evidence?.kbHits) ? item.evidence.kbHits : [])
       .flatMap((x) => [
         ...(Array.isArray(x?.supplierCandidates) ? x.supplierCandidates : []),
         ...(Array.isArray(x?._supplierCandidates) ? x._supplierCandidates : []),
+        ...extractLooseCompanies(`${String(x?.docName || '')} ${String(x?.snippetPreview || x?.chunkText || '')}`),
       ])
       .map((x) => String(x || '').trim())
       .filter((x) => x && isLikelyCompanyName(x))))
-    const webCompanies = Array.from(new Set((Array.isArray(item?.evidence?.webHits) ? item.evidence.webHits : [])
+    const webCompaniesAll = Array.from(new Set((Array.isArray(item?.evidence?.webHits) ? item.evidence.webHits : [])
       .flatMap((x) => [
         ...(Array.isArray(x?.supplierCandidates) ? x.supplierCandidates : []),
         ...(Array.isArray(x?._supplierCandidates) ? x._supplierCandidates : []),
       ])
       .map((x) => String(x || '').trim())
-      .filter((x) => x && isLikelyCompanyName(x))))
+      .filter(Boolean)))
+    const webCompanies = webCompaniesAll.filter((x) => isLikelyCompanyName(x))
     const webDerivedCompanies = Array.from(new Set((Array.isArray(item?.evidence?.webDerivedSuppliers) ? item.evidence.webDerivedSuppliers : [])
       .map((x) => String(x || '').trim())
-      .filter(Boolean)))
+      .filter(Boolean)
+      .filter((x) => isLikelyCompanyName(x))))
     const mergedWebCompanies = Array.from(new Set([...webCompanies, ...webDerivedCompanies]))
+    const kbSignals = (Array.isArray(item?.evidence?.kbHits) ? item.evidence.kbHits : [])
+      .map((x) => ({
+        docName: String(x?.docName || '').trim(),
+        snippet: String(x?.snippetPreview || x?.chunkText || '').trim(),
+      }))
+      .filter((x) => x.docName || x.snippet)
+    const kbSignalLines = kbSignals
+      .slice(0, 8)
+      .map((x) => x.docName ? `${x.docName}${x.snippet ? ` | ${x.snippet.slice(0, 80)}` : ''}` : x.snippet.slice(0, 120))
     const webSignals = (Array.isArray(item?.evidence?.webHits) ? item.evidence.webHits : [])
       .map((x) => ({
         title: String(x?.title || x?.name || '').trim(),
@@ -1015,11 +1386,14 @@ export default function PreciseSourcingAgentPage() {
       `融合去重后: ${fusedSuppliers.length}`,
     ].join('\n')
     const stageResult = (stepNo) => executionStages.find((x) => Number(x?.step) === Number(stepNo)) || null
+    const stageDone = (stepNo) => String(stageResult(stepNo)?.status || '').toLowerCase() === 'done'
 
-    const dbRequestText = String(item?.queryStatements?.db?.template || executionPlanFromTrace?.dbQuery || '').trim()
-    const ragRequestText = String(item?.queryStatements?.rag?.endpoint || executionPlanFromTrace?.ragQuery || '').trim()
+    const dbRequestText = String(item?.queryStatements?.db?.template || executionPlanFromTrace?.dbQuery || item?.userInput || '').trim()
+    const ragRequestText = String(item?.queryStatements?.rag?.endpoint || executionPlanFromTrace?.ragQuery || item?.userInput || '').trim()
     const webProviderText = String(item?.queryStatements?.web?.provider || '').trim()
-    const webQueryText = String(item?.queryStatements?.web?.keyword || executionPlanFromTrace?.webQuery || '').trim()
+    const configuredSearchToolText = String(item?.queryStatements?.web?.configuredSearchTool || '').trim()
+    const effectiveSearchToolText = String(item?.queryStatements?.web?.effectiveSearchTool || '').trim()
+    const webQueryText = String(item?.queryStatements?.web?.keyword || executionPlanFromTrace?.webQuery || item?.userInput || '').trim()
     const actualWebProviders = Array.from(new Set(
       (Array.isArray(item?.evidence?.webHits) ? item.evidence.webHits : [])
         .map((x) => String(x?._provider || '').trim())
@@ -1029,26 +1403,69 @@ export default function PreciseSourcingAgentPage() {
     const needDbTask = selectedToolSet.has('db_chat') || intentDecision?.needDb === true
     const needRagTask = selectedToolSet.has('local_kb') || intentDecision?.needRag === true
     const needWebTask = selectedToolSet.has('web_search') || intentDecision?.needWeb === true
+    const selectedDb = selectedToolSet.has('db_chat')
+    const selectedRag = selectedToolSet.has('local_kb')
+    const selectedWeb = selectedToolSet.has('web_search')
+    const normalizePlanLine = (line = '') => String(line || '')
+      .replace(/^\s*\d+(?:[.\-、)]\d+)*(?:[.\-、)])?\s*/u, '')
+      .replace(/^\s*\d+\s*/u, '')
+      .trim()
+    const dynamicPlanLines = (() => {
+      const source = planSteps.length > 0
+        ? planSteps.map((x) => String(x?.title || x?.name || x || '').trim()).filter(Boolean)
+        : [
+            needDbTask ? '数据库候选召回' : '',
+            needRagTask ? '知识库证据补强' : '',
+            '证据融合与排序',
+            '结构化报告输出',
+          ].filter(Boolean)
+      const normalized = source
+        .map((x) => normalizePlanLine(x))
+        .filter(Boolean)
+        .map((x) => x.replace('结构化报告输出', 'LLM结构化生成（基于Rerank结果）'))
+        .filter((x) => !/^执行开关\(/.test(x))
+      const deduped = Array.from(new Set(normalized))
+      const numbered = deduped.map((x, idx) => `${idx + 1}. ${x}`)
+      numbered.push(`${numbered.length + 1}. 执行开关(DB=${selectedDb ? '是' : '否'}, RAG=${selectedRag ? '是' : '否'}, WEB=${selectedWeb ? '是' : '否'})`)
+      return numbered.join('\n')
+    })()
+    const hitStatMatch = llmRawOutput.match(/【命中统计】[\s\S]*?DB结构化命中：\s*(\d+)\s*条[\s\S]*?RAG片段命中：\s*(\d+)\s*条[\s\S]*?WEB线索命中：\s*(\d+)\s*条/i)
+    const conclusionMatch = llmRawOutput.match(/#?\s*结论概览[:：]?\s*([^\n\r]+)/i)
+    const llmSummaryRows = [
+      { key: 'db', item: 'DB结构化命中', value: hitStatMatch ? `${hitStatMatch[1]}条` : '-' },
+      { key: 'rag', item: 'RAG片段命中', value: hitStatMatch ? `${hitStatMatch[2]}条` : '-' },
+      { key: 'web', item: 'WEB线索命中', value: hitStatMatch ? `${hitStatMatch[3]}条` : '-' },
+      { key: 'conclusion', item: '结论概览', value: conclusionMatch ? conclusionMatch[1] : '-' },
+    ]
     const requestReady = activeToolTasks.length > 0 && (
       (needDbTask && dbRequestText)
       || (needRagTask && ragRequestText)
       || (needWebTask && webQueryText)
       || hasTraceStep('act_plan')
     )
+    const hasFinalAnswer = String(item?.rawAnswer || item?.content || '').trim() && String(item?.content || '').trim() !== '执行中，请稍候...'
 
     const hasAnyActRetrieval = hasTraceStep('act_db') || hasTraceStep('act_rag') || hasTraceStep('act_web')
     const hasAnyObserveRetrieval = hasTraceStep('observe_db') || hasTraceStep('observe_rag') || hasTraceStep('observe_web')
     const rawDone = {
       s1: true,
-      s2: hasTraceStep('plan') || hasFastPlan || Boolean(intentDecision),
-      s3: planSteps.length > 0 || hasFastPlan,
-      s4: hasAnyActRetrieval || hasTraceStep('act_plan'),
-      s5: allActiveToolTasksDone || (activeToolTasks.length === 0 && hasTraceStep('observe_tools')),
-      s6: hasAnyObserveRetrieval,
-      s7: hasTraceStep('observe_fuse') || hasTraceStep('act_fuse'),
-      s8: hasTraceStep('observe_rerank') || hasTraceStep('act_rerank'),
-      s9: hasTraceStep('observe_llm') || Boolean(stageResult(9)),
-      s10: item?.streamDone === true,
+      s2: hasTraceStep('plan') || hasFastPlan || Boolean(intentDecision) || stageDone(2),
+      s3: planSteps.length > 0 || hasFastPlan || stageDone(3),
+      s4: hasAnyActRetrieval || hasTraceStep('act_plan') || stageDone(4),
+      s5: allActiveToolTasksDone || (activeToolTasks.length === 0 && hasTraceStep('observe_tools')) || stageDone(5),
+      s6: hasAnyObserveRetrieval || stageDone(6),
+      s7: hasTraceStep('observe_fuse') || hasTraceStep('act_fuse') || stageDone(7),
+      s8: hasTraceStep('observe_rerank') || hasTraceStep('act_rerank') || stageDone(8),
+      s9: hasTraceStep('observe_llm') || Boolean(stageResult(9)) || stageDone(9),
+      s10: item?.streamDone === true || hasFinalAnswer,
+    }
+    if (hasFinalAnswer) {
+      rawDone.s5 = true
+      rawDone.s6 = true
+      rawDone.s7 = true
+      rawDone.s8 = true
+      rawDone.s9 = true
+      rawDone.s10 = true
     }
     const keysOrdered = ['s1', 's2', 's3', 's4', 's5', 's6', 's7', 's8', 's9', 's10']
     const gatedDone = {}
@@ -1072,10 +1489,10 @@ export default function PreciseSourcingAgentPage() {
         key: 's2',
         stepNo: 2,
         title: 'LLM语义理解与任务规划',
-        detail: '语义解析: 意图=' + String(intentDecision?.intent || item?.intent || intentFromTrace || '-') + '\n任务规划: ' + String(intentDecision?.routeReason || planDetailText || '-'),
+        detail: '语义解析: 意图=' + String(intentDecision?.intent || item?.intent || intentFromTrace || '-') + '\n任务规划: ' + String(intentDecision?.routeReason || planDetailText || (activeToolTasks.length > 0 ? `按所选工具执行：${activeToolTasks.map((x) => x.label).join('、')}` : '-')),
         status: stepStatus.s2,
       },
-      { key: 's3', stepNo: 3, title: '检索子任务分解', detail: planSteps.length > 0 ? planSteps.map((x, idx) => String(idx + 1) + '. ' + String(x?.title || x?.id || '-')).join('\n') : '', status: stepStatus.s3 },
+      { key: 's3', stepNo: 3, title: '检索子任务分解', detail: dynamicPlanLines, status: stepStatus.s3 },
       {
         key: 's4',
         stepNo: 4,
@@ -1187,7 +1604,9 @@ export default function PreciseSourcingAgentPage() {
                           WEB请求
                         </div>
                         <div style={{ fontSize: 12, color: '#334155', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
-                          provider: {webProviderText || 'web.searchSupplierSignals'}{'\n'}
+                          搜索配置工具: {configuredSearchToolText || webProviderText || '-'}{'\n'}
+                          实际执行工具: {effectiveSearchToolText || '-'}{'\n'}
+                          命中provider聚合: {actualWebProviderText !== '-' ? actualWebProviderText : (webProviderText || 'web.searchSupplierSignals')}{'\n'}
                           query: {webQueryText || '-'}
                         </div>
                       </div>
@@ -1216,16 +1635,28 @@ export default function PreciseSourcingAgentPage() {
                     ) : null}
                     {selectedToolSet.has('local_kb') || intentDecision?.needRag === true ? (
                       <div style={{ border: '1px solid #e9d5ff', borderRadius: 8, padding: 8, background: '#faf5ff' }}>
-                        <div style={{ fontSize: 12, marginBottom: 6 }}>RAG命中企业（{kbCompanies.length}）</div>
+                        <div style={{ fontSize: 12, marginBottom: 6 }}>
+                          RAG候选企业（{kbCompanies.length}）
+                          <span style={{ color: '#64748b' }}> | 命中片段 {metricRagHits}</span>
+                        </div>
                         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                           {kbCompanies.length > 0 ? kbCompanies.map((name, i) => <Tag key={`kb-company-${i}`} color="purple">{name}</Tag>) : <span style={{ fontSize: 12, color: '#64748b' }}>无</span>}
                         </div>
+                        {kbCompanies.length === 0 && kbSignalLines.length > 0 ? (
+                          <div style={{ marginTop: 8 }}>
+                            <div style={{ fontSize: 12, marginBottom: 6 }}>RAG命中片段（{kbSignals.length}）</div>
+                            <div style={{ fontSize: 12, color: '#334155', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
+                              {kbSignalLines.join('\n')}
+                            </div>
+                          </div>
+                        ) : null}
                       </div>
                     ) : null}
                     {selectedToolSet.has('web_search') || intentDecision?.needWeb === true ? (
                       <div style={{ border: '1px solid #bbf7d0', borderRadius: 8, padding: 8, background: '#f0fdf4' }}>
                         <div style={{ fontSize: 12, marginBottom: 6 }}>
-                          WEB命中企业（{mergedWebCompanies.length}）
+                          WEB候选企业（{mergedWebCompanies.length}）
+                          <span style={{ color: '#64748b' }}> | 命中线索 {metricWebHits}</span>
                           <span style={{ color: '#64748b' }}> | 主流程候选 {webCompanies.length}，异步补全候选 {webDerivedCompanies.length}</span>
                         </div>
                         {webEnrichNote ? (
@@ -1374,20 +1805,36 @@ export default function PreciseSourcingAgentPage() {
                     ) : null}
                     <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, padding: 8, background: '#fff', display: step.status === 'done' ? 'block' : 'none' }}>
                       <div style={{ fontSize: 12, color: '#64748b', marginBottom: 4 }}>供应商列表</div>
-                      <div style={{ display: 'grid', gap: 6 }}>
-                        {fusedSuppliers.map((x, i) => (
-                          <div key={`s9-s-${i}`} style={{ border: '1px solid #eef2f7', borderRadius: 8, padding: 6 }}>
-                            <div style={{ fontSize: 12 }}>{i + 1}. {x.name}</div>
-                            <div style={{ marginTop: 4 }}><Tag color="green">融合分 {x.fusedScore.toFixed(2)}</Tag></div>
-                          </div>
-                        ))}
-                      </div>
+                      <Table
+                        size="small"
+                        pagination={false}
+                        rowKey={(r) => `${r.name}-${r.rerankIndex || 0}`}
+                        dataSource={fusedSuppliers.map((x, i) => ({ ...x, rank: i + 1 }))}
+                        columns={[
+                          { title: '排名', dataIndex: 'rank', key: 'rank', width: 64 },
+                          { title: '企业', dataIndex: 'name', key: 'name' },
+                          { title: '融合分', dataIndex: 'fusedScore', key: 'fusedScore', width: 90, render: (v) => Number(v || 0).toFixed(2) },
+                          { title: 'DB', dataIndex: 'dbScore', key: 'dbScore', width: 70, render: (v) => Number(v || 0).toFixed(2) },
+                          { title: 'RAG', dataIndex: 'kbSupport', key: 'kbSupport', width: 70 },
+                          { title: 'WEB', dataIndex: 'webSupport', key: 'webSupport', width: 70 },
+                        ]}
+                      />
                     </div>
                     <div style={{ border: '1px solid #dbeafe', borderRadius: 10, padding: 10, background: 'linear-gradient(180deg,#f8fbff 0%,#ffffff 100%)', display: step.status === 'done' ? 'block' : 'none' }}>
                       <div style={{ fontSize: 13, color: '#1e3a8a', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
                         <MessageOutlined />
                         <span>LLM大模型输出（原文）</span>
                       </div>
+                      <Table
+                        size="small"
+                        pagination={false}
+                        dataSource={llmSummaryRows}
+                        columns={[
+                          { title: '项目', dataIndex: 'item', key: 'item', width: 180 },
+                          { title: '值', dataIndex: 'value', key: 'value' },
+                        ]}
+                        style={{ marginBottom: 10 }}
+                      />
                       {llmRawOutput ? (
                         <div style={{ fontSize: 12, color: '#334155', overflowX: 'auto', lineHeight: 1.7 }}>
                           <ReactMarkdown
@@ -1558,7 +2005,7 @@ export default function PreciseSourcingAgentPage() {
       await chatPreciseSourcingAgentStream({
         message: question,
         model: selectedModelName,
-        executionMode: 'normal',
+        executionMode: 'fast',
         finalTopN: 10,
         systemPrompt: systemPromptEnabled ? systemPrompt : '',
         systemPromptPresetKey: systemPromptEnabled ? systemPromptPresetKey : '',
@@ -1956,8 +2403,8 @@ export default function PreciseSourcingAgentPage() {
                         <Text type="secondary">历史会话</Text>
                         <div style={{ marginTop: 8, maxHeight: 180, overflowY: 'auto', border: '1px solid #e5e7eb', borderRadius: 8, padding: 6, background: '#fff' }}>
                           <Space direction="vertical" size={6} style={{ width: '100%' }}>
-                            {sessions.map((s) => (
-                              <Button key={s.name} type={s.name === currentSession ? 'primary' : 'default'} onClick={() => setCurrentSession(s.name)} style={{ width: '100%', textAlign: 'left', justifyContent: 'flex-start' }}>
+                            {sessions.map((s, idx) => (
+                              <Button key={`${s.name}-${idx}`} type={s.name === currentSession ? 'primary' : 'default'} onClick={() => setCurrentSession(s.name)} style={{ width: '100%', textAlign: 'left', justifyContent: 'flex-start' }}>
                                 {s.name}
                               </Button>
                             ))}
@@ -2015,6 +2462,15 @@ export default function PreciseSourcingAgentPage() {
                       {item.role === 'assistant' ? renderAssistantResultCard(item) : null}
                       {item.role === 'assistant' ? renderArtifactCard(item) : null}
                       {item.role === 'assistant' ? renderAssistantExtraText(item) : renderMessageContent(item.content)}
+                      {item.role === 'assistant' ? (() => {
+                        const hasStructuredPayload = !!String(item?.rawAnswer || '').trim()
+                          || !!(item?.intentDecision && typeof item.intentDecision === 'object')
+                          || (Array.isArray(item?.planSteps) && item.planSteps.length > 0)
+                          || (Array.isArray(item?.traces) && item.traces.length > 0)
+                          || (Array.isArray(item?.artifacts) && item.artifacts.length > 0)
+                        if (hasStructuredPayload) return null
+                        return renderMessageContent(item?.content || '')
+                      })() : null}
                     </div>
                   </div>
                 </Card>

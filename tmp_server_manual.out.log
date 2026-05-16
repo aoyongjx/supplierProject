@@ -1,0 +1,10 @@
+
+> asset-inventory-node24@0.0.0 dev:server
+> node scripts/run-with-local-no-proxy.mjs node server/index.js
+
+◇ injected env (29) from .env // tip: ⌘ enable debugging { debug: true }
+[network-policy] HTTP_PROXY=http://127.0.0.1:22307 HTTPS_PROXY=http://127.0.0.1:22307
+[network-policy] NO_PROXY=localhost,127.0.0.1,::1,10.1.1.113,leaf-auth-server.dev.jinxin.cloud,chinaautosupplier.com,www.chinaautosupplier.com,qcgys.com,www.qcgys.com,gasgoo.com,www.gasgoo.com,i.gasgoo.com
+Asset inventory API listening at http://localhost:3000
+DB connected: 10.1.1.113:7300/training_exercises schema=aoyong
+Auth enabled: true

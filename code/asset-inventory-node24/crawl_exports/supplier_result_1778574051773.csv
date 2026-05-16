@@ -1,0 +1,2 @@
+node_id,node_name,model,skill,source_url,list_page_url,detail_url,supplier_profile_url,company_name,brand,vehicle_model,main_products,fit_export,quality_system,region,contact_action,website,address,company_intro,fit_situation,export_situation,certificates,company_type,org_code,established_date,registered_capital,employees_count,legal_representative,news_summary,status,error_message
+998,电池模块,gpt-5.4,web-access,https://i.gasgoo.com/supplier/c-2105.html,https://i.gasgoo.com/supplier/c-2157.html,,,,,,,,,,,,,,,,,,,,,,,,failed,web-access cdp page timeout

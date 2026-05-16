@@ -214,7 +214,7 @@ export function createPreciseSourcingLangGraph(tools) {
         }),
         buildPlanStep({
           id: 'answer',
-          title: routeNeedsTools ? '结构化报告输出' : '直接回答',
+          title: routeNeedsTools ? 'LLM结构化生成（基于Rerank结果）' : '直接回答',
           objective: routeNeedsTools ? '用融合证据生成结论、理由、风险和下一步动作。' : '不调用外部工具，直接回答用户当前问题。',
           tool: 'llm.chatCompletions',
           enabled: true,

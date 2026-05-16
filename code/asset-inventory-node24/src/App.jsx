@@ -44,6 +44,7 @@ import LangchainRagChatPage from './pages/LangchainRagChatPage'
 import KnowledgeBaseManagementPage from './pages/KnowledgeBaseManagementPage'
 import ModelManagementPage from './pages/ModelManagementPage'
 import SearchSettingsPage from './pages/SearchSettingsPage'
+import LlmWikiPage from './pages/LlmWikiPage'
 import SessionChatPage from './pages/SessionChatPage'
 import SessionHistoryPage from './pages/SessionHistoryPage'
 import StockKlinePage from './pages/StockKlinePage'
@@ -440,6 +441,16 @@ const baseMenuGroups = [
       { id: 'capability-vector-search', key: '/capability-center/vector-search', label: '向量检索' },
       { id: 'capability-model-management', key: '/capability-center/model-management', label: '模型管理' },
       { id: 'capability-search-settings', key: '/capability-center/search-settings', label: '搜索配置' },
+      {
+        id: 'capability-llm-wiki',
+        key: 'capability-llm-wiki-menu',
+        label: 'LLM-Wiki',
+        children: [
+          { id: 'capability-llm-wiki-library', key: '/capability-center/llm-wiki/library', label: 'Wiki库' },
+          { id: 'capability-llm-wiki-manage', key: '/capability-center/llm-wiki/manage', label: 'Wiki管理' },
+          { id: 'capability-llm-wiki-settings', key: '/capability-center/llm-wiki/settings', label: '配置' },
+        ],
+      },
     ],
   },
   {
@@ -507,6 +518,10 @@ const menuPermissionSections = [
       { id: 'capability-vector-search', label: '向量检索' },
       { id: 'capability-model-management', label: '模型管理' },
       { id: 'capability-search-settings', label: '搜索配置' },
+      { id: 'capability-llm-wiki', label: '显示 LLM-Wiki 子菜单' },
+      { id: 'capability-llm-wiki-library', label: 'LLM-Wiki / Wiki库' },
+      { id: 'capability-llm-wiki-manage', label: 'LLM-Wiki / Wiki管理' },
+      { id: 'capability-llm-wiki-settings', label: 'LLM-Wiki / 配置' },
     ],
   },
   {
@@ -519,7 +534,11 @@ const menuPermissionSections = [
   },
 ]
 
-const defaultVisibleMenuIds = baseMenuGroups.flatMap((item) => [item.id, ...(item.children?.map((child) => child.id) || [])])
+function collectMenuIds(items = []) {
+  return items.flatMap((item) => [item.id, ...collectMenuIds(item.children || [])])
+}
+
+const defaultVisibleMenuIds = collectMenuIds(baseMenuGroups)
 
 function readVisibleMenuIds() {
   try {
@@ -548,6 +567,18 @@ function readVisibleMenuIds() {
     if (!next.has('capability-search-settings') && next.has('capability-center')) {
       next.add('capability-search-settings')
     }
+    if (!next.has('capability-llm-wiki') && next.has('capability-center')) {
+      next.add('capability-llm-wiki')
+    }
+    if (!next.has('capability-llm-wiki-library') && next.has('capability-llm-wiki')) {
+      next.add('capability-llm-wiki-library')
+    }
+    if (!next.has('capability-llm-wiki-manage') && next.has('capability-llm-wiki')) {
+      next.add('capability-llm-wiki-manage')
+    }
+    if (!next.has('capability-llm-wiki-settings') && next.has('capability-llm-wiki')) {
+      next.add('capability-llm-wiki-settings')
+    }
     if (!next.has('langchain-dialog') && next.has('langchain-chatchat-link')) {
       next.add('langchain-dialog')
     }
@@ -565,15 +596,14 @@ function readVisibleMenuIds() {
 
 function buildVisibleMenuItems(visibleMenuIds, recentSessions) {
   const visibleSet = new Set(visibleMenuIds)
-  const staticItems = baseMenuGroups.flatMap((item) => {
-    if (!item.children) {
-      return visibleSet.has(item.id) ? [item] : []
-    }
+  const filterMenuTree = (items = []) => items.flatMap((item) => {
+    if (!item.children) return visibleSet.has(item.id) ? [{ ...item }] : []
     if (!visibleSet.has(item.id)) return []
-    const visibleChildren = item.children.filter((child) => visibleSet.has(child.id))
-    if (visibleChildren.length === 0) return []
-    return [{ ...item, children: visibleChildren }]
+    const children = filterMenuTree(item.children)
+    if (children.length === 0) return []
+    return [{ ...item, children }]
   })
+  const staticItems = filterMenuTree(baseMenuGroups)
 
   const sessionChildren = [
     { key: '/sessions/new', icon: <EditOutlined />, label: '开启一个会话' },
@@ -604,6 +634,7 @@ function getOpenMenuKeys(pathname) {
     return ['gas-suppliers-menu']
   }
   if (pathname.startsWith('/agents')) return ['agents-menu']
+  if (pathname.startsWith('/capability-center/llm-wiki')) return ['capability-center-menu', 'capability-llm-wiki-menu']
   if (pathname.startsWith('/capability-center')) return ['capability-center-menu']
   if (pathname.startsWith('/langchain-chatchat')) {
     return ['langchain-dialog-menu']
@@ -618,11 +649,23 @@ function normalizeVisibleIds(input) {
   if (!set.has('capability-search-settings') && set.has('capability-center')) {
     set.add('capability-search-settings')
   }
+  if (!set.has('capability-llm-wiki') && set.has('capability-center')) {
+    set.add('capability-llm-wiki')
+  }
   if (!set.has('capability-vector-search') && set.has('capability-center')) {
     set.add('capability-vector-search')
   }
   if (!set.has('capability-model-management') && set.has('capability-center')) {
     set.add('capability-model-management')
+  }
+  if (!set.has('capability-llm-wiki-library') && (set.has('capability-llm-wiki') || set.has('capability-center'))) {
+    set.add('capability-llm-wiki-library')
+  }
+  if (!set.has('capability-llm-wiki-manage') && (set.has('capability-llm-wiki') || set.has('capability-center'))) {
+    set.add('capability-llm-wiki-manage')
+  }
+  if (!set.has('capability-llm-wiki-settings') && (set.has('capability-llm-wiki') || set.has('capability-center'))) {
+    set.add('capability-llm-wiki-settings')
   }
   if (!set.has('langchain-multi-chat') && set.has('langchain-dialog')) {
     set.add('langchain-multi-chat')
@@ -844,6 +887,9 @@ function App() {
     if (location.pathname.startsWith('/capability-center/vector-search')) return '/capability-center/vector-search'
     if (location.pathname.startsWith('/capability-center/model-management')) return '/capability-center/model-management'
     if (location.pathname.startsWith('/capability-center/search-settings')) return '/capability-center/search-settings'
+    if (location.pathname.startsWith('/capability-center/llm-wiki/library')) return '/capability-center/llm-wiki/library'
+    if (location.pathname.startsWith('/capability-center/llm-wiki/manage')) return '/capability-center/llm-wiki/manage'
+    if (location.pathname.startsWith('/capability-center/llm-wiki/settings')) return '/capability-center/llm-wiki/settings'
     if (location.pathname.startsWith('/langchain-chatchat/multi-chat')) return '/langchain-chatchat/multi-chat'
     if (location.pathname.startsWith('/langchain-chatchat/rag-chat')) return '/langchain-chatchat/rag-chat'
     if (location.pathname.startsWith('/langchain-chatchat/knowledge-base')) return '/langchain-chatchat/knowledge-base'
@@ -903,6 +949,9 @@ function App() {
     if (location.pathname.startsWith('/capability-center/vector-search')) return { title: '向量检索', breadcrumb: ['能力中心', '向量检索'] }
     if (location.pathname.startsWith('/capability-center/model-management')) return { title: '模型管理', breadcrumb: ['能力中心', '模型管理'] }
     if (location.pathname.startsWith('/capability-center/search-settings')) return { title: '搜索配置', breadcrumb: ['能力中心', '搜索配置'] }
+    if (location.pathname.startsWith('/capability-center/llm-wiki/library')) return { title: 'LLM-Wiki / Wiki库', breadcrumb: ['能力中心', 'LLM-Wiki', 'Wiki库'] }
+    if (location.pathname.startsWith('/capability-center/llm-wiki/manage')) return { title: 'LLM-Wiki / Wiki管理', breadcrumb: ['能力中心', 'LLM-Wiki', 'Wiki管理'] }
+    if (location.pathname.startsWith('/capability-center/llm-wiki/settings')) return { title: 'LLM-Wiki / 配置', breadcrumb: ['能力中心', 'LLM-Wiki', '配置'] }
     if (location.pathname.startsWith('/langchain-chatchat/multi-chat')) return { title: '多功能对话', breadcrumb: ['Langchain对话', '多功能对话'] }
     if (location.pathname.startsWith('/langchain-chatchat/rag-chat')) return { title: 'RAG对话', breadcrumb: ['Langchain对话', 'RAG对话'] }
     if (location.pathname.startsWith('/langchain-chatchat/knowledge-base')) return { title: '知识库管理', breadcrumb: ['Langchain对话', '知识库管理'] }
@@ -1047,6 +1096,9 @@ function App() {
               <Route path="/capability-center/vector-search" element={<Suspense fallback={<Card className="app-elevated-card">加载中...</Card>}><VectorSearchPage /></Suspense>} />
               <Route path="/capability-center/model-management" element={<ModelManagementPage />} />
               <Route path="/capability-center/search-settings" element={<SearchSettingsPage />} />
+              <Route path="/capability-center/llm-wiki/library" element={<LlmWikiPage view="library" />} />
+              <Route path="/capability-center/llm-wiki/manage" element={<LlmWikiPage view="manage" />} />
+              <Route path="/capability-center/llm-wiki/settings" element={<LlmWikiPage view="settings" />} />
               <Route path="/langchain-chatchat/multi-chat" element={<LangchainMultiChatPage />} />
               <Route path="/langchain-chatchat/rag-chat" element={<LangchainRagChatPage />} />
               <Route path="/langchain-chatchat/knowledge-base" element={<LangchainKnowledgeBasePage />} />

@@ -918,6 +918,9 @@ let dbInitErrorMessage = ''
 let dbReconnectInFlight = null
 let lastDbReconnectAttemptAt = 0
 const knowledgeBaseAssetDir = path.join(process.cwd(), 'logs', 'knowledge-base-assets')
+const knowledgeBaseRawPayloadDir = path.join(knowledgeBaseAssetDir, 'raw-payload')
+const knowledgeBasePayloadRefPrefix = '__KB_FILE__:'
+const knowledgeBaseDbContentMaxBytes = Math.max(512 * 1024, Number(process.env.KB_DB_CONTENT_MAX_BYTES || 8 * 1024 * 1024))
 const knowledgeBaseStore = new Map()
 let knowledgeBasePersistPromise = Promise.resolve()
 let knowledgeBasePersistPending = false
@@ -947,6 +950,15 @@ function decodeBase64Utf8(input = '') {
   } catch {
     return ''
   }
+}
+
+async function resolveDocContentBase64(payload = '') {
+  const raw = toText(payload)
+  if (!raw) return ''
+  if (!raw.startsWith(knowledgeBasePayloadRefPrefix)) return raw
+  const filePath = raw.slice(knowledgeBasePayloadRefPrefix.length)
+  if (!filePath) return ''
+  return toText(await fs.readFile(filePath, 'utf8').catch(() => ''))
 }
 
 function decodeHtmlEntities(input = '') {
@@ -1503,10 +1515,77 @@ function isPlainTextLikeFile(name = '', mime = '') {
   return ['.txt', '.md', '.markdown', '.html', '.htm', '.csv', '.json', '.xml'].includes(ext)
 }
 
+function isExcelFile(name = '', mime = '') {
+  const ext = path.extname(String(name || '')).toLowerCase()
+  const mimeToken = String(mime || '').toLowerCase()
+  if (['.xlsx', '.xlsm', '.xltx', '.xltm'].includes(ext)) return true
+  return [
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'application/vnd.ms-excel.sheet.macroenabled.12',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.template',
+    'application/vnd.ms-excel.template.macroenabled.12',
+  ].includes(mimeToken)
+}
+
+function isWordFile(name = '', mime = '') {
+  const ext = path.extname(String(name || '')).toLowerCase()
+  const mimeToken = String(mime || '').toLowerCase()
+  if (['.docx', '.docm', '.dotx'].includes(ext)) return true
+  return [
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/vnd.ms-word.document.macroenabled.12',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.template',
+  ].includes(mimeToken)
+}
+
 function isPdfFile(name = '', mime = '') {
   const ext = path.extname(String(name || '')).toLowerCase()
   const mimeToken = String(mime || '').toLowerCase()
   return ext === '.pdf' || mimeToken === 'application/pdf'
+}
+
+function isPptFile(name = '', mime = '') {
+  const ext = path.extname(String(name || '')).toLowerCase()
+  const mimeToken = String(mime || '').toLowerCase()
+  if (['.pptx', '.pptm', '.potx'].includes(ext)) return true
+  return [
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    'application/vnd.ms-powerpoint.presentation.macroenabled.12',
+    'application/vnd.openxmlformats-officedocument.presentationml.template',
+  ].includes(mimeToken)
+}
+
+async function extractWordTextFromBuffer(buffer) {
+  const mammoth = await import('mammoth')
+  const result = await mammoth.extractRawText({ buffer })
+  return String(result?.value || '').trim()
+}
+
+async function extractPptTextFromBuffer(buffer) {
+  const { default: JSZip } = await import('jszip')
+  const zip = await JSZip.loadAsync(buffer)
+  const slideFiles = Object.keys(zip.files)
+    .filter((name) => /^ppt\/slides\/slide\d+\.xml$/i.test(name))
+    .sort((a, b) => {
+      const ai = Number((a.match(/slide(\d+)\.xml/i) || [])[1] || 0)
+      const bi = Number((b.match(/slide(\d+)\.xml/i) || [])[1] || 0)
+      return ai - bi
+    })
+  const lines = []
+  for (const slidePath of slideFiles) {
+    const idx = Number((slidePath.match(/slide(\d+)\.xml/i) || [])[1] || 0)
+    const xmlText = await zip.file(slidePath)?.async('string')
+    const matches = [...String(xmlText || '').matchAll(/<a:t>([\s\S]*?)<\/a:t>/g)]
+    const texts = matches
+      .map((m) => String(m[1] || ''))
+      .map((v) => v.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").trim())
+      .filter(Boolean)
+    if (texts.length === 0) continue
+    lines.push(`# Slide ${idx}`)
+    lines.push(...texts)
+    lines.push('')
+  }
+  return lines.join('\n').trim()
 }
 
 async function extractPdfTextFromBuffer(buffer) {
@@ -1518,6 +1597,62 @@ async function extractPdfTextFromBuffer(buffer) {
   } finally {
     await parser.destroy().catch(() => {})
   }
+}
+
+async function extractExcelTextFromBuffer(buffer) {
+  const workbook = new ExcelJS.Workbook()
+  await workbook.xlsx.load(buffer)
+  const lines = []
+  workbook.eachSheet((sheet) => {
+    lines.push(`# Sheet: ${sheet.name}`)
+    sheet.eachRow({ includeEmpty: false }, (row) => {
+      const values = row.values
+      const cells = (Array.isArray(values) ? values.slice(1) : [])
+        .map((cell) => {
+          if (cell == null) return ''
+          if (typeof cell === 'object') {
+            if (Object.prototype.hasOwnProperty.call(cell, 'text')) return String(cell.text || '').trim()
+            if (Object.prototype.hasOwnProperty.call(cell, 'result')) return String(cell.result || '').trim()
+          }
+          return String(cell).trim()
+        })
+        .filter(Boolean)
+      if (cells.length > 0) lines.push(cells.join(' | '))
+    })
+    lines.push('')
+  })
+  return lines.join('\n').trim()
+}
+
+async function extractExcelRowChunksFromBuffer(buffer) {
+  const workbook = new ExcelJS.Workbook()
+  await workbook.xlsx.load(buffer)
+  const chunks = []
+  workbook.eachSheet((sheet) => {
+    let headerLine = ''
+    sheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
+      const values = row.values
+      const cells = (Array.isArray(values) ? values.slice(1) : [])
+        .map((cell) => {
+          if (cell == null) return ''
+          if (typeof cell === 'object') {
+            if (Object.prototype.hasOwnProperty.call(cell, 'text')) return String(cell.text || '').trim()
+            if (Object.prototype.hasOwnProperty.call(cell, 'result')) return String(cell.result || '').trim()
+          }
+          return String(cell).trim()
+        })
+      const nonEmpty = cells.filter(Boolean)
+      if (nonEmpty.length === 0) return
+      const line = nonEmpty.join(' | ')
+      if (!headerLine) {
+        headerLine = line
+        return
+      }
+      // One enterprise per row chunk for better retrieval precision.
+      chunks.push(`# Sheet: ${sheet.name}\n${headerLine}\n${line}`)
+    })
+  })
+  return chunks
 }
 
 const knowledgeVectorStoreDim = 1536
@@ -1562,6 +1697,17 @@ async function persistKnowledgeBaseStore() {
         .map((doc) => toText(doc?.id))
         .filter(Boolean)
       for (const doc of docs) {
+        let persistedContentBase64 = toText(doc.contentBase64)
+        if (persistedContentBase64 && !persistedContentBase64.startsWith(knowledgeBasePayloadRefPrefix)) {
+          const contentBytes = Buffer.byteLength(persistedContentBase64, 'utf8')
+          if (contentBytes > knowledgeBaseDbContentMaxBytes) {
+            await fs.mkdir(knowledgeBaseRawPayloadDir, { recursive: true })
+            const payloadPath = path.join(knowledgeBaseRawPayloadDir, `${toText(doc.id)}.b64.txt`)
+            await fs.writeFile(payloadPath, persistedContentBase64, 'utf8')
+            persistedContentBase64 = `${knowledgeBasePayloadRefPrefix}${payloadPath}`
+            doc.contentBase64 = persistedContentBase64
+          }
+        }
         await client.query(
           `
           INSERT INTO ${knowledgeBaseDocumentTable}
@@ -1599,7 +1745,7 @@ async function persistKnowledgeBaseStore() {
             Number(doc.retryCount || 0),
             toText(doc.errorMessage),
             toText(doc.vectorPath),
-            toText(doc.contentBase64),
+            persistedContentBase64,
             doc.createdAt || new Date().toISOString(),
             doc.updatedAt || new Date().toISOString(),
             doc.completedAt || null,
@@ -1670,6 +1816,17 @@ async function loadKnowledgeBaseStore() {
 async function upsertKnowledgeBaseDocumentRow(kbId = '', doc = {}) {
   const docId = toText(doc?.id)
   if (!kbId || !docId) return
+  let persistedContentBase64 = toText(doc.contentBase64)
+  if (persistedContentBase64 && !persistedContentBase64.startsWith(knowledgeBasePayloadRefPrefix)) {
+    const contentBytes = Buffer.byteLength(persistedContentBase64, 'utf8')
+    if (contentBytes > knowledgeBaseDbContentMaxBytes) {
+      await fs.mkdir(knowledgeBaseRawPayloadDir, { recursive: true })
+      const payloadPath = path.join(knowledgeBaseRawPayloadDir, `${docId}.b64.txt`)
+      await fs.writeFile(payloadPath, persistedContentBase64, 'utf8')
+      persistedContentBase64 = `${knowledgeBasePayloadRefPrefix}${payloadPath}`
+      doc.contentBase64 = persistedContentBase64
+    }
+  }
   await pool.query(
     `
     INSERT INTO ${knowledgeBaseDocumentTable}
@@ -1707,7 +1864,7 @@ async function upsertKnowledgeBaseDocumentRow(kbId = '', doc = {}) {
       Number(doc.retryCount || 0),
       toText(doc.errorMessage),
       toText(doc.vectorPath),
-      toText(doc.contentBase64),
+      persistedContentBase64,
       doc.createdAt || new Date().toISOString(),
       doc.updatedAt || new Date().toISOString(),
       doc.completedAt || null,
@@ -1750,16 +1907,27 @@ async function runKnowledgeDocumentPipeline(kbId = '', docId = '') {
     await upsertKnowledgeBaseDocumentRow(kbId, doc)
     schedulePersistKnowledgeBaseStore()
     let text = ''
+    let prebuiltChunks = null
     const isLegacyMcpTextDoc = toText(doc.sourceType) === 'web' && /^mcp:\/\//i.test(toText(doc.url))
     if (doc.sourceType === 'file' || doc.sourceType === 'search' || isLegacyMcpTextDoc) {
-      const payload = toText(doc.contentBase64)
+      const payload = await resolveDocContentBase64(doc.contentBase64)
       if (!payload) throw new Error('文件内容为空')
       const fileBuffer = Buffer.from(payload, 'base64')
       if (doc.sourceType === 'file' && isPdfFile(doc.name, doc.mimeType)) {
         text = await extractPdfTextFromBuffer(fileBuffer)
+      } else if (doc.sourceType === 'file' && isWordFile(doc.name, doc.mimeType)) {
+        text = await extractWordTextFromBuffer(fileBuffer)
+      } else if (doc.sourceType === 'file' && isPptFile(doc.name, doc.mimeType)) {
+        text = await extractPptTextFromBuffer(fileBuffer)
+      } else if (doc.sourceType === 'file' && isExcelFile(doc.name, doc.mimeType)) {
+        prebuiltChunks = await extractExcelRowChunksFromBuffer(fileBuffer)
+        if (!Array.isArray(prebuiltChunks) || prebuiltChunks.length === 0) {
+          // Fallback to flat text extraction for edge-case sheets.
+          text = await extractExcelTextFromBuffer(fileBuffer)
+        }
       } else {
         if (doc.sourceType === 'file' && !isPlainTextLikeFile(doc.name, doc.mimeType)) {
-          throw new Error('当前仅支持文本类文件自动解析（TXT/MD/HTML/CSV/JSON/XML/PDF）')
+          throw new Error('当前仅支持文本类文件自动解析（TXT/MD/HTML/CSV/JSON/XML/PDF/WORD(DOCX/DOCM/DOTX)/PPT(PPTX/PPTM/POTX)/EXCEL(XLSX/XLSM/XLTX/XLTM)）')
         }
         const decoded = fileBuffer.toString('utf8')
         text = /\.html?$/i.test(doc.name) || String(doc.mimeType || '').toLowerCase().includes('html')
@@ -1784,7 +1952,9 @@ async function runKnowledgeDocumentPipeline(kbId = '', docId = '') {
     doc.updatedAt = new Date().toISOString()
     await upsertKnowledgeBaseDocumentRow(kbId, doc)
     schedulePersistKnowledgeBaseStore()
-    const chunks = splitIntoChunks(text, 800, 120)
+    const chunks = Array.isArray(prebuiltChunks) && prebuiltChunks.length > 0
+      ? prebuiltChunks
+      : splitIntoChunks(text, 800, 120)
     if (chunks.length === 0) throw new Error('文本为空，无法分段')
     doc.status = 'embedding'
     doc.updatedAt = new Date().toISOString()
@@ -2422,6 +2592,7 @@ async function initDatabase() {
       id SMALLINT PRIMARY KEY DEFAULT 1,
       search_tool VARCHAR(32) NOT NULL DEFAULT 'serpapi',
       api_key TEXT NOT NULL DEFAULT '3792a177349a630c263994796a6c461fd503273f1fe704a18bea7398b078e7be',
+      site_whitelist_enabled BOOLEAN NOT NULL DEFAULT FALSE,
       site_whitelist_json JSONB NOT NULL DEFAULT '[]'::jsonb,
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       CHECK (id = 1)
@@ -2461,6 +2632,7 @@ async function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_supplier_cert_dict_sort ON ${supplierCertDictTable}(sort_order ASC, id ASC);
     CREATE INDEX IF NOT EXISTS idx_gas_supplier_portrait_setting_updated_at ON ${gasSupplierPortraitSettingTable}(updated_at DESC);
     CREATE INDEX IF NOT EXISTS idx_search_config_updated_at ON ${searchConfigTable}(updated_at DESC);
+    ALTER TABLE ${searchConfigTable} ADD COLUMN IF NOT EXISTS site_whitelist_enabled BOOLEAN NOT NULL DEFAULT FALSE;
     DROP INDEX IF EXISTS idx_supply_chain_node_unique;
     CREATE UNIQUE INDEX IF NOT EXISTS idx_supply_chain_node_unique
       ON ${supplyChainNodeTable}(COALESCE(parent_id, 0), node_level, node_title, source_url);
@@ -9029,7 +9201,8 @@ async function importSupplierProfileRows(records) {
               WHEN $30::jsonb <> '{}'::jsonb
                 AND (
                   business_info = '{}'::jsonb
-                  OR jsonb_object_length($30::jsonb) >= jsonb_object_length(business_info)
+                  OR (SELECT COUNT(*) FROM jsonb_object_keys($30::jsonb))
+                     >= (SELECT COUNT(*) FROM jsonb_object_keys(business_info))
                 )
               THEN $30::jsonb
               ELSE business_info
@@ -9038,7 +9211,8 @@ async function importSupplierProfileRows(records) {
               WHEN $31::jsonb <> '{}'::jsonb
                 AND (
                   industrial_commercial_info = '{}'::jsonb
-                  OR jsonb_object_length($31::jsonb) >= jsonb_object_length(industrial_commercial_info)
+                  OR (SELECT COUNT(*) FROM jsonb_object_keys($31::jsonb))
+                     >= (SELECT COUNT(*) FROM jsonb_object_keys(industrial_commercial_info))
                 )
               THEN $31::jsonb
               ELSE industrial_commercial_info
@@ -12418,7 +12592,156 @@ app.post('/api/mcp-services/search', authMiddleware, async (req, res) => {
       serviceMeta = {}
     }
     let snippets = []
-    if (service.toLowerCase() === 'tavily') {
+    const serviceToken = service.toLowerCase()
+    const normalizedServiceToken = serviceToken
+      .replace(/[（]/g, '(')
+      .replace(/[）]/g, ')')
+      .replace(/\s+/g, '')
+      .replace(/[-:]/g, '_')
+    const resolveSerpApiEngine = (token = '') => {
+      const raw = String(token || '').toLowerCase()
+      const normalized = raw
+        .replace(/[（]/g, '(')
+        .replace(/[）]/g, ')')
+        .replace(/\s+/g, '')
+        .replace(/[-:]/g, '_')
+      const directMap = {
+        serpapi: 'google',
+        google: 'google',
+        serpapi_google_search_api: 'google',
+        serpapigooglesearchapi: 'google',
+        serpapi_google_light_search_api: 'google_light',
+        serpapigooglelightsearchapi: 'google_light',
+        serpapi_google_ai_mode_api: 'google_ai_mode',
+        serpapigoogleaimodeapi: 'google_ai_mode',
+        serpapi_google_ai_overview_api: 'google_ai_overview',
+        google_ai_overview: 'google_ai_overview',
+        serpapigoogleaioverviewapi: 'google_ai_overview',
+      }
+      if (directMap[raw]) return directMap[raw]
+      if (directMap[normalized]) return directMap[normalized]
+      if (normalized.includes('serpapi') && normalized.includes('aioverview')) return 'google_ai_overview'
+      if (normalized.includes('serpapi') && normalized.includes('aimode')) return 'google_ai_mode'
+      if (normalized.includes('serpapi') && normalized.includes('light')) return 'google_light'
+      if (normalized.includes('serpapi') && normalized.includes('search')) return 'google'
+      return ''
+    }
+    const serpapiEngine = resolveSerpApiEngine(normalizedServiceToken)
+    if (serpapiEngine) {
+      const searchSettings = await loadSearchSettings()
+      const serpapiKey = toText(searchSettings.apiKey || process.env.SERPAPI_API_KEY)
+      if (!serpapiKey) {
+        return res.status(400).json({ code: 400, message: 'SerpAPI Key 未配置，请先在搜索配置页保存 API Key', data: null })
+      }
+      const limit = Math.min(Math.max(Number(req.body?.limit || 10), 1), 20)
+      const requestSerpApi = async (engineName, extraParams = {}) => {
+        const params = new URLSearchParams({
+          engine: String(engineName || ''),
+          hl: 'zh-cn',
+          gl: 'cn',
+          num: String(Math.min(10, limit)),
+          q: keyword,
+          api_key: serpapiKey,
+        })
+        Object.entries(extraParams || {}).forEach(([k, v]) => {
+          const value = toText(v)
+          if (!value) return
+          params.set(k, value)
+        })
+        const endpoint = `https://serpapi.com/search.json?${params.toString()}`
+        const resp = await fetchByNetworkPolicy(endpoint, { method: 'GET' })
+        const payload = await resp.json().catch(() => ({}))
+        return { resp, payload, engineName }
+      }
+      let resp
+      let payload
+      let engineName
+      if (serpapiEngine === 'google_ai_overview') {
+        // SerpAPI AIO commonly requires page_token.
+        // Step 1: query google to obtain ai_overview.page_token or serpapi_link.
+        const seed = await requestSerpApi('google')
+        resp = seed.resp
+        payload = seed.payload
+        engineName = seed.engineName
+        if (resp.ok) {
+          const directToken = toText(payload?.ai_overview?.page_token || payload?.google_ai_overview?.page_token || payload?.overview?.page_token)
+          let pageToken = directToken
+          if (!pageToken) {
+            const serpLink = toText(payload?.ai_overview?.serpapi_link || payload?.google_ai_overview?.serpapi_link || payload?.overview?.serpapi_link)
+            if (serpLink) {
+              try {
+                const u = new URL(serpLink)
+                pageToken = toText(u.searchParams.get('page_token'))
+              } catch {
+                pageToken = ''
+              }
+            }
+          }
+          if (pageToken) {
+            const detail = await requestSerpApi('google_ai_overview', { page_token: pageToken })
+            if (detail.resp.ok) {
+              resp = detail.resp
+              payload = detail.payload
+              engineName = detail.engineName
+            }
+          }
+        }
+      } else {
+        ;({ resp, payload, engineName } = await requestSerpApi(serpapiEngine))
+      }
+      if (!resp.ok) {
+        const detail = toText(payload?.error || payload?.message || `HTTP ${resp.status}`)
+        const needPageToken = /Missing query `?page_token`? parameter/i.test(detail)
+        if (needPageToken) {
+          // Some SerpAPI variants (notably google_ai_overview in some plans/regions)
+          // may require page_token and fail on normal keyword search. Auto-fallback.
+          const fallbackEngines = serpapiEngine === 'google_ai_overview'
+            ? ['google', 'google_light']
+            : ['google']
+          for (const fallbackEngine of fallbackEngines) {
+            // eslint-disable-next-line no-await-in-loop
+            const fallbackResult = await requestSerpApi(fallbackEngine)
+            resp = fallbackResult.resp
+            payload = fallbackResult.payload
+            engineName = fallbackResult.engineName
+            if (resp.ok) break
+          }
+        }
+      }
+      if (!resp.ok) {
+        const detail = toText(payload?.error || payload?.message || `HTTP ${resp.status}`)
+        throw new Error(`SerpAPI HTTP ${resp.status}: ${detail}`)
+      }
+      const organic = Array.isArray(payload?.organic_results) ? payload.organic_results : []
+      const aiOverview = payload?.ai_overview || payload?.google_ai_overview || payload?.overview || {}
+      const aiRefs = Array.isArray(aiOverview?.references) ? aiOverview.references : []
+      const topStories = Array.isArray(payload?.top_stories) ? payload.top_stories : []
+      const aiRows = [
+        ...aiRefs.map((item, idx) => ({
+          title: toText(item?.title) || `AI参考 ${idx + 1}`,
+          snippet: toText(item?.snippet || item?.source || ''),
+          href: toText(item?.link || item?.url || ''),
+          source: 'serpapi',
+          preferredScore: 5,
+        })),
+        ...topStories.map((item, idx) => ({
+          title: toText(item?.title) || `Top Story ${idx + 1}`,
+          snippet: toText(item?.snippet || item?.source || ''),
+          href: toText(item?.link || ''),
+          source: 'serpapi',
+          preferredScore: 4,
+        })),
+      ]
+      snippets = organic.slice(0, limit).map((item, idx) => ({
+        title: toText(item?.title) || `Google结果 ${idx + 1}`,
+        snippet: toText(item?.snippet),
+        href: toText(item?.link || item?.displayed_link || ''),
+        source: `serpapi:${engineName}`,
+        preferredScore: Number(item?.position ? Math.max(1, 11 - Number(item.position)) : 2),
+      }))
+      if (snippets.length === 0 && aiRows.length > 0) snippets = aiRows.slice(0, limit)
+      // Do not apply search-site whitelist here; user explicitly requested pure Google engine results.
+    } else if (service.toLowerCase() === 'tavily') {
       const tavilyKey = await resolveTavilyApiKey(serviceMeta)
       snippets = await searchViaTavily(keyword, tavilyKey)
     } else {
@@ -12828,8 +13151,24 @@ app.get('/api/knowledge-bases/:id/documents/:docId/preview', authMiddleware, asy
        LIMIT 8`,
       [kbId, docId],
     )
-    const decoded = decodeBase64Utf8(doc.contentBase64)
-    const plain = doc.sourceType === 'web' ? stripHtmlTags(decoded) : decoded
+    let plain = ''
+    const resolvedPayload = await resolveDocContentBase64(doc.contentBase64)
+    if (doc.sourceType === 'file' && isExcelFile(doc.name, '')) {
+      const fileBuffer = Buffer.from(resolvedPayload, 'base64')
+      plain = await extractExcelTextFromBuffer(fileBuffer)
+    } else if (doc.sourceType === 'file' && isWordFile(doc.name, '')) {
+      const fileBuffer = Buffer.from(resolvedPayload, 'base64')
+      plain = await extractWordTextFromBuffer(fileBuffer)
+    } else if (doc.sourceType === 'file' && isPptFile(doc.name, '')) {
+      const fileBuffer = Buffer.from(resolvedPayload, 'base64')
+      plain = await extractPptTextFromBuffer(fileBuffer)
+    } else if (doc.sourceType === 'file' && isPdfFile(doc.name, '')) {
+      const fileBuffer = Buffer.from(resolvedPayload, 'base64')
+      plain = await extractPdfTextFromBuffer(fileBuffer)
+    } else {
+      const decoded = decodeBase64Utf8(resolvedPayload)
+      plain = doc.sourceType === 'web' ? stripHtmlTags(decoded) : decoded
+    }
     const chunks = chunksRes.rows || []
     const fallbackText = chunks.map((item) => toText(item.chunkText)).join('\n\n')
     const previewText = (plain || fallbackText).slice(0, 6000)
@@ -12865,7 +13204,7 @@ app.post('/api/knowledge-bases/:id/documents/web', authMiddleware, async (req, r
   const now = new Date().toISOString()
   const doc = {
     id: generateKbId('doc'),
-    sourceType: 'search',
+    sourceType: 'web',
     name: url,
     url,
     mimeType: 'text/html',
@@ -17012,16 +17351,17 @@ app.put('/api/search-settings', authMiddleware, async (req, res) => {
     const normalized = normalizeSearchSettings(req.body || {})
     await pool.query(
       `
-      INSERT INTO ${searchConfigTable} (id, search_tool, api_key, site_whitelist_json, updated_at)
-      VALUES (1, $1, $2, $3::jsonb, NOW())
+      INSERT INTO ${searchConfigTable} (id, search_tool, api_key, site_whitelist_enabled, site_whitelist_json, updated_at)
+      VALUES (1, $1, $2, $3, $4::jsonb, NOW())
       ON CONFLICT (id)
       DO UPDATE SET
         search_tool = EXCLUDED.search_tool,
         api_key = EXCLUDED.api_key,
+        site_whitelist_enabled = EXCLUDED.site_whitelist_enabled,
         site_whitelist_json = EXCLUDED.site_whitelist_json,
         updated_at = NOW()
       `,
-      [normalized.searchTool, normalized.apiKey, JSON.stringify(normalized.siteWhitelist || [])],
+      [normalized.searchTool, normalized.apiKey, normalized.siteWhitelistEnabled === true, JSON.stringify(normalized.siteWhitelist || [])],
     )
     const merged = { ...defaultSearchSettings, ...normalized }
     return res.json({ code: 200, message: 'success', data: merged })
@@ -17346,17 +17686,18 @@ function buildPreciseSourcingFallbackAnswer(state) {
   )
   const suppliers = Array.isArray(state?.supplierRows) ? state.supplierRows : []
   const kbHits = Array.isArray(state?.kbHits) ? state.kbHits : []
-  const supplierTop = suppliers
+  const supplierTopRows = suppliers
     .slice(0, 10)
     .map((item, idx) => {
       const name = resolveSupplierDisplayName(item) || '未知供应商'
-      const url = resolveSupplierSourceUrl(item) || '无URL'
+      const url = resolveSupplierSourceUrl(item) || '-'
       const reason = Array.isArray(item?._matchFieldScores) && item._matchFieldScores.length > 0
         ? toReadableReason(item._matchFieldScores[0]?.field, item._matchFieldScores[0]?.score)
         : '证据命中（中相关）'
-      return `${idx + 1}. ${name}（${url}）| ${reason}`
+      const rerank = Number(item?._rerankScore || 0)
+      const evidence = Number(item?._matchScore || 0)
+      return `| ${idx + 1} | ${name} | - | 中 | ${rerank.toFixed(2)} | ${evidence.toFixed(2)} | ${reason} | 待补充认证/联系方式 | 核验并补全 | ${url} |`
     })
-    .join('\n')
   const ragDerivedTop = kbHits
     .slice(0, 5)
     .map((item) => {
@@ -17374,18 +17715,49 @@ function buildPreciseSourcingFallbackAnswer(state) {
       return `${idx + 1}. ${toText(item?.docName || item?.docId || '未知文档')} | 相似度=${similarity.toFixed(4)}`
     })
     .join('\n')
+  const topTable = supplierTopRows.length > 0
+    ? [
+        '## 候选供应商TopN表',
+        '| 排名 | 供应商 | 关联主机厂 | 结论等级 | Rerank分 | 证据强度 | 主要依据 | 风险/缺口 | 建议动作 | 可追溯链接 |',
+        '|---|---|---|---|---:|---:|---|---|---|---|',
+        ...supplierTopRows,
+      ].join('\n')
+    : [
+        '## 候选供应商TopN表',
+        '| 排名 | 供应商 | 关联主机厂 | 结论等级 | Rerank分 | 证据强度 | 主要依据 | 风险/缺口 | 建议动作 | 可追溯链接 |',
+        '|---|---|---|---|---:|---:|---|---|---|---|',
+        ...ragTopCandidates.slice(0, 10).map((name, idx) => `| ${idx + 1} | ${name} | - | 低 | 0.00 | 0.00 | RAG文本线索 | 缺DB结构化证据 | 先回查主数据 | - |`),
+      ].join('\n')
+  const evidenceRows = kbHits.slice(0, 8).map((item, idx) => {
+    const distance = Number(item?.cosineDistance || 0)
+    const confidence = Math.max(0, Math.min(1, 1 - distance))
+    const snippet = toText(item?.snippetPreview || item?.chunkText).slice(0, 60).replace(/\|/g, '/')
+    const doc = toText(item?.docName || item?.docId || `RAG-${idx + 1}`)
+    return `| RAG | ${snippet || '-'} | - | 语义近似 | ${confidence.toFixed(3)} | ${doc} |`
+  })
+  const evidenceTable = [
+    '## 证据摘要表',
+    '| 来源(DB/RAG/WEB) | 证据片段 | 关联供应商 | 匹配类型 | 置信度 | 可追溯链接 |',
+    '|---|---|---|---|---:|---|',
+    ...(evidenceRows.length > 0 ? evidenceRows : ['| RAG | - | - | - | 0.000 | - |']),
+  ].join('\n')
   return [
-    `【结论】${suppliers.length > 0 ? '已完成初筛，建议按证据相关度推进候选核验。' : '数据库未直接命中，但已从RAG提取可跟进线索。'}`,
-    `【命中统计】DB ${suppliers.length}条，RAG ${kbHits.length}条`,
+    `## 结论`,
+    (suppliers.length > 0 ? '已完成初筛，建议按证据相关度推进候选核验。' : '数据库未直接命中，但已从RAG提取可跟进线索。'),
     '',
-    '【候选供应商TopN】',
-    (supplierTop || ragTopCandidates.map((name, idx) => `${idx + 1}. ${name}（来自RAG证据）`).join('\n') || '暂无（请放宽条件或关闭严格模式）'),
+    `## 命中统计`,
+    `- DB结构化命中：${suppliers.length}条`,
+    `- RAG片段命中：${kbHits.length}条`,
     '',
-    '【下一步】',
+    topTable,
+    '',
+    evidenceTable,
+    '',
+    '## 下一步',
     '1. 用 RAG 命中文档关键词反查供应商主数据。',
     '2. 进入准入排查补齐认证、量产、客户字段。',
     '3. 以认证完整度+相关性+可联系性输出Top10。',
-    ragTop ? `\n【RAG参考】\n${ragTop}` : '',
+    ragTop ? `\n## RAG参考\n${ragTop}` : '',
   ].join('\n')
 }
 
@@ -17550,7 +17922,7 @@ const preciseSourcingOps = {
     }
   },
   async searchSuppliers(userInput, authHeader = '', options = {}) {
-    const dbTopK = Math.min(Math.max(Number(options?.dbTopK || 10), 1), 100)
+    const dbTopK = Math.min(Math.max(Number(options?.dbTopK || 30), 1), 100)
     const selected = Array.isArray(options?.selectedDbTables) ? options.selectedDbTables.map((x) => toText(x)) : []
     const strictMode = options?.strictMode === true
     const rows = []
@@ -17591,11 +17963,169 @@ const preciseSourcingOps = {
       .filter((x) => x.length >= 2 && !/(帮我|帮忙|搜索|查找|寻找|找出|匹配|推荐|筛选)/.test(x))
     const searchTerms = [...new Set([...demandKeywords, ...coarseTokens, ...orgLikeMatches])].slice(0, 10)
     const tokens = searchTerms.map((x) => x.toLowerCase())
+    const oemKeywords = extractOemKeywordsFromQuery(queryTextRaw)
+    const normalizedQueryText = queryTextRaw.replace(/[“”"'`]/g, '').trim()
+    const hasAndConstraint = /且/.test(normalizedQueryText) || /\b(and|同时具备|并且)\b/i.test(normalizedQueryText)
+    const requireMainProductValve = /主营.*电磁阀|电磁阀.*主营|筛选.*电磁阀|电磁阀供应商/i.test(normalizedQueryText)
+    const requireIatf = /iatf\s*[- ]?16949/i.test(normalizedQueryText)
+    const requireTs = /ts\s*[- ]?16949/i.test(normalizedQueryText)
+    const requireCertAny = requireIatf || requireTs
+    const normalizedCertNeedles = []
+    if (requireIatf) normalizedCertNeedles.push('iatf16949')
+    if (requireTs) normalizedCertNeedles.push('ts16949')
+
+    function normalizeTextForMatch(input = '') {
+      return toText(input).toLowerCase().replace(/\s+/g, '').replace(/[-_]/g, '')
+    }
+    function flattenToTextList(value, out = []) {
+      if (value == null) return out
+      if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+        const text = toText(value)
+        if (text) out.push(text)
+        return out
+      }
+      if (Array.isArray(value)) {
+        value.forEach((item) => flattenToTextList(item, out))
+        return out
+      }
+      if (typeof value === 'object') {
+        Object.values(value).forEach((v) => flattenToTextList(v, out))
+      }
+      return out
+    }
+    function pickFirstNonEmptyText(values = []) {
+      for (const v of values) {
+        const t = toText(v)
+        if (t) return t
+      }
+      return ''
+    }
+    function extractMainProductsText(row = {}) {
+      const rawTexts = [
+        row?.mainProducts,
+        row?.main_products,
+        row?.main_product_names,
+        row?.products,
+        row?.business_info?.主营产品,
+        row?.business_info,
+        row?.product_fit_details,
+      ]
+      const flat = rawTexts.flatMap((v) => flattenToTextList(v, []))
+      return flat.join(' | ')
+    }
+    function extractCertText(row = {}) {
+      const rawTexts = [
+        row?.certificates,
+        row?.certificate_items,
+        row?.qualitySystem,
+        row?.quality_system,
+        row?.system_certification,
+        row?.systemCertification,
+      ]
+      const flat = rawTexts.flatMap((v) => flattenToTextList(v, []))
+      return flat.join(' | ')
+    }
+    function rowMatchesStructuredConstraint(row = {}) {
+      if (!hasAndConstraint && !requireMainProductValve && !requireCertAny) return true
+      const productText = normalizeTextForMatch(extractMainProductsText(row))
+      const certText = normalizeTextForMatch(extractCertText(row))
+      const productOk = requireMainProductValve ? productText.includes('电磁阀') : true
+      const certOk = requireCertAny
+        ? normalizedCertNeedles.some((needle) => certText.includes(needle))
+        : true
+      if (hasAndConstraint && requireMainProductValve && requireCertAny) return productOk && certOk
+      return productOk && certOk
+    }
+    function enrichStructuredFields(row = {}) {
+      const certText = extractCertText(row)
+      const productText = extractMainProductsText(row)
+      const contactText = pickFirstNonEmptyText([
+        row?.contact,
+        row?.contactInfo,
+        row?.phone,
+        row?.mobile,
+        row?.telephone,
+        row?.email,
+        row?.website,
+        row?.contact_person,
+      ])
+      return {
+        ...row,
+        certification: toText(row?.certification || certText),
+        mainProducts: toText(row?.mainProducts || productText),
+        contactInfo: toText(row?.contactInfo || contactText),
+      }
+    }
 
     function quoteIdent(name = '') {
       const value = toText(name)
       if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(value)) return ''
       return `"${value.replaceAll('"', '""')}"`
+    }
+
+    // For OEM-targeted queries (e.g. 比亚迪/东风/奇瑞), prioritize extracting suppliers from fit-related fields,
+    // then merge+dedup across profile/supplier tables before generic full-text scan.
+    if (oemKeywords.length > 0) {
+      const dedupByName = new Map()
+      const tableDefs = [
+        { table: 'supplier_profile', nameCol: 'company_name', fitCols: ['fit_oems', 'fit_situation', 'product_fit_details', 'company_intro'] },
+        { table: 'gas_supplier', nameCol: 'company_name', fitCols: ['fit_oems', 'fit_situation', 'main_products', 'company_intro'] },
+      ]
+      for (const def of tableDefs) {
+        // eslint-disable-next-line no-await-in-loop
+        const colsRes = await pool.query(
+          `
+          SELECT column_name
+          FROM information_schema.columns
+          WHERE table_schema = $1 AND table_name = $2
+          `,
+          [schemaName, def.table],
+        )
+        const colSet = new Set((colsRes.rows || []).map((r) => toText(r.column_name)))
+        if (!colSet.has(def.nameCol)) continue
+        const fitCols = def.fitCols.filter((c) => colSet.has(c))
+        if (fitCols.length === 0) continue
+        const wherePerKeyword = fitCols.map((c) => `${quoteIdent(c)}::text ILIKE $1`).join(' OR ')
+        for (const kw of oemKeywords) {
+          // eslint-disable-next-line no-await-in-loop
+          const rs = await pool.query(
+            `
+            SELECT *
+            FROM "${schemaName}"."${def.table}"
+            WHERE ${wherePerKeyword}
+            LIMIT $2
+            `,
+            [`%${kw}%`, Math.max(dbTopK * 2, 30)],
+          ).catch(() => ({ rows: [] }))
+          for (const row of (Array.isArray(rs?.rows) ? rs.rows : [])) {
+            const name = normalizeSupplierCandidateName(toText(row?.[def.nameCol] || row?.company_name || row?.name || ''))
+            if (!name) continue
+            if (!isLikelySupplierCompanyName(name, queryTextRaw)) continue
+            const key = normalizeEntityCompareKey(name) || name
+            const prev = dedupByName.get(key)
+            const merged = prev ? { ...prev } : {
+              ...row,
+              companyName: name,
+              _fromTable: def.table,
+              _matchScore: 0,
+              _matchOemKeywords: [],
+              sourceUrl: toText(row?.source_url || row?.detail_url || row?.website || ''),
+              mainProducts: toText(row?.main_products || row?.products || ''),
+              region: toText(row?.region || row?.location || ''),
+            }
+            if (!merged._matchOemKeywords.includes(kw)) merged._matchOemKeywords.push(kw)
+            merged._matchScore = Number(merged._matchScore || 0) + 2
+            dedupByName.set(key, merged)
+          }
+        }
+      }
+      const oemMergedRows = Array.from(dedupByName.values())
+        .sort((a, b) => Number(b?._matchScore || 0) - Number(a?._matchScore || 0))
+      if (oemMergedRows.length > 0) {
+        const constrained = oemMergedRows.map((r) => enrichStructuredFields(r)).filter((r) => rowMatchesStructuredConstraint(r))
+        if (constrained.length > 0) return constrained.slice(0, dbTopK)
+        return oemMergedRows.map((r) => enrichStructuredFields(r)).slice(0, dbTopK)
+      }
     }
 
     const tableAliasMap = {
@@ -17806,7 +18336,15 @@ const preciseSourcingOps = {
       return true
     })
 
-    const positive = mappedSupplierOnly.filter((item) => Number(item?._matchScore || 0) > 0)
+    const structuredFilterActive = hasAndConstraint || requireMainProductValve || requireCertAny
+    const constrainedRows = mappedSupplierOnly
+      .map((item) => enrichStructuredFields(item))
+      .filter((item) => rowMatchesStructuredConstraint(item))
+    if (structuredFilterActive && constrainedRows.length === 0) {
+      return []
+    }
+    const baseRows = constrainedRows.length > 0 ? constrainedRows : mappedSupplierOnly.map((item) => enrichStructuredFields(item))
+    const positive = baseRows.filter((item) => Number(item?._matchScore || 0) > 0)
     if (!strictMode) {
       return (positive.length > 0 ? positive : mappedSupplierOnly).slice(0, dbTopK)
     }
@@ -17825,7 +18363,7 @@ const preciseSourcingOps = {
         kbIds: targets,
         query: toText(userInput),
         topK: Math.min(Number(topK || 20), 20),
-        strictKeyword: true,
+        strictKeyword: false,
       }, { tool: 'rag_search_evidence' })
       const ragToolResult = normalizeToolJsonResult(ragToolRaw)
       const ragHits = Array.isArray(ragToolResult?.data?.hits) ? ragToolResult.data.hits : []
@@ -17851,7 +18389,7 @@ const preciseSourcingOps = {
               query: toText(userInput),
               topK: Math.min(Number(topK || 20), 20),
               metric: 'cosine',
-              strictKeyword: true,
+              strictKeyword: false,
               scoreThreshold: strictMode ? 0.45 : null,
             }),
           })
@@ -18101,6 +18639,50 @@ const preciseSourcingOps = {
   },
 }
 
+function ensurePreciseSourcingTables(answerText = '', evidence = {}) {
+  const raw = toText(answerText)
+  if (/\|\s*排名\s*\|\s*供应商\s*\|/.test(raw) && /\|\s*来源\(DB\/RAG\/WEB\)\s*\|/.test(raw)) return raw
+  const suppliers = Array.isArray(evidence?.suppliers) ? evidence.suppliers : []
+  const kbHits = Array.isArray(evidence?.kbHits) ? evidence.kbHits : []
+  const webHits = Array.isArray(evidence?.webHits) ? evidence.webHits : []
+  const topRows = suppliers.slice(0, 10).map((row, idx) => {
+    const name = toText(row?.companyName || row?.company_name || row?.name || '未知供应商')
+    const rerank = Number(row?._rerankScore || 0)
+    const score = Number(row?._matchScore || 0)
+    const reason = Array.isArray(row?._matchFieldScores) && row._matchFieldScores.length > 0
+      ? toText(row._matchFieldScores[0]?.field || '证据命中')
+      : '证据命中'
+    const url = toText(row?.sourceUrl || row?.source_url || row?.detailUrl || row?.detail_url || row?.website || '-')
+    return `| ${idx + 1} | ${name} | - | 中 | ${rerank.toFixed(2)} | ${score.toFixed(2)} | ${reason} | 待补充认证/联系方式 | 核验并补全 | ${url} |`
+  })
+  const evidenceRows = [
+    ...kbHits.slice(0, 6).map((hit) => {
+      const snippet = toText(hit?.snippetPreview || hit?.chunkText).slice(0, 60).replace(/\|/g, '/')
+      const conf = Math.max(0, Math.min(1, 1 - Number(hit?.cosineDistance || 0))).toFixed(3)
+      const trace = toText(hit?.docName || hit?.docId || '-')
+      return `| RAG | ${snippet || '-'} | - | 语义近似 | ${conf} | ${trace} |`
+    }),
+    ...webHits.slice(0, 4).map((hit) => {
+      const snippet = toText(hit?.snippet || hit?.content).slice(0, 60).replace(/\|/g, '/')
+      const trace = toText(hit?.url || hit?.link || '-')
+      return `| WEB | ${snippet || '-'} | - | 网页线索 | 0.600 | ${trace} |`
+    }),
+  ]
+  const topTable = [
+    '## 候选供应商TopN表',
+    '| 排名 | 供应商 | 关联主机厂 | 结论等级 | Rerank分 | 证据强度 | 主要依据 | 风险/缺口 | 建议动作 | 可追溯链接 |',
+    '|---|---|---|---|---:|---:|---|---|---|---|',
+    ...(topRows.length > 0 ? topRows : ['| 1 | 暂无 | - | - | 0.00 | 0.00 | - | 待补数 | 放宽条件重试 | - |']),
+  ].join('\n')
+  const evidenceTable = [
+    '## 证据摘要表',
+    '| 来源(DB/RAG/WEB) | 证据片段 | 关联供应商 | 匹配类型 | 置信度 | 可追溯链接 |',
+    '|---|---|---|---|---:|---|',
+    ...(evidenceRows.length > 0 ? evidenceRows : ['| RAG | - | - | - | 0.000 | - |']),
+  ].join('\n')
+  return `${raw}\n\n${topTable}\n\n${evidenceTable}`
+}
+
 function normalizeSupplierWebQuery(input = '') {
   const raw = toText(input)
   if (!raw) return '汽车 配套供应商'
@@ -18124,7 +18706,17 @@ function normalizeSupplierWebQuery(input = '') {
 const defaultSearchSettings = {
   searchTool: 'google_ai_overview',
   apiKey: '',
-  siteWhitelist: ['i.gasgoo.com', 'auto.gasgoo.com', 'qcgys.com', 'marklines.com', 'globalnevs.com', 'd1ev.com', 'evpartner.com', 'ecaigou.com'],
+  siteWhitelistEnabled: false,
+  siteWhitelist: [
+    { domain: 'i.gasgoo.com', enabled: true },
+    { domain: 'auto.gasgoo.com', enabled: true },
+    { domain: 'qcgys.com', enabled: true },
+    { domain: 'marklines.com', enabled: true },
+    { domain: 'globalnevs.com', enabled: true },
+    { domain: 'd1ev.com', enabled: true },
+    { domain: 'evpartner.com', enabled: true },
+    { domain: 'ecaigou.com', enabled: true },
+  ],
 }
 
 function normalizeSearchSettings(input = {}) {
@@ -18132,6 +18724,7 @@ function normalizeSearchSettings(input = {}) {
   const tool = toText(body.searchTool || 'google_ai_overview').toLowerCase()
   const apiKey = toText(body.apiKey || '')
   const sites = Array.isArray(body.siteWhitelist) ? body.siteWhitelist : []
+  const whitelistEnabledRaw = body.siteWhitelistEnabled
   const normalizeHost = (raw = '') => {
     const text = toText(raw).toLowerCase()
     if (!text) return ''
@@ -18145,22 +18738,46 @@ function normalizeSearchSettings(input = {}) {
         .trim()
     }
   }
-  const normalizedSites = Array.from(new Set(
-    sites
-      .map((x) => normalizeHost(x))
-      .filter(Boolean),
-  ))
+  const normalizedSitesMap = new Map()
+  for (const item of sites) {
+    const isObject = item && typeof item === 'object' && !Array.isArray(item)
+    const rawDomain = isObject ? item.domain : item
+    const domain = normalizeHost(rawDomain)
+    if (!domain) continue
+    const enabled = isObject ? item.enabled !== false : true
+    if (!normalizedSitesMap.has(domain)) {
+      normalizedSitesMap.set(domain, { domain, enabled })
+      continue
+    }
+    const current = normalizedSitesMap.get(domain)
+    normalizedSitesMap.set(domain, { domain, enabled: Boolean(current?.enabled || enabled) })
+  }
+  const normalizedSites = Array.from(normalizedSitesMap.values())
+  const normalizedTool = (
+    tool === 'google_ai_overview'
+    || tool === 'google_search'
+    || tool === 'google_light'
+    || tool === 'bing_search'
+    || tool === 'baidu_search'
+    || tool === 'duckduckgo'
+    || tool === 'serpapi'
+  ) ? tool : 'google_ai_overview'
+  const siteWhitelistEnabled = normalizedTool === 'google_ai_overview'
+    ? false
+    : (typeof whitelistEnabledRaw === 'boolean' ? whitelistEnabledRaw : true)
+  const fallbackSites = defaultSearchSettings.siteWhitelist.map((item) => ({ ...item }))
   return {
-    searchTool: (tool === 'google_ai_overview' || tool === 'serpapi') ? tool : 'google_ai_overview',
+    searchTool: normalizedTool,
     apiKey,
-    siteWhitelist: normalizedSites.length > 0 ? normalizedSites : [...defaultSearchSettings.siteWhitelist],
+    siteWhitelistEnabled,
+    siteWhitelist: normalizedSites.length > 0 ? normalizedSites : fallbackSites,
   }
 }
 
 async function loadSearchSettings() {
   try {
     const result = await pool.query(
-      `SELECT search_tool AS "searchTool", api_key AS "apiKey", site_whitelist_json AS "siteWhitelist" FROM ${searchConfigTable} WHERE id = 1 LIMIT 1`,
+      `SELECT search_tool AS "searchTool", api_key AS "apiKey", site_whitelist_enabled AS "siteWhitelistEnabled", site_whitelist_json AS "siteWhitelist" FROM ${searchConfigTable} WHERE id = 1 LIMIT 1`,
     )
     const row = result.rows[0]
     if (!row) {
@@ -18172,16 +18789,17 @@ async function loadSearchSettings() {
       const legacyNormalized = normalizeSearchSettings(legacyRaw)
       await pool.query(
         `
-        INSERT INTO ${searchConfigTable} (id, search_tool, api_key, site_whitelist_json, updated_at)
-        VALUES (1, $1, $2, $3::jsonb, NOW())
+        INSERT INTO ${searchConfigTable} (id, search_tool, api_key, site_whitelist_enabled, site_whitelist_json, updated_at)
+        VALUES (1, $1, $2, $3, $4::jsonb, NOW())
         ON CONFLICT (id)
         DO UPDATE SET
           search_tool = EXCLUDED.search_tool,
           api_key = EXCLUDED.api_key,
+          site_whitelist_enabled = EXCLUDED.site_whitelist_enabled,
           site_whitelist_json = EXCLUDED.site_whitelist_json,
           updated_at = NOW()
         `,
-        [legacyNormalized.searchTool, legacyNormalized.apiKey, JSON.stringify(legacyNormalized.siteWhitelist || [])],
+        [legacyNormalized.searchTool, legacyNormalized.apiKey, legacyNormalized.siteWhitelistEnabled === true, JSON.stringify(legacyNormalized.siteWhitelist || [])],
       )
       return {
         ...defaultSearchSettings,
@@ -18193,6 +18811,7 @@ async function loadSearchSettings() {
       ? {
           searchTool: row.searchTool,
           apiKey: row.apiKey,
+          siteWhitelistEnabled: row.siteWhitelistEnabled,
           siteWhitelist: row.siteWhitelist,
         }
       : {}
@@ -18252,7 +18871,7 @@ async function runPreciseSourcingFastPipeline({
   selectedDbTables = [],
   selectedTools = [],
   topK = 20,
-  dbTopK = 10,
+  dbTopK = 30,
   strictMode = false,
   model = '',
   systemPrompt = '',
@@ -18289,12 +18908,32 @@ async function runPreciseSourcingFastPipeline({
   const webQuery = normalizeSupplierWebQuery(userInput)
   const webPromise = useWeb
     ? withTimeout(
-      preciseSourcingOps.searchWeb(webQuery, Math.min(Math.max(Number(topK || 10), 1), 50)),
+      preciseSourcingOps.searchWeb(webQuery, Math.min(Math.max(Number(topK || 10), 1), 10)),
       30000,
       'precise_sourcing_fast_web_timeout',
     ).catch(() => [])
     : Promise.resolve([])
-  const [supplierRows, kbHits, webHits] = await Promise.all([dbPromise, ragPromise, webPromise])
+  const [supplierRows, kbHits, webHitsRaw] = await Promise.all([dbPromise, ragPromise, webPromise])
+  let webHits = Array.isArray(webHitsRaw) ? webHitsRaw : []
+  if (webHits.length > 0) {
+    try {
+      const llmCandidates = await extractSupplierCandidatesByLlmBatch(webHits, 5, toText(model), { query: toText(userInput) })
+      webHits = webHits.map((item, idx) => {
+        const parsed = Array.isArray(llmCandidates?.[idx]) ? llmCandidates[idx] : []
+        const candidates = parsed
+          .map((x) => sanitizeSupplierCompanyName(toText(x)))
+          .filter(Boolean)
+          .filter((x, i, arr) => arr.indexOf(x) === i)
+        return {
+          ...(item && typeof item === 'object' ? item : {}),
+          _supplierCandidates: candidates,
+          supplierCandidates: candidates,
+        }
+      })
+    } catch {
+      // keep raw web hits if LLM extraction fails
+    }
+  }
   const keywordList = Array.isArray(demand?.keywords)
     ? demand.keywords.map((x) => toText(x)).filter(Boolean)
     : []
@@ -18331,7 +18970,7 @@ async function runPreciseSourcingFastPipeline({
     {
       step: 'act_web',
       title: '执行',
-      detail: `WEB命中 ${Array.isArray(webHits) ? webHits.length : 0} 条；provider分布=${summarizeWebProviders(webHits)}`,
+      detail: `WEB命中 ${Array.isArray(webHits) ? webHits.length : 0} 条；provider分布=${summarizeWebProviders(webHits)}；effectiveSearchTool=${toText(webHits?.[0]?._effectiveSearchTool || 'n/a')}；effectiveWebQuery=${toText(webHits?.[0]?._effectiveWebQuery || webQuery || userInput)}`,
       tool: 'web.searchSupplierSignals',
     },
     { step: 'act_fuse', title: '执行', detail: `融合候选 ${Array.isArray(fused?.suppliers) ? fused.suppliers.length : 0} 条`, tool: 'evidence.fuse' },
@@ -18408,7 +19047,7 @@ app.post('/api/agents/precise-sourcing/chat', authMiddleware, async (req, res) =
     : []
   const selectedTools = [...new Set([...selectedToolsRaw, ...selectedSkillsRaw])]
   const topK = Math.min(Math.max(Number(req.body?.topK || 20), 5), 50)
-  const dbTopK = Math.min(Math.max(Number(req.body?.dbTopK || 10), 1), 100)
+  const dbTopK = Math.min(Math.max(Number(req.body?.dbTopK || 30), 1), 100)
   const generateCharts = req.body?.generateCharts !== false
   const temperature = Math.max(0, Math.min(1, Number(req.body?.temperature ?? 0.2)))
   const reportTemplate = req.body?.reportTemplate && typeof req.body.reportTemplate === 'object' ? req.body.reportTemplate : null
@@ -18695,12 +19334,22 @@ function isLikelyOemEntity(name = '') {
   return /(上汽|上海汽车|比亚迪|奇瑞|吉利|长城|长安|广汽|广州汽车|一汽|东风|蔚来|小鹏|理想|特斯拉|大众|丰田|本田|日产|宝马|奔驰|奥迪|北汽|小米|赛力斯|长安汽车|广汽集团|上汽集团|奇瑞汽车|东风汽车)/i.test(text)
 }
 
+function extractOemKeywordsFromQuery(query = '') {
+  const text = toText(query)
+  if (!text) return []
+  const oemList = ['比亚迪', '东风', '奇瑞', '上汽', '广汽', '一汽', '长安', '吉利', '长城', '蔚来', '小鹏', '理想', '特斯拉', '大众', '丰田', '本田', '日产', '宝马', '奔驰', '奥迪']
+  return oemList.filter((k) => text.includes(k))
+}
+
 function isLikelySupplierCompanyName(name = '', query = '') {
   const value = normalizeSupplierCandidateName(name)
   if (!value) return false
   if (value.length < 2 || value.length > 64) return false
   if (/[\r\n\t]/.test(value)) return false
+  if (/[：:；;，,。.!！?？]/.test(value)) return false
+  if (/\s{2,}/.test(value)) return false
   if (/(产品|系统|方案|赛道|领域|业务|材料|技术|工艺|设备|平台|品牌|车型|零部件).{0,8}(公司|集团)$/.test(value)) return false
+  if (/(建议|用于|使用|基于|参考|例如|包含|包括|方面|相关|优先|自动|获取)/.test(value) && !/(股份有限公司|有限责任公司|有限公司|集团有限公司|集团|公司)$/.test(value)) return false
   if (/(为公司|属公司|是公司|该公司产品|产品为)/.test(value)) return false
   if (/(目前公司|现阶段公司|调整期内公司|近年来公司|公司与同行业可比公司|近期.*公司|影响.*公司|这几家公司|该公司|某公司|担任公司|任公司)/i.test(value)) return false
   if (/^\d{4}年.*公司$/.test(value)) return false
@@ -18721,6 +19370,8 @@ function isStrictCompanyEntityName(name = '') {
   if (!value) return false
   if (value.length < 4 || value.length > 64) return false
   if (/(行业|上市及融资|名录|目录|概览|盘点|企业库|供应链|产业链)/.test(value)) return false
+  if (/^(保证|确保|完善|相关|该|某|多家|一些|部分|主要|核心|上下游|国内外).{0,8}公司$/.test(value)) return false
+  if (/^(供应商|厂商|企业|公司)(名单|名录|信息|目录|概览)?$/.test(value)) return false
   const zhLegal = /(股份有限公司|有限责任公司|有限公司|集团有限公司|集团|公司)$/.test(value)
   const enLegal = /\b(inc|corp|corporation|co\.?,?\s*ltd|ltd\.?|limited|group|holdings?)\b/i.test(value)
   return zhLegal || enLegal
@@ -18729,7 +19380,16 @@ function isStrictCompanyEntityName(name = '') {
 function isObviousNonEntityTerm(name = '') {
   const v = normalizeSupplierCandidateName(name)
   if (!v) return true
-  return /(完善公司|我的公司|上市公司|行业公司|企业名录|供应链企业|相关公司|头部公司|龙头公司|多家公司|若干公司)/.test(v)
+  return /(完善公司|我的公司|上市公司|行业公司|企业名录|供应链企业|相关公司|头部公司|龙头公司|多家公司|若干公司|建议工程使用的建筑材料|参考样例|基于智能供应链的汽车|自动获取汽车|保证公司)/.test(v)
+}
+
+function isAcceptableSupplierEntityName(name = '', query = '', oemNameSet = new Set()) {
+  const v = normalizeSupplierCandidateName(name)
+  if (!v) return false
+  if (isObviousNonEntityTerm(v)) return false
+  if (isNameInOemSet(v, oemNameSet)) return false
+  if (isStrictCompanyEntityName(v)) return true
+  return isLikelySupplierCompanyName(v, query)
 }
 
 async function refineSupplierCandidatesByContext(candidates = [], options = {}) {
@@ -18743,13 +19403,15 @@ async function refineSupplierCandidatesByContext(candidates = [], options = {}) 
   const baseUrl = toText(process.env.OPENAI_BASE_URL || process.env.LLM_BASE_URL || 'https://api.openai.com')
   const model = toText(options?.model || process.env.LANGCHAIN_CHAT_MODEL || process.env.OPENAI_CHAT_MODEL || process.env.DEFAULT_LLM_MODEL || 'gpt-4.1-mini')
   const apiBase = /\/v\d+$/i.test(baseUrl.replace(/\/+$/, '')) ? baseUrl.replace(/\/+$/, '') : `${baseUrl.replace(/\/+$/, '')}/v1`
-  const contextText = toText(options?.context || '').slice(0, 2000)
+  const contextText = toText(options?.context || '').slice(0, 5000)
   try {
     const prompt = [
       '你是企业实体语义判别器。请结合用户问题与上下文，判断候选是否为真实企业主体且可能是供应商。',
-      '输出JSON：{"items":[{"name":"候选","isCompany":true/false,"isSupplierLike":true/false,"isOem":true/false,"isGenericTerm":true/false,"confidence":0-1}]}',
-      '严禁把“完善公司/我的公司/上市公司/行业公司/企业名录/供应链企业”等泛词判为企业主体。',
+      '输出JSON：{"items":[{"name":"候选","isCompany":true/false,"isSupplierLike":true/false,"isOem":true/false,"isGenericTerm":true/false,"confidence":0-1,"reason":"简要原因"}]}',
+      '严禁把“完善公司/我的公司/上市公司/行业公司/企业名录/供应链企业/这些公司/7家上市公司/docx/pdf/pptx/xlsx”等泛词或文件词判为企业主体。',
       '若候选不是可工商注册的唯一组织名称，isCompany 必须为 false。',
+      '若候选只是数量词、类别词、描述词、句子片段，必须判 false。',
+      '若上下文没有该候选对应的企业证据，confidence 必须 < 0.65。',
       `用户问题: ${queryText}`,
       `上下文: ${contextText}`,
       `候选: ${JSON.stringify(rows.slice(0, 80))}`,
@@ -18851,7 +19513,7 @@ async function extractSupplierCandidatesByLlmBatch(items = [], perItemLimit = 5,
     '1) 只返回可工商注册的法人/组织主体（如 XX有限公司/XX股份有限公司/XX集团）。',
     '2) 排除产品名、技术名、系统名、材料名、业务描述、句子片段（如“温控类产品为公司”）。',
     '3) 排除媒体、证券、金融机构、政府机构、整车厂名称本体。',
-    '4) 如果名称包含“产品/系统/方案/技术/材料/设备/平台/赛道/领域”等描述词，默认判为非企业名。',
+    '4) 如果名称包含“产品/系统/方案/技术/材料/设备/平台/赛道/领域/docx/pdf/pptx/xlsx/csv”等描述词或文件词，默认判为非企业名。',
     '5) 单条最多返回 5 个；无可用实体返回空数组。',
     '6) 仅输出 JSON，格式：{"items":[{"index":0,"companies":["A公司","B有限公司"]}]}',
     '',
@@ -19035,12 +19697,23 @@ const preciseSourcingToolbox = buildLangChainToolbox({
     const searchSettings = await loadSearchSettings()
     const serpapiKey = toText(searchSettings.apiKey || process.env.SERPAPI_API_KEY)
     const searchTool = toText(searchSettings.searchTool || defaultSearchSettings.searchTool).toLowerCase()
+    const whitelistSupportedTools = new Set(['google_search', 'google_light', 'bing_search', 'baidu_search', 'duckduckgo', 'serpapi'])
+    const whitelistEnabled = searchTool !== 'google_ai_overview'
+      && whitelistSupportedTools.has(searchTool)
+      && searchSettings.siteWhitelistEnabled === true
     const q = toText(query)
     const limit = Math.min(Math.max(Number(topK || 10), 1), 50)
-    const domains = Array.isArray(searchSettings.siteWhitelist) && searchSettings.siteWhitelist.length > 0
+    const rawDomains = Array.isArray(searchSettings.siteWhitelist) && searchSettings.siteWhitelist.length > 0
       ? searchSettings.siteWhitelist
       : defaultSearchSettings.siteWhitelist
-    const siteExpr = domains.map((d) => `site:${d}`).join(' OR ')
+    const domains = rawDomains
+      .map((item) => (item && typeof item === 'object' ? item : { domain: item, enabled: true }))
+      .filter((item) => toText(item.domain))
+      .filter((item) => !whitelistEnabled || item.enabled !== false)
+      .map((item) => toText(item.domain).toLowerCase())
+    const shouldApplySiteConstraint = whitelistEnabled === true
+    const siteExpr = shouldApplySiteConstraint && domains.length > 0 ? domains.map((d) => `site:${d}`).join(' OR ') : ''
+    const constrainedKeyword = siteExpr ? `(${siteExpr})` : ''
     const tokens = Array.from(new Set(
       q.split(/\s+/)
         .map((x) => toText(x))
@@ -19048,12 +19721,15 @@ const preciseSourcingToolbox = buildLangChainToolbox({
         .filter((x) => x.length >= 2)
         .slice(0, 5),
     ))
-    const queryVariants = [
-      `${q} 配套客户 供应商 Tier1 企业名单 (${siteExpr}) -新闻 -快讯`,
-      ...tokens.map((tk) => `${tk} 配套客户 供应商 企业 (${siteExpr}) -新闻 -快讯`),
-      ...domains.slice(0, 6).map((d) => `${q} 配套客户 供应商 site:${d} -新闻 -快讯`),
-      `${q} 供应商 名录 公司 (${siteExpr}) -新闻 -快讯`,
+    const baseVariants = [
+      `${q} 配套客户 供应商 Tier1 企业名单 ${constrainedKeyword} -新闻 -快讯`.trim(),
+      ...tokens.map((tk) => `${tk} 配套客户 供应商 企业 ${constrainedKeyword} -新闻 -快讯`.trim()),
+      `${q} 供应商 名录 公司 ${constrainedKeyword} -新闻 -快讯`.trim(),
     ]
+    const domainVariants = shouldApplySiteConstraint
+      ? domains.slice(0, 6).map((d) => `${q} 配套客户 供应商 site:${d} -新闻 -快讯`)
+      : []
+    const queryVariants = [...baseVariants, ...domainVariants]
     const rows = []
     const seen = new Set()
     const perDomainCap = 20
@@ -19073,11 +19749,12 @@ const preciseSourcingToolbox = buildLangChainToolbox({
       const url = toText(item?.url || item?.link)
       const title = toText(item?.title || item?.source || item?.name)
       const snippet = toText(item?.snippet || item?.content || item?.text || '')
+      const isAioProvider = toText(provider).startsWith('google_ai_overview')
       const key = `${url}@@${title}`.toLowerCase()
       if (!url || !title || seen.has(key)) return
       if (/\/robots\.txt($|\?)/i.test(url)) return
-      if (/(\/forum\/|\/answers\/|\/help\/|\/support\/)/i.test(url)) return
-      if (badUrlPattern.test(url)) return
+      if (!isAioProvider && /(\/forum\/|\/answers\/|\/help\/|\/support\/)/i.test(url)) return
+      if (!isAioProvider && badUrlPattern.test(url)) return
       try {
         const host = new URL(url).hostname.toLowerCase()
         const currentDomainCount = Number(domainCount.get(host) || 0)
@@ -19119,56 +19796,198 @@ const preciseSourcingToolbox = buildLangChainToolbox({
     }
     const runSerpGoogleAiOverview = async (variants = []) => {
       if (!serpapiKey) return
-      for (const variant of variants) {
-        const endpoints = [
-          `https://serpapi.com/search.json?engine=google_ai_overview&hl=zh-cn&gl=cn&q=${encodeURIComponent(variant)}&api_key=${encodeURIComponent(serpapiKey)}`,
+      const compactAioQuery = (input = '') => {
+        const text = toText(input)
+        if (!text) return ''
+        const normalized = text
+          .replace(/[，,。！？!?:：；;（）()【】\[\]'"“”‘’]/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim()
+        const priorityTokens = []
+        const keepers = [
+          '电磁阀', 'IATF16949', 'TS16949', '供应商', '联系方式', '认证', '主营产品',
+          '功率半导体', '电芯', 'ADAS',
         ]
-        for (const endpoint of endpoints) {
-          const resp = await withTimeout(
-            fetchByNetworkPolicy(endpoint, { method: 'GET', headers: { Accept: 'application/json' } }),
-            3500,
-            'serp_google_ai_overview_timeout',
-          ).catch(() => null)
-          const payload = resp ? await resp.json().catch(() => ({})) : {}
-          const ai = payload?.ai_overview || payload?.google_ai_overview || payload?.overview || {}
-          const aiSources = []
-          if (Array.isArray(ai?.sources)) aiSources.push(...ai.sources)
-          if (Array.isArray(ai?.reference_links)) aiSources.push(...ai.reference_links)
-          for (const src of aiSources) pushRow({
-            title: src?.title || src?.source,
-            link: src?.link || src?.url,
-            snippet: src?.snippet || ai?.summary || ai?.text || '',
-            position: src?.position || 0,
-          }, 'google_ai_overview', variant)
-          const topSights = Array.isArray(payload?.top_sights) ? payload.top_sights : []
-          for (const row of topSights) pushRow(row, 'google_ai_overview', variant)
-          const organic = Array.isArray(payload?.organic_results) ? payload.organic_results : []
-          for (const row of organic.slice(0, 6)) pushRow({
+        for (const kw of keepers) {
+          if (normalized.toLowerCase().includes(kw.toLowerCase())) priorityTokens.push(kw)
+        }
+        const rawTokens = normalized.split(' ').filter(Boolean)
+        for (const token of rawTokens) {
+          if (priorityTokens.length >= 8) break
+          if (token.length < 2) continue
+          if (!priorityTokens.includes(token)) priorityTokens.push(token)
+        }
+        return priorityTokens.slice(0, 8).join(' ')
+      }
+      const buildTokenSeedQueries = (input = '') => {
+        const text = toText(input)
+        const pool = [
+          '汽车 供应商 IATF16949',
+          '汽车 零部件 供应商 TS16949',
+          '电磁阀 供应商 IATF16949',
+          '功率半导体 供应商 IATF16949',
+          '电芯 供应商 IATF16949',
+          'ADAS 供应商 IATF16949',
+        ]
+        if (/电磁阀/i.test(text)) pool.unshift('电磁阀 供应商 IATF16949')
+        if (/功率半导体|IGBT|SiC|GaN/i.test(text)) pool.unshift('功率半导体 供应商 IATF16949')
+        if (/电芯|电池/i.test(text)) pool.unshift('电芯 供应商 IATF16949')
+        if (/ADAS|辅助驾驶|自动驾驶/i.test(text)) pool.unshift('ADAS 供应商 IATF16949')
+        const compact = compactAioQuery(text)
+        if (compact) pool.unshift(compact)
+        return Array.from(new Set(pool.map((x) => toText(x)).filter(Boolean))).slice(0, 8)
+      }
+      const requestSerp = async (engine = 'google', params = {}) => {
+        const profile = params && typeof params === 'object' ? (params.__profile || {}) : {}
+        const hl = toText(profile.hl || process.env.SERPAPI_AIO_HL || 'en')
+        const gl = toText(profile.gl || process.env.SERPAPI_AIO_GL || 'us')
+        const googleDomain = toText(profile.googleDomain || process.env.SERPAPI_AIO_GOOGLE_DOMAIN || 'google.com')
+        const rawParams = { ...(params && typeof params === 'object' ? params : {}) }
+        delete rawParams.__profile
+        const sp = new URLSearchParams({
+          engine,
+          hl,
+          gl,
+          google_domain: googleDomain,
+          q: '',
+          api_key: serpapiKey,
+        })
+        Object.entries(rawParams).forEach(([k, v]) => {
+          const value = toText(v)
+          if (value) sp.set(k, value)
+        })
+        const endpoint = `https://serpapi.com/search.json?${sp.toString()}`
+        const resp = await withTimeout(
+          fetchByNetworkPolicy(endpoint, { method: 'GET', headers: { Accept: 'application/json' } }),
+          12000,
+          'serp_google_ai_overview_timeout',
+        ).catch(() => null)
+        const payload = resp ? await resp.json().catch(() => ({})) : {}
+        return { resp, payload }
+      }
+      for (const variant of variants) {
+        const geoProfiles = [
+          // Prefer CN locale for Chinese supplier retrieval, then fallback to global locales.
+          { hl: 'zh-cn', gl: 'cn', googleDomain: 'google.com.hk' },
+          { hl: 'en', gl: 'us', googleDomain: 'google.com' },
+          { hl: 'en', gl: 'sg', googleDomain: 'google.com.sg' },
+          { hl: 'en', gl: 'gb', googleDomain: 'google.co.uk' },
+        ]
+        const seedCandidates = buildTokenSeedQueries(variant)
+        let seedPayload = {}
+        let pageToken = ''
+        let selectedProfile = geoProfiles[0]
+        for (const profile of geoProfiles) {
+          for (const seedQuery of seedCandidates) {
+            // Step 1: use Google engine to retrieve AI Overview page token.
+            // This is required for some SerpAPI AIO plans/regions.
+            const seed = await requestSerp('google', {
+              q: seedQuery,
+              num: String(Math.min(8, limit)),
+              __profile: profile,
+            })
+            seedPayload = seed.payload || {}
+            selectedProfile = profile
+            const seedAi = seedPayload?.ai_overview || seedPayload?.google_ai_overview || seedPayload?.overview || {}
+            pageToken = toText(seedAi?.page_token)
+            if (!pageToken) {
+              const serpLink = toText(seedAi?.serpapi_link)
+              if (serpLink) {
+                try {
+                  const parsed = new URL(serpLink)
+                  pageToken = toText(parsed.searchParams.get('page_token'))
+                } catch {
+                  pageToken = ''
+                }
+              }
+            }
+            if (pageToken) break
+          }
+          if (pageToken) break
+        }
+        const detail = pageToken
+          ? await requestSerp('google_ai_overview', { page_token: pageToken, __profile: selectedProfile })
+          : { resp: null, payload: {} }
+        const payload = (detail?.resp && detail.resp.ok) ? detail.payload : seedPayload
+        const beforeCount = rows.length
+        const ai = payload?.ai_overview || payload?.google_ai_overview || payload?.overview || {}
+        const aiSources = []
+        if (Array.isArray(ai?.sources)) aiSources.push(...ai.sources)
+        if (Array.isArray(ai?.reference_links)) aiSources.push(...ai.reference_links)
+        if (Array.isArray(ai?.references)) aiSources.push(...ai.references)
+        for (const src of aiSources) pushRow({
+          title: src?.title || src?.source,
+          link: src?.link || src?.url,
+          snippet: src?.snippet || ai?.summary || ai?.text || '',
+          position: src?.position || 0,
+        }, 'google_ai_overview', variant)
+        const textBlocks = Array.isArray(ai?.text_blocks) ? ai.text_blocks : []
+        for (let i = 0; i < textBlocks.length; i += 1) {
+          const block = textBlocks[i] || {}
+          const blockText = toText(block?.text || block?.snippet || block?.content || '')
+          if (!blockText) continue
+          const blockRefs = Array.isArray(block?.references)
+            ? block.references
+            : (Array.isArray(block?.reference_links) ? block.reference_links : [])
+          if (blockRefs.length > 0) {
+            for (const ref of blockRefs) {
+              const refUrl = toText(ref?.link || ref?.url || '')
+              if (!refUrl) continue
+              pushRow({
+                title: toText(ref?.title || ref?.source || `AI Overview 参考 ${i + 1}`),
+                link: refUrl,
+                snippet: blockText,
+                position: Number(ref?.position || 0),
+              }, 'google_ai_overview', variant)
+            }
+          } else {
+            // Some AIO responses provide dense text blocks without explicit references.
+            // Keep one synthetic row so later extraction can still leverage the summary text.
+            pushRow({
+              title: `AI Overview 文本块 ${i + 1}`,
+              link: toText(ai?.serpapi_link || payload?.search_metadata?.id || ''),
+              snippet: blockText,
+              position: 0,
+            }, 'google_ai_overview', variant)
+          }
+        }
+        const topSights = Array.isArray(payload?.top_sights) ? payload.top_sights : []
+        for (const row of topSights) pushRow(row, 'google_ai_overview', variant)
+        const organic = Array.isArray(payload?.organic_results) ? payload.organic_results : []
+        for (const row of organic.slice(0, 6)) pushRow({
+          title: row?.title,
+          link: row?.link || row?.url,
+          snippet: row?.snippet || '',
+          position: row?.position,
+        }, 'google_ai_overview', variant)
+        if (rows.length === beforeCount) {
+          const seedOrganic = Array.isArray(seedPayload?.organic_results) ? seedPayload.organic_results : []
+          for (const row of seedOrganic.slice(0, 8)) pushRow({
             title: row?.title,
             link: row?.link || row?.url,
-            snippet: row?.snippet || '',
+            snippet: row?.snippet || ai?.summary || ai?.text || '',
             position: row?.position,
           }, 'google_ai_overview', variant)
-          if (rows.length >= limit) break
         }
         if (rows.length >= limit) break
       }
     }
     if (serpapiKey) {
       if (searchTool === 'google_ai_overview') {
-        await runSerpGoogleAiOverview(queryVariants.slice(0, 1))
+        // Do not rely on a single AIO query; run multiple variants for better supplier coverage.
+        await runSerpGoogleAiOverview(queryVariants.slice(0, 3))
       } else {
         await runSerpGoogle(queryVariants.slice(0, 6), 'serpapi_google')
       }
     }
-    if (rows.length === 0 && serpapiKey && searchTool === 'google_ai_overview') {
+    if (serpapiKey && searchTool === 'google_ai_overview' && rows.length < Math.min(limit, 8)) {
       const splitTasks = ['比亚迪 配套供应商 site:gasgoo.com', '东风 配套供应商 site:gasgoo.com', '奇瑞 配套供应商 site:gasgoo.com']
-      await runSerpGoogleAiOverview(splitTasks.slice(0, 2))
+      await runSerpGoogleAiOverview(splitTasks.slice(0, 3))
     }
-    if (rows.length === 0 && serpapiKey) {
+    if (rows.length === 0 && serpapiKey && searchTool !== 'google_ai_overview') {
       await runSerpGoogle(queryVariants.slice(0, 6), 'serpapi_google_fallback')
     }
-    if (rows.length === 0 && serpapiKey) {
+    if (rows.length === 0 && serpapiKey && searchTool !== 'google_ai_overview') {
       const emergencyQuery = `${q} 配套供应商`
       const endpoint = `https://serpapi.com/search.json?engine=google&hl=zh-cn&gl=cn&num=${Math.min(30, limit)}&q=${encodeURIComponent(emergencyQuery)}&api_key=${encodeURIComponent(serpapiKey)}`
       const resp = await fetchByNetworkPolicy(endpoint, { method: 'GET', headers: { Accept: 'application/json' } }).catch(() => null)
@@ -19193,7 +20012,7 @@ const preciseSourcingToolbox = buildLangChainToolbox({
         if (rows.length >= limit) break
       }
     }
-    if (rows.length === 0) {
+    if (rows.length === 0 && searchTool !== 'google_ai_overview') {
       const tavilyKey = toText(process.env.TAVILY_API_KEY || '')
       if (tavilyKey) {
         const tavilyQuery = `${q} 配套供应商 公司 名录`
@@ -19235,7 +20054,17 @@ const preciseSourcingToolbox = buildLangChainToolbox({
         }
       }
     }
+    if (searchTool === 'google_ai_overview') {
+      const hasNonAio = rows.some((item) => !toText(item?._provider).startsWith('google_ai_overview'))
+      if (hasNonAio) {
+        throw new Error('search_tool_mismatch: configured google_ai_overview but collected non-AIO rows')
+      }
+    }
     if (!serpapiKey && rows.length === 0) throw new Error('SERPAPI_API_KEY 未配置且 Tavily 无可用结果')
+    for (const row of rows) {
+      row._effectiveSearchTool = searchTool
+      row._effectiveWebQuery = q
+    }
     return rows
       .sort((a, b) => (Number(b?._rankBoost || 0) - Number(a?._rankBoost || 0)) || (Number(a?.score || 0) - Number(b?.score || 0)))
       .slice(0, limit)
@@ -19349,14 +20178,16 @@ async function buildPreciseSourcingResponsePayload({
       ? graphResult.kbHits.slice(0, resultLimit).map((item) => toCompactKbHit(item))
       : [],
   )
+  const llmAvailable = Boolean(toText(process.env.OPENAI_API_KEY || process.env.LLM_API_KEY || process.env.QWEN_API_KEY))
   if (!enablePostEnrichment) {
     const kbLlmCandidates = await extractSupplierCandidatesByLlmBatch(safeKbHitsRaw, 6, toText(modelName), { query: toText(userInput) })
     const safeKbHits = []
     for (let kbIdx = 0; kbIdx < safeKbHitsRaw.length; kbIdx += 1) {
       const hit = safeKbHitsRaw[kbIdx]
-      const seedRule = extractSupplierCandidatesFromText(`${toText(hit?.docName)} ${toText(hit?.chunkText)}`, 6, { query: toText(userInput) })
       const seedLlm = Array.isArray(kbLlmCandidates?.[kbIdx]) ? kbLlmCandidates[kbIdx] : []
-      const seed = Array.from(new Set([...seedLlm, ...seedRule]
+      const seedFallback = extractSupplierCandidatesFromText(`${toText(hit?.docName)} ${toText(hit?.chunkText)}`, 6, { query: toText(userInput) })
+      const seedPrimary = seedLlm.length > 0 ? seedLlm : seedFallback
+      const seed = Array.from(new Set(seedPrimary
         .map((x) => normalizeSupplierCandidateName(x))
         .filter((x) => isLikelySupplierCompanyName(x, toText(userInput)))))
       const ctx = await refineSupplierCandidatesByContext(seed, {
@@ -19364,9 +20195,12 @@ async function buildPreciseSourcingResponsePayload({
         model: toText(modelName),
         context: `${toText(hit?.docName)} ${toText(hit?.chunkText)}`,
       })
-      const supplierCandidatesRaw = (Array.isArray(ctx) && ctx.length > 0 ? ctx : seed)
+      const ctxCandidates = Array.isArray(ctx) ? ctx : []
+      const supplierCandidatesRaw = ctxCandidates.length > 0
+        ? ctxCandidates
+        : seed
       const supplierCandidates = supplierCandidatesRaw
-        .filter((x) => isStrictCompanyEntityName(x))
+        .filter((x) => isAcceptableSupplierEntityName(x, toText(userInput), oemNameSet))
         .slice(0, 5)
       safeKbHits.push({
         ...hit,
@@ -19378,12 +20212,15 @@ async function buildPreciseSourcingResponsePayload({
           webVerified: [],
           droppedByContext: seed.filter((name) => !supplierCandidates.includes(name)),
           droppedByVerify: [],
-          keepReasons: supplierCandidates.map((name) => ({ name, reasons: ['LLM+分块语义判定通过'] })),
+          keepReasons: supplierCandidates.map((name) => ({
+            name,
+            reasons: ctxCandidates.length > 0 ? ['LLM+分块语义判定通过'] : ['LLM空返回，回退seed并通过实体规则过滤'],
+          })),
           dropReasons: [],
         },
       })
     }
-    const safeKbHitsEffective = safeKbHits.filter((hit) => Array.isArray(hit?.supplierCandidates) && hit.supplierCandidates.length > 0)
+    const safeKbHitsEffective = safeKbHits
     const rawWebHits = toJsonSafe((Array.isArray(graphResult.webHits) ? graphResult.webHits : []).slice(0, resultLimit))
     const webLlmCandidates = await extractSupplierCandidatesByLlmBatch(rawWebHits, 5, toText(modelName), { query: toText(userInput) })
     const safeWebHits = []
@@ -19391,11 +20228,12 @@ async function buildPreciseSourcingResponsePayload({
       const hit = rawWebHits[webIdx]
       const title = toText(hit?.title || hit?.name || '')
       const snippet = toText(hit?.snippet || hit?.content || '')
-      const seedRule = extractSupplierCandidatesFromText(`${title} ${snippet}`, 5, { query: toText(userInput) })
       const seedLlm = Array.isArray(webLlmCandidates?.[webIdx]) ? webLlmCandidates[webIdx] : []
       // eslint-disable-next-line no-await-in-loop
       const deep = await extractSupplierCandidatesFromWebHitDeep(hit, { query: toText(userInput), model: toText(modelName) })
-      const seed = Array.from(new Set([...seedLlm, ...seedRule, ...(Array.isArray(deep?.candidates) ? deep.candidates : [])]
+      const seedFallback = extractSupplierCandidatesFromText(`${title} ${snippet}`, 5, { query: toText(userInput) })
+      const seedPrimary = seedLlm.length > 0 ? seedLlm : seedFallback
+      const seed = Array.from(new Set([...seedPrimary, ...(Array.isArray(deep?.candidates) ? deep.candidates : [])]
         .map((x) => normalizeSupplierCandidateName(x))
         .filter((x) => isLikelySupplierCompanyName(x, toText(userInput)))
         .filter((x) => !isObviousNonEntityTerm(x))))
@@ -19405,8 +20243,9 @@ async function buildPreciseSourcingResponsePayload({
         model: toText(modelName),
         context: `${title} ${snippet} ${toText(deep?.pageText || '')}`,
       })
-      const supplierCandidates = (Array.isArray(ctx) && ctx.length > 0 ? ctx : seed)
-        .filter((x) => isStrictCompanyEntityName(x))
+      const ctxCandidates = Array.isArray(ctx) ? ctx : []
+      const supplierCandidates = (ctxCandidates.length > 0 ? ctxCandidates : seed)
+        .filter((x) => isAcceptableSupplierEntityName(x, toText(userInput), oemNameSet))
         .slice(0, 5)
       safeWebHits.push({
         ...hit,
@@ -19418,7 +20257,10 @@ async function buildPreciseSourcingResponsePayload({
           webVerified: [],
           droppedByContext: seed.filter((name) => !supplierCandidates.includes(name)),
           droppedByVerify: [],
-          keepReasons: supplierCandidates.map((name) => ({ name, reasons: ['LLM+网页正文语义判定通过'] })),
+          keepReasons: supplierCandidates.map((name) => ({
+            name,
+            reasons: ctxCandidates.length > 0 ? ['LLM+网页正文语义判定通过'] : ['LLM空返回，回退seed并通过实体规则过滤'],
+          })),
           dropReasons: [],
         },
       })
@@ -19427,6 +20269,14 @@ async function buildPreciseSourcingResponsePayload({
       ? graphResult.traces.map((item) => ({ ...item, traceVersion }))
       : []
     const artifacts = Array.isArray(graphResult.artifacts) ? graphResult.artifacts : []
+    const configuredSearchSettings = await loadSearchSettings().catch(() => ({ ...defaultSearchSettings }))
+    const configuredSearchTool = toText(configuredSearchSettings?.searchTool || defaultSearchSettings.searchTool).toLowerCase()
+    const effectiveSearchTool = toText((Array.isArray(safeWebHits) ? safeWebHits[0]?._effectiveSearchTool : '') || '')
+    const ragHitCountByKb = targetKbIds.map((kbId) => {
+      const total = safeKbHitsRaw.filter((x) => toText(x?.kbId) === toText(kbId)).length
+      const withSupplier = safeKbHitsEffective.filter((x) => toText(x?.kbId) === toText(kbId) && Array.isArray(x?.supplierCandidates) && x.supplierCandidates.length > 0).length
+      return { kbId: toText(kbId), totalHits: total, supplierHits: withSupplier }
+    })
     const queryStatements = {
       orchestration: {
         selectedTools,
@@ -19442,10 +20292,14 @@ async function buildPreciseSourcingResponsePayload({
       rag: {
         keyword: toText(graphResult?.executionPlan?.ragQuery || userInput),
         endpoint: '/api/knowledge-bases/:id/search',
+        selectedKbIds: targetKbIds,
+        hitCountByKb: ragHitCountByKb,
       },
       web: {
         keyword: toText(graphResult?.executionPlan?.webQuery || ''),
-        provider: 'serpapi',
+        provider: configuredSearchTool || 'unknown',
+        configuredSearchTool: configuredSearchTool || 'unknown',
+        effectiveSearchTool: effectiveSearchTool || configuredSearchTool || 'unknown',
       },
       fusion: {
         requestedTopN: Number(requestedTopN || 10),
@@ -19468,7 +20322,12 @@ async function buildPreciseSourcingResponsePayload({
       : (/【命中统计】[^\n\r]*/.test(toText(graphResult.answer))
         ? toText(graphResult.answer).replace(/【命中统计】[^\n\r]*/g, statLine)
         : `${statLine}\n${toText(graphResult.answer)}`)
-    const structured = parsePreciseSourcingStructuredOutput(normalizedAnswer)
+    const tableEnsuredAnswer = ensurePreciseSourcingTables(normalizedAnswer, {
+      suppliers: safeSuppliers,
+      kbHits: safeKbHits,
+      webHits: safeWebHits,
+    })
+    const structured = parsePreciseSourcingStructuredOutput(tableEnsuredAnswer)
     return {
       traceVersion,
       agent: 'precise-sourcing',
@@ -19476,7 +20335,7 @@ async function buildPreciseSourcingResponsePayload({
       kbIds: targetKbIds,
       intent: toText(graphResult.intent || 'supplier_search'),
       demand: graphResult.demand || {},
-      answer: normalizedAnswer,
+      answer: tableEnsuredAnswer,
       structured,
       queryStatements,
       traces: tracesWithVersion,
@@ -19497,13 +20356,19 @@ async function buildPreciseSourcingResponsePayload({
     }
   }
   const safeKbHits = []
-  for (const hit of safeKbHitsRaw) {
-    const seed = extractSupplierCandidatesFromText(`${toText(hit?.docName)} ${toText(hit?.chunkText)}`, 6, { query: toText(userInput) })
+  const kbLlmCandidatesFallbackPath = await extractSupplierCandidatesByLlmBatch(safeKbHitsRaw, 6, toText(modelName), { query: toText(userInput) })
+  for (let kbIdx = 0; kbIdx < safeKbHitsRaw.length; kbIdx += 1) {
+    const hit = safeKbHitsRaw[kbIdx]
+    const seedLlm = Array.isArray(kbLlmCandidatesFallbackPath?.[kbIdx]) ? kbLlmCandidatesFallbackPath[kbIdx] : []
+    const seedFallback = extractSupplierCandidatesFromText(`${toText(hit?.docName)} ${toText(hit?.chunkText)}`, 6, { query: toText(userInput) })
+    const seed = Array.from(new Set((seedLlm.length > 0 ? seedLlm : seedFallback)
+      .map((x) => normalizeSupplierCandidateName(x))
+      .filter((x) => isLikelySupplierCompanyName(x, toText(userInput)))))
     const ctx = await refineSupplierCandidatesByContext(seed, { query: toText(userInput), model: toText(modelName), context: `${toText(hit?.docName)} ${toText(hit?.chunkText)}` })
     const verified = enableSecondaryWebVerification
       ? await verifySupplierCandidatesViaWeb(ctx, { query: toText(userInput) })
       : ctx
-    const verifiedFiltered = verified.filter((name) => !isNameInOemSet(name, oemNameSet))
+    const verifiedFiltered = verified.filter((name) => isAcceptableSupplierEntityName(name, toText(userInput), oemNameSet))
     const candidateAudit = buildCandidateAudit(seed, ctx, verifiedFiltered, 'kb')
     if (verifiedFiltered.length > 0) safeKbHits.push({ ...hit, supplierCandidates: verifiedFiltered.slice(0, 5), candidateAudit })
   }
@@ -19515,10 +20380,11 @@ async function buildPreciseSourcingResponsePayload({
       const snippet = toText(item?.snippet || item?.content || '')
       const fromLlm = Array.isArray(llmCandidates?.[idx]) ? llmCandidates[idx] : []
       const fromRule = extractSupplierCandidatesFromText(`${title} ${snippet}`, 5, { query: toText(userInput) })
-      const suppliers = Array.from(new Set([...fromLlm, ...fromRule]
+      const llmOrFallback = fromLlm.length > 0 ? fromLlm : fromRule
+      const suppliers = Array.from(new Set(llmOrFallback
         .map((x) => normalizeSupplierCandidateName(x))
         .filter((x) => isLikelySupplierCompanyName(x, toText(userInput)))
-        .filter((x) => isStrictCompanyEntityName(x))
+        .filter((x) => isAcceptableSupplierEntityName(x, toText(userInput), oemNameSet))
         .filter((x) => !isObviousNonEntityTerm(x)))).slice(0, 8)
       return {
         ...item,
@@ -19540,7 +20406,7 @@ async function buildPreciseSourcingResponsePayload({
     const verified = enableSecondaryWebVerification
       ? await verifySupplierCandidatesViaWeb(ctxOrSeed, { query: toText(userInput) })
       : ctxOrSeed
-    const verifiedFiltered = verified.filter((name) => !isNameInOemSet(name, oemNameSet))
+    const verifiedFiltered = verified.filter((name) => isAcceptableSupplierEntityName(name, toText(userInput), oemNameSet))
     const candidateAudit = buildCandidateAudit(seed, ctx, verifiedFiltered, 'web')
     if (verifiedFiltered.length > 0) safeWebHits.push({ ...hit, supplierCandidates: verifiedFiltered.slice(0, 5), candidateAudit })
   }
@@ -19556,6 +20422,14 @@ async function buildPreciseSourcingResponsePayload({
     ? graphResult.traces.map((item) => ({ ...item, traceVersion }))
     : []
   const artifacts = Array.isArray(graphResult.artifacts) ? graphResult.artifacts : []
+  const configuredSearchSettings = await loadSearchSettings().catch(() => ({ ...defaultSearchSettings }))
+  const configuredSearchTool = toText(configuredSearchSettings?.searchTool || defaultSearchSettings.searchTool).toLowerCase()
+  const effectiveSearchTool = toText((Array.isArray(safeWebHits) ? safeWebHits[0]?._effectiveSearchTool : '') || '')
+  const ragHitCountByKb = targetKbIds.map((kbId) => {
+    const total = safeKbHitsRaw.filter((x) => toText(x?.kbId) === toText(kbId)).length
+    const withSupplier = safeKbHitsEffective.filter((x) => toText(x?.kbId) === toText(kbId) && Array.isArray(x?.supplierCandidates) && x.supplierCandidates.length > 0).length
+    return { kbId: toText(kbId), totalHits: total, supplierHits: withSupplier }
+  })
   const queryStatements = {
     orchestration: {
       selectedTools,
@@ -19571,10 +20445,14 @@ async function buildPreciseSourcingResponsePayload({
     rag: {
       keyword: toText(graphResult?.executionPlan?.ragQuery || userInput),
       endpoint: '/api/knowledge-bases/:id/search',
+      selectedKbIds: targetKbIds,
+      hitCountByKb: ragHitCountByKb,
     },
     web: {
       keyword: toText(graphResult?.executionPlan?.webQuery || ''),
-      provider: 'serpapi',
+      provider: configuredSearchTool || 'unknown',
+      configuredSearchTool: configuredSearchTool || 'unknown',
+      effectiveSearchTool: effectiveSearchTool || configuredSearchTool || 'unknown',
     },
     fusion: {
       requestedTopN: Number(requestedTopN || 10),
@@ -19599,7 +20477,12 @@ async function buildPreciseSourcingResponsePayload({
     : (/【命中统计】[^\n\r]*/.test(toText(graphResult.answer))
       ? toText(graphResult.answer).replace(/【命中统计】[^\n\r]*/g, statLine)
       : `${statLine}\n${toText(graphResult.answer)}`)
-  const structured = parsePreciseSourcingStructuredOutput(normalizedAnswer)
+  const tableEnsuredAnswer = ensurePreciseSourcingTables(normalizedAnswer, {
+    suppliers: safeSuppliers,
+    kbHits: safeKbHits,
+    webHits: safeWebHits,
+  })
+  const structured = parsePreciseSourcingStructuredOutput(tableEnsuredAnswer)
   return {
     traceVersion,
     agent: 'precise-sourcing',
@@ -19607,7 +20490,7 @@ async function buildPreciseSourcingResponsePayload({
     kbIds: targetKbIds,
     intent: toText(graphResult.intent || 'supplier_search'),
     demand: graphResult.demand || {},
-    answer: normalizedAnswer,
+    answer: tableEnsuredAnswer,
     structured,
     queryStatements,
     traces: tracesWithVersion,
@@ -19911,17 +20794,25 @@ function normalizeLangchainSessionState(input = {}) {
     const content = toText(msg.content)
     const imageDataUrl = normalizeImageDataUrl(msg.imageDataUrl)
     const normalized = { role, content, imageDataUrl }
+    normalized.meta = toJsonSafe(msg.meta, {})
     if (role === 'assistant') {
       normalized.ts = Number.isFinite(Number(msg.ts)) ? Number(msg.ts) : Date.now()
       normalized.rawAnswer = toText(msg.rawAnswer)
+      normalized.userInput = toText(msg.userInput)
+      normalized.streamDone = Boolean(msg.streamDone)
+      normalized.lastHeartbeat = toText(msg.lastHeartbeat)
       normalized.intent = toText(msg.intent)
       normalized.traceVersion = toText(msg.traceVersion)
       normalized.selectedTools = Array.isArray(msg.selectedTools) ? msg.selectedTools.map((x) => toText(x)).filter(Boolean).slice(0, 50) : []
+      normalized.planSteps = Array.isArray(msg.planSteps) ? toJsonSafe(msg.planSteps, []).slice(0, 200) : []
+      normalized.intentDecision = toJsonSafe(msg.intentDecision, null)
       normalized.evidence = toJsonSafe(msg.evidence, { suppliers: [], kbHits: [], webHits: [] })
       normalized.artifacts = Array.isArray(msg.artifacts) ? toJsonSafe(msg.artifacts, []).slice(0, 50) : []
       normalized.queryStatements = toJsonSafe(msg.queryStatements, {})
       normalized.traces = Array.isArray(msg.traces) ? toJsonSafe(msg.traces, []).slice(0, 200) : []
       normalized.react = toJsonSafe(msg.react, { rounds: [] })
+      normalized.systemPrompt = toText(msg.systemPrompt)
+      normalized.systemPromptPresetKey = toText(msg.systemPromptPresetKey)
     } else {
       normalized.ts = Number.isFinite(Number(msg.ts)) ? Number(msg.ts) : Date.now()
     }
@@ -19956,6 +20847,154 @@ function normalizeLangchainChatType(input = '') {
   if (value === 'precise_sourcing') return 'precise_sourcing'
   if (value === 'rag_chat') return 'rag_chat'
   return 'multi_chat'
+}
+
+function buildLangchainStateSnapshotTitle(chatType = 'multi_chat') {
+  return `__state_snapshot__:${toText(chatType) || 'multi_chat'}`
+}
+
+async function loadLangchainStateFromMainTables(owner = '', chatType = 'multi_chat') {
+  const snapshotTitle = buildLangchainStateSnapshotTitle(chatType)
+  const sessionRes = await pool.query(
+    `
+    SELECT id
+    FROM ${chatSessionTable}
+    WHERE owner = $1 AND title = $2
+    ORDER BY updated_at DESC, id DESC
+    LIMIT 1
+    `,
+    [owner, snapshotTitle],
+  )
+  if (sessionRes.rowCount === 0) return null
+  const snapshotSessionId = Number(sessionRes.rows[0]?.id || 0)
+  if (!Number.isInteger(snapshotSessionId) || snapshotSessionId <= 0) return null
+  const msgRes = await pool.query(
+    `
+    SELECT meta
+    FROM ${chatMessageTable}
+    WHERE session_id = $1 AND role = 'system'
+    ORDER BY id DESC
+    LIMIT 1
+    `,
+    [snapshotSessionId],
+  )
+  if (msgRes.rowCount === 0) return null
+  const meta = msgRes.rows[0]?.meta && typeof msgRes.rows[0].meta === 'object' ? msgRes.rows[0].meta : {}
+  const payload = normalizeLangchainSessionState({
+    sessions: meta.sessions,
+    currentSession: meta.currentSession,
+  })
+  return payload
+}
+
+async function rebuildLangchainStateFromRecentSessions(owner = '', limit = 20) {
+  const sessionsRes = await pool.query(
+    `
+    SELECT id, title
+    FROM ${chatSessionTable}
+    WHERE owner = $1
+      AND title NOT LIKE '__state_snapshot__:%'
+    ORDER BY updated_at DESC, id DESC
+    LIMIT $2
+    `,
+    [owner, Math.min(Math.max(Number(limit || 20), 1), 50)],
+  )
+  const recovered = []
+  for (const row of sessionsRes.rows || []) {
+    const sid = Number(row.id || 0)
+    if (!Number.isInteger(sid) || sid <= 0) continue
+    // eslint-disable-next-line no-await-in-loop
+    const msgRes = await pool.query(
+      `
+      SELECT role, content, meta
+      FROM ${chatMessageTable}
+      WHERE session_id = $1
+      ORDER BY id ASC
+      `,
+      [sid],
+    )
+    const messages = (msgRes.rows || [])
+      .map((m) => ({
+        role: toText(m.role) === 'assistant' ? 'assistant' : 'user',
+        content: toText(m.content),
+        ts: Number(m?.meta?.ts || Date.now()),
+        meta: m?.meta && typeof m.meta === 'object' ? m.meta : {},
+      }))
+      .filter((m) => m.content)
+      .slice(-200)
+    if (messages.length === 0) continue
+    recovered.push({
+      sourceTitle: toText(row.title || '').slice(0, 120),
+      messages,
+    })
+  }
+  if (recovered.length === 0) return null
+  const sessions = recovered.map((item, idx) => ({
+    name: idx === 0 ? 'default' : `会话${idx + 1}`,
+    messages: item.messages,
+  }))
+  return {
+    sessions,
+    currentSession: sessions[0].name,
+  }
+}
+
+async function saveLangchainStateToMainTables(owner = '', chatType = 'multi_chat', normalized = { sessions: [], currentSession: 'default' }) {
+  const snapshotTitle = buildLangchainStateSnapshotTitle(chatType)
+  const meta = {
+    kind: 'langchain_state_snapshot',
+    chatType,
+    currentSession: normalized.currentSession,
+    sessions: normalized.sessions,
+    savedAt: new Date().toISOString(),
+  }
+  const lookupRes = await pool.query(
+    `
+    SELECT id
+    FROM ${chatSessionTable}
+    WHERE owner = $1 AND title = $2
+    ORDER BY updated_at DESC, id DESC
+    LIMIT 1
+    `,
+    [owner, snapshotTitle],
+  )
+  let snapshotSessionId = Number(lookupRes.rows[0]?.id || 0)
+  if (!Number.isInteger(snapshotSessionId) || snapshotSessionId <= 0) {
+    const createRes = await pool.query(
+      `
+      INSERT INTO ${chatSessionTable} (title, owner, meta)
+      VALUES ($1, $2, $3::jsonb)
+      RETURNING id
+      `,
+      [snapshotTitle, owner, JSON.stringify({ kind: 'langchain_state_session', chatType })],
+    )
+    snapshotSessionId = Number(createRes.rows[0]?.id || 0)
+  }
+  if (!Number.isInteger(snapshotSessionId) || snapshotSessionId <= 0) {
+    throw new Error('主表快照会话不存在，无法保存会话状态')
+  }
+  await pool.query(
+    `INSERT INTO ${chatMessageTable} (session_id, role, content, meta) VALUES ($1, $2, $3, $4::jsonb)`,
+    [snapshotSessionId, 'system', `state snapshot for ${chatType}`, JSON.stringify(meta)],
+  )
+  await pool.query(
+    `UPDATE ${chatSessionTable} SET updated_at = NOW(), meta = $2::jsonb WHERE id = $1`,
+    [snapshotSessionId, JSON.stringify({ kind: 'langchain_state_session', chatType, snapshotUpdatedAt: new Date().toISOString() })],
+  )
+}
+
+async function saveLangchainStateToBackupTable(owner = '', chatType = 'multi_chat', normalized = { sessions: [], currentSession: 'default' }) {
+  await pool.query(
+    `
+    INSERT INTO ${langchainSessionStateTable} (owner, chat_type, sessions_json, current_session, updated_at)
+    VALUES ($1, $2, $3::jsonb, $4, NOW())
+    ON CONFLICT (owner, chat_type) DO UPDATE
+    SET sessions_json = EXCLUDED.sessions_json,
+        current_session = EXCLUDED.current_session,
+        updated_at = NOW()
+    `,
+    [owner, chatType, JSON.stringify(normalized.sessions), normalized.currentSession],
+  )
 }
 
 async function searchKnowledgeBaseRecords(kb, queryText = '', topK = 8, options = {}) {
@@ -20041,21 +21080,18 @@ app.get('/api/langchain/session-state', authMiddleware, async (req, res) => {
   const owner = toText(req.authUser?.userName || req.authUser?.username || 'unknown')
   const chatType = normalizeLangchainChatType(req.query?.chatType)
   try {
+    let payload = null
     const result = await pool.query(
       `SELECT sessions_json, current_session FROM ${langchainSessionStateTable} WHERE owner = $1 AND chat_type = $2 LIMIT 1`,
       [owner, chatType],
     )
-    if (result.rowCount === 0) {
-      return res.json({
-        code: 200,
-        message: 'success',
-        data: { sessions: [{ name: 'default', messages: [] }], currentSession: 'default' },
+    if (result.rowCount > 0) {
+      payload = normalizeLangchainSessionState({
+        sessions: result.rows[0]?.sessions_json,
+        currentSession: result.rows[0]?.current_session,
       })
     }
-    const payload = normalizeLangchainSessionState({
-      sessions: result.rows[0]?.sessions_json,
-      currentSession: result.rows[0]?.current_session,
-    })
+    if (!payload) payload = { sessions: [{ name: 'default', messages: [] }], currentSession: 'default' }
     return res.json({ code: 200, message: 'success', data: payload })
   } catch (error) {
     return res.status(500).json({ code: 500, message: `读取 LangChain 会话状态失败: ${error.message}`, data: null })
@@ -20083,7 +21119,7 @@ app.post('/api/agents/precise-sourcing/chat-stream', authMiddleware, async (req,
   const selectedTools = [...new Set([...selectedToolsRaw, ...selectedSkillsRaw])]
   const fastWebAsync = req.body?.fastWebAsync !== false
   const topK = Math.min(Math.max(Number(req.body?.topK || 20), 5), 50)
-  const dbTopK = Math.min(Math.max(Number(req.body?.dbTopK || 10), 1), 100)
+  const dbTopK = Math.min(Math.max(Number(req.body?.dbTopK || 30), 1), 100)
   const generateCharts = req.body?.generateCharts !== false
   const temperature = Math.max(0, Math.min(1, Number(req.body?.temperature ?? 0.2)))
   const reportTemplate = req.body?.reportTemplate && typeof req.body.reportTemplate === 'object' ? req.body.reportTemplate : null
@@ -20114,6 +21150,7 @@ app.post('/api/agents/precise-sourcing/chat-stream', authMiddleware, async (req,
     }
   }
   let streamDeltaCount = 0
+  let streamEventCount = 0
   sendEvent('start', { traceVersion, message: '开始执行' })
 
   try {
@@ -20142,38 +21179,87 @@ app.post('/api/agents/precise-sourcing/chat-stream', authMiddleware, async (req,
           const text = toText(delta)
           if (!text) return
           streamDeltaCount += 1
+          streamEventCount += 1
           sendEvent('delta', { text })
         },
       }), 180000, 'precise_sourcing_stream_timeout')
-      : await withTimeout(preciseSourcingLangGraph.run({
-        onEvent: (evt) => {
-          if (evt?.type === 'trace' && evt?.trace) {
-            sendEvent('trace', { traceVersion, trace: evt.trace })
-          } else if (evt?.type === 'delta' && evt?.delta) {
-            sendEvent('delta', { text: String(evt.delta) })
-          }
-        },
-        userInput,
-        authHeader,
-        kbId: targetKbId || '',
-        kbIds: targetKbIds,
-        topK: Math.min(topK, 20),
-        webTopK: requestedCount,
-        finalTopN,
-        dbTopK,
-        selectedDbTables,
-        strictMode,
-        selectedSkills: primaryTools,
-        selectedTools: primaryTools,
-        model: selectedModel,
-        systemPrompt,
-        systemPromptPresetKey,
-        generateCharts,
-        temperature,
-        reportTemplate,
-        sourceQuota,
-        streamTokens: true,
-      }), 180000, 'precise_sourcing_stream_timeout')
+      : await (async () => {
+        let normalEventSeen = false
+        const normalFirstEventTimeoutMs = 12000
+        const normalRunPromise = withTimeout(preciseSourcingLangGraph.run({
+          onEvent: (evt) => {
+            if (evt?.type === 'trace' && evt?.trace) {
+              normalEventSeen = true
+              streamEventCount += 1
+              sendEvent('trace', { traceVersion, trace: evt.trace })
+            } else if (evt?.type === 'delta' && evt?.delta) {
+              normalEventSeen = true
+              streamDeltaCount += 1
+              streamEventCount += 1
+              sendEvent('delta', { text: String(evt.delta) })
+            }
+          },
+          userInput,
+          authHeader,
+          kbId: targetKbId || '',
+          kbIds: targetKbIds,
+          topK: Math.min(topK, 20),
+          webTopK: requestedCount,
+          finalTopN,
+          dbTopK,
+          selectedDbTables,
+          strictMode,
+          selectedSkills: primaryTools,
+          selectedTools: primaryTools,
+          model: selectedModel,
+          systemPrompt,
+          systemPromptPresetKey,
+          generateCharts,
+          temperature,
+          reportTemplate,
+          sourceQuota,
+          streamTokens: true,
+        }), 180000, 'precise_sourcing_stream_timeout')
+
+        const fallbackSignal = await Promise.race([
+          normalRunPromise.then(() => null).catch(() => null),
+          new Promise((resolve) => {
+            setTimeout(() => resolve(normalEventSeen ? null : 'normal_first_event_timeout'), normalFirstEventTimeoutMs)
+          }),
+        ])
+
+        if (fallbackSignal === 'normal_first_event_timeout') {
+          sendEvent('heartbeat', { message: `normal模式在 ${normalFirstEventTimeoutMs / 1000}s 内未返回流式事件，自动降级为 fast 继续执行。` })
+          return await withTimeout(runPreciseSourcingFastPipeline({
+            userInput,
+            authHeader,
+            targetKbIds,
+            selectedDbTables,
+            selectedTools: primaryTools,
+            topK: Math.min(topK, 20),
+            requestedTopN: finalTopN,
+            dbTopK,
+            strictMode,
+            model: selectedModel,
+            systemPrompt,
+            systemPromptPresetKey,
+            temperature,
+            reportTemplate,
+            sourceQuota,
+            generateCharts,
+            streamTokens: true,
+            onDelta: (delta) => {
+              const text = toText(delta)
+              if (!text) return
+              streamDeltaCount += 1
+              streamEventCount += 1
+              sendEvent('delta', { text })
+            },
+          }), 180000, 'precise_sourcing_stream_timeout')
+        }
+
+        return await normalRunPromise
+      })()
     if (executionMode === 'fast') {
       for (const tr of (Array.isArray(graphResult?.traces) ? graphResult.traces : [])) {
         sendEvent('trace', { traceVersion, trace: tr })
@@ -20316,20 +21402,21 @@ app.put('/api/langchain/session-state', authMiddleware, async (req, res) => {
   const chatType = normalizeLangchainChatType(req.body?.chatType)
   const normalized = normalizeLangchainSessionState(req.body || {})
   try {
-    await pool.query(
-      `
-      INSERT INTO ${langchainSessionStateTable} (owner, chat_type, sessions_json, current_session, updated_at)
-      VALUES ($1, $2, $3::jsonb, $4, NOW())
-      ON CONFLICT (owner, chat_type) DO UPDATE
-      SET sessions_json = EXCLUDED.sessions_json,
-          current_session = EXCLUDED.current_session,
-          updated_at = NOW()
-      `,
-      [owner, chatType, JSON.stringify(normalized.sessions), normalized.currentSession],
-    )
+    await saveLangchainStateToBackupTable(owner, chatType, normalized)
     return res.json({ code: 200, message: 'updated', data: normalized })
   } catch (error) {
     return res.status(500).json({ code: 500, message: `保存 LangChain 会话状态失败: ${error.message}`, data: null })
+  }
+})
+
+app.delete('/api/langchain/session-state', authMiddleware, async (req, res) => {
+  const owner = toText(req.authUser?.userName || req.authUser?.username || 'unknown')
+  const chatType = normalizeLangchainChatType(req.query?.chatType)
+  try {
+    await pool.query(`DELETE FROM ${langchainSessionStateTable} WHERE owner = $1 AND chat_type = $2`, [owner, chatType])
+    return res.json({ code: 200, message: 'deleted', data: { owner, chatType } })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `删除 LangChain 会话状态失败: ${error.message}`, data: null })
   }
 })
 

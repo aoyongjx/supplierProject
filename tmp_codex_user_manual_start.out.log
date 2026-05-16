@@ -1,0 +1,29 @@
+
+> asset-inventory-node24@0.0.0 dev
+> concurrently "npm:dev:server" "npm:dev:client"
+
+[dev:server] 
+[dev:server] > asset-inventory-node24@0.0.0 dev:server
+[dev:server] > node scripts/run-with-local-no-proxy.mjs node server/index.js
+[dev:server] 
+[dev:client] 
+[dev:client] > asset-inventory-node24@0.0.0 dev:client
+[dev:client] > node scripts/run-with-local-no-proxy.mjs vite
+[dev:client] 
+[dev:server] (node:25228) [DEP0190] DeprecationWarning: Passing args to a child process with shell option true can lead to security vulnerabilities, as the arguments are not escaped, only concatenated.
+[dev:server] (Use `node --trace-deprecation ...` to show where the warning was created)
+[dev:client] 
+[dev:client]   [32m[1mVITE[22m v8.0.8[39m  [2mready in [0m[1m207[22m[2m[0m ms[22m
+[dev:client] 
+[dev:client]   [32m➜[39m  [1mLocal[22m:   [36mhttp://localhost:[1m5173[22m/[39m
+[dev:client] [2m  [32m➜[39m  [1mNetwork[22m[2m: use [22m[1m--host[22m[2m to expose[22m
+[dev:server] ◇ injected env (29) from .env // tip: ⌘ enable debugging { debug: true }
+[dev:server] [network-policy] HTTP_PROXY=http://127.0.0.1:22307 HTTPS_PROXY=http://127.0.0.1:22307
+[dev:server] [network-policy] NO_PROXY=localhost,127.0.0.1,::1,10.1.1.113,leaf-auth-server.dev.jinxin.cloud,chinaautosupplier.com,www.chinaautosupplier.com,qcgys.com,www.qcgys.com,gasgoo.com,www.gasgoo.com,i.gasgoo.com
+[dev:server] Asset inventory API listening at http://localhost:3000
+[dev:server] DB connected: 10.1.1.113:7300/training_exercises schema=aoyong
+[dev:server] Auth enabled: true
+[dev:client] [2m11:56:04[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [2m[console.error] [22mWarning: [antd: Space] `direction` is deprecated. Please use `orientation` instead.
+[dev:client] [2m11:56:07[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [2m[console.error] [22mWarning: [antd: Table] `pagination.position` is deprecated. Please use `pagination.placement` instead.
+[dev:server] (node:12684) DeprecationWarning: Calling client.query() when the client is already executing a query is deprecated and will be removed in pg@9.0. Use async/await or an external async flow control mechanism instead.
+[dev:server] (Use `node --trace-deprecation ...` to show where the warning was created)

@@ -20,7 +20,7 @@ const SEARCH_TEMPLATES = [
   { label: '专利技术', value: 'patent', suffix: ' 专利 技术 研发' },
   { label: '供应链客户', value: 'supply', suffix: ' 供应链 客户 合作' },
 ]
-const MCP_SERVICE_DEFAULT_PRIORITY = ['tavily', 'weixin-reader', 'weibo', 'twitter', 'linkedin', 'filesystem']
+const MCP_SERVICE_DEFAULT_PRIORITY = ['serpapi_google_search_api', 'serpapi_google_light_search_api', 'serpapi_google_ai_mode_api', 'serpapi_google_ai_overview_api', 'serpapi', 'tavily', 'weixin-reader', 'weibo', 'twitter', 'linkedin', 'filesystem']
 
 function statusTag(status = '') {
   const token = String(status || '')
@@ -58,7 +58,7 @@ export default function KnowledgeBaseManagementPage() {
   const [webUrl, setWebUrl] = useState('')
   const [mcpServices, setMcpServices] = useState([])
   const [mcpKeyword, setMcpKeyword] = useState('')
-  const [mcpServiceName, setMcpServiceName] = useState('')
+  const [mcpServiceName, setMcpServiceName] = useState('serpapi_google_search_api')
   const [searchTemplate, setSearchTemplate] = useState('custom')
   const [mcpOutput, setMcpOutput] = useState('')
   const [mcpSearching, setMcpSearching] = useState(false)
@@ -69,6 +69,19 @@ export default function KnowledgeBaseManagementPage() {
   const [previewData, setPreviewData] = useState(null)
   const [form] = Form.useForm()
   const [editForm] = Form.useForm()
+
+  const isWebDoc = (doc) => {
+    const sourceType = String(doc?.sourceType || '')
+    const url = String(doc?.url || '')
+    return sourceType === 'web' || (sourceType === 'search' && /^https?:\/\//i.test(url))
+  }
+
+  const isSearchDoc = (doc) => {
+    const sourceType = String(doc?.sourceType || '')
+    const url = String(doc?.url || '')
+    if (sourceType !== 'search') return false
+    return !/^https?:\/\//i.test(url)
+  }
 
   const reload = async (silent = false) => {
     if (!silent) setRefreshing(true)
@@ -90,13 +103,7 @@ export default function KnowledgeBaseManagementPage() {
       try {
         const rows = await fetchMcpServices()
         setMcpServices(rows)
-        const available = (rows || []).filter((item) => item.enabled !== false && item.callable !== false)
-        const byPriority = MCP_SERVICE_DEFAULT_PRIORITY
-          .map((name) => available.find((item) => String(item.name || '').toLowerCase() === name))
-          .find(Boolean)
-        const fallback = available[0] || (rows || []).find((item) => item.enabled !== false)
-        const defaultServiceName = byPriority?.name || fallback?.name || ''
-        if (defaultServiceName) setMcpServiceName(defaultServiceName)
+        setMcpServiceName('serpapi_google_search_api')
       } catch {
         setMcpServices([])
       }
@@ -232,7 +239,34 @@ export default function KnowledgeBaseManagementPage() {
       if (!line) return
       setMcpOutput((prev) => (prev ? `${prev}\n${line}` : line))
     } catch (error) {
-      message.error(error.message || 'MCP检索失败')
+      const errMsg = String(error?.message || 'MCP检索失败')
+      const isTavilyQuotaError = /Tavily HTTP 432|usage limit|exceeds your plan/i.test(errMsg)
+      if (isTavilyQuotaError) {
+        const candidates = (mcpServices || []).filter((item) => {
+          const name = String(item?.name || '').toLowerCase()
+          if (!name || name === 'tavily') return false
+          return item?.enabled !== false && item?.callable !== false
+        })
+        const fallback = candidates[0]
+        if (fallback?.name) {
+          try {
+            const fallbackService = String(fallback.name)
+            const result = await mcpSearch({ service: fallbackService, keyword })
+            const line = String(result?.text || '').trim()
+            if (line) {
+              setMcpServiceName(fallbackService)
+              setMcpOutput((prev) => (prev ? `${prev}\n${line}` : line))
+              message.warning(`Tavily 配额已用完，已自动切换到 ${fallbackService} 并完成检索`)
+              return
+            }
+          } catch {
+            // Continue to final error message below.
+          }
+        }
+        message.error('Tavily 配额已用完，且自动切换服务失败。请在“选择MCP服务”里改用其他服务后重试。')
+        return
+      }
+      message.error(errMsg || 'MCP检索失败')
     } finally {
       setMcpSearching(false)
     }
@@ -343,7 +377,7 @@ export default function KnowledgeBaseManagementPage() {
                       <Upload.Dragger multiple beforeUpload={onUploadFile} showUploadList={false}>
                         <p className="ant-upload-drag-icon"><UploadOutlined /></p>
                         <p className="ant-upload-text">拖拽文件到这里，或点击上传</p>
-                        <p className="ant-upload-hint" style={{ fontSize: 12 }}>上传后进入：解析 -&gt; 分段 -&gt; 向量化（支持 TXT/MD/HTML/CSV/JSON/XML/PDF）</p>
+                        <p className="ant-upload-hint" style={{ fontSize: 12 }}>上传后进入：解析 -&gt; 分段 -&gt; 向量化（支持 TXT/MD/HTML/CSV/JSON/XML/PDF/WORD(DOCX/DOCM/DOTX)/PPT(PPTX/PPTM/POTX)/EXCEL(XLSX/XLSM/XLTX/XLTM)）</p>
                       </Upload.Dragger>
                       <Table
                         size="small"
@@ -362,6 +396,7 @@ export default function KnowledgeBaseManagementPage() {
                             width: 220,
                             render: (_, row) => (
                               <Space>
+                                <Button size="small" onClick={() => onPreviewDoc(row.id)}>预览</Button>
                                 {row.status === 'failed' ? (
                                   <Button size="small" icon={<ReloadOutlined />} onClick={() => onRetry(row.id)}>重试</Button>
                                 ) : null}
@@ -376,7 +411,7 @@ export default function KnowledgeBaseManagementPage() {
                 },
                 {
                   key: 'web',
-                  label: `网页 ${(selected.documents || []).filter((d) => d.sourceType === 'web').length}`,
+                  label: `网页 ${(selected.documents || []).filter((d) => isWebDoc(d)).length}`,
                   children: (
                     <Space direction="vertical" size={12} style={{ width: '100%' }}>
                       <Space.Compact style={{ width: '100%' }}>
@@ -389,7 +424,7 @@ export default function KnowledgeBaseManagementPage() {
                         tableLayout="fixed"
                         pagination={false}
                         rowClassName={(row) => (row.id === focusDocId ? 'kb-focused-row' : '')}
-                        dataSource={(selected.documents || []).filter((d) => d.sourceType === 'web')}
+                        dataSource={(selected.documents || []).filter((d) => isWebDoc(d))}
                         columns={[
                           {
                             title: '网页',
@@ -422,7 +457,7 @@ export default function KnowledgeBaseManagementPage() {
                 },
                 {
                   key: 'search',
-                  label: `搜索 ${(selected.documents || []).filter((d) => d.sourceType === 'search').length}`,
+                  label: `搜索 ${(selected.documents || []).filter((d) => isSearchDoc(d)).length}`,
                   children: (
                     <Space direction="vertical" size={12} style={{ width: '100%' }}>
                       <Space.Compact style={{ width: '100%' }}>
@@ -443,18 +478,27 @@ export default function KnowledgeBaseManagementPage() {
                           onChange={setMcpServiceName}
                           placeholder="选择MCP服务"
                           style={{ width: '22%' }}
-                          options={(mcpServices || []).filter((item) => item.enabled !== false).map((item) => {
-                            const name = String(item.name || '').toLowerCase()
-                            const exaDisabled = name === 'exa'
-                            return ({
-                              label: exaDisabled
-                                ? `${item.name}（已禁用）`
-                                : (item.callable === false ? `${item.name}（不可用）` : item.name),
-                            value: item.name,
-                            disabled: item.callable === false || exaDisabled,
-                            title: item.callableReason || '',
-                            })
-                          })}
+                          options={[
+                            { label: 'serpapi（Google Search API）', value: 'serpapi_google_search_api' },
+                            { label: 'serpapi（Google Light Search API）', value: 'serpapi_google_light_search_api' },
+                            { label: 'serpapi（Google AI Mode API）', value: 'serpapi_google_ai_mode_api' },
+                            { label: 'serpapi（Google AI Overview API）', value: 'serpapi_google_ai_overview_api' },
+                            { label: 'serpapi', value: 'serpapi' },
+                            ...(mcpServices || [])
+                              .filter((item) => item.enabled !== false)
+                              .map((item) => {
+                                const name = String(item.name || '').toLowerCase()
+                                const exaDisabled = name === 'exa'
+                                return ({
+                                  label: exaDisabled
+                                    ? `${item.name}（已禁用）`
+                                    : (item.callable === false ? `${item.name}（不可用）` : item.name),
+                                  value: item.name,
+                                  disabled: item.callable === false || exaDisabled,
+                                  title: item.callableReason || '',
+                                })
+                              }),
+                          ]}
                         />
                         <Button loading={mcpSearching} onClick={onMcpSearch}>检索</Button>
                         <Button type="primary" loading={mcpIngesting} disabled={!String(mcpOutput || '').trim()} onClick={onMcpIngest}>入库+向量化</Button>
@@ -470,7 +514,7 @@ export default function KnowledgeBaseManagementPage() {
                         rowKey="id"
                         pagination={false}
                         rowClassName={(row) => (row.id === focusDocId ? 'kb-focused-row' : '')}
-                        dataSource={(selected.documents || []).filter((d) => d.sourceType === 'search')}
+                        dataSource={(selected.documents || []).filter((d) => isSearchDoc(d))}
                         columns={[
                           { title: '搜索记录', dataIndex: 'name' },
                           { title: '状态', dataIndex: 'status', width: 120, render: (v) => statusTag(v) },
@@ -520,7 +564,7 @@ export default function KnowledgeBaseManagementPage() {
       </Modal>
 
       <Modal
-        title="网页预览"
+        title="文档预览"
         open={previewOpen}
         width={900}
         footer={<Button onClick={() => setPreviewOpen(false)}>关闭</Button>}

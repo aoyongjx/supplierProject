@@ -1,0 +1,36 @@
+[
+  {
+    "q": "帮我搜索比亚迪、东风、奇瑞的配套供应商",
+    "status": 200,
+    "hits": {
+      "db": 8,
+      "rag": 5,
+      "web": 5
+    },
+    "webTool": "google_ai_overview"
+  },
+  {
+    "q": "帮我搜索比亚迪、奇瑞的动力电池配套供应商",
+    "err": "AbortError:This operation was aborted"
+  },
+  {
+    "q": "帮我搜索比亚迪、东风的IGBT功率半导体配套供应商",
+    "status": 200,
+    "hits": {
+      "db": 8,
+      "rag": 5,
+      "web": 5
+    },
+    "webTool": "google_ai_overview"
+  },
+  {
+    "q": "帮我搜索东风、奇瑞的传感器配套供应商",
+    "status": 200,
+    "hits": {
+      "db": 8,
+      "rag": 5,
+      "web": 5
+    },
+    "webTool": "google_ai_overview"
+  }
+]

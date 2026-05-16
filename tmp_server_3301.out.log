@@ -1,0 +1,6 @@
+◇ injected env (28) from .env // tip: ⌘ multiple files { path: ['.env.local', '.env'] }
+[network-policy] HTTP_PROXY=http://127.0.0.1:22307 HTTPS_PROXY=http://127.0.0.1:22307
+[network-policy] NO_PROXY=10.1.1.113,leaf-auth-server.dev.jinxin.cloud,localhost,127.0.0.1,::1,chinaautosupplier.com,www.chinaautosupplier.com,qcgys.com,www.qcgys.com,gasgoo.com,www.gasgoo.com,i.gasgoo.com
+Asset inventory API listening at http://localhost:3301
+DB connected: 10.1.1.113:7300/training_exercises schema=aoyong
+Auth enabled: true

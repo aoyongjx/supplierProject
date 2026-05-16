@@ -1,0 +1,71 @@
+[
+  {
+    "index": 1,
+    "query": "筛选主营阀类零部件且有认证信息记录的供应商，返回企业名称、认证信息、联系方式、主营产品与数据来源。",
+    "error": "AbortError:This operation was aborted"
+  },
+  {
+    "index": 2,
+    "query": "筛选主营“IGBT功率半导体及电动化芯片”的供应商，返回配套客户、产品类别、经营信息（规模/营收字段）、来源链接。",
+    "error": "AbortError:This operation was aborted"
+  },
+  {
+    "index": 3,
+    "query": "筛选“ADAS辅助驾驶”相关供应商，且有“技术与专利”记录，返回专利关键词、数量字段、生产基地与来源。",
+    "error": "AbortError:This operation was aborted"
+  },
+  {
+    "index": 4,
+    "query": "筛选“电芯”相关供应商，且有质量体系（IATF/ISO）和生产基地信息，返回综合评分与资质排序。关键词：汽车供应商 配套客户 认证 生产基地 专利。",
+    "error": "AbortError:This operation was aborted"
+  },
+  {
+    "index": 5,
+    "query": "请对“电磁阀、IGBT功率半导体及电动化芯片”两类供应商做组合寻源，返回同时满足“有认证+有配套信息+可联系”的企业清单。关键词：汽车供应商 配套客户 认证 生产基地 专利。",
+    "error": "AbortError:This operation was aborted"
+  },
+  {
+    "index": 6,
+    "query": "请对已筛出的候选企业做寻源分析：按企业评分、资质排序、产品配套、生产基地、技术与专利、质量与口碑输出Top10，并标注每条结论来源。",
+    "httpStatus": 200,
+    "metrics": {
+      "dbHits": 8,
+      "ragHits": 5,
+      "webHits": 5,
+      "ragSupplierCount": 3,
+      "webSupplierCount": 0
+    },
+    "samples": {
+      "db": [
+        "天津力神电池股份有限公司",
+        "惠州亿纬锂能股份有限公司",
+        "西安爱派科电力电子有限公司",
+        "万向一二三股份公司",
+        "蜂巢能源科技股份有限公司"
+      ],
+      "rag": [
+        "宁德时代新能源科技股份有限公司",
+        "LG新能源",
+        "旗下德国AMK公司"
+      ],
+      "web": []
+    },
+    "webTool": {
+      "keyword": "请对已筛出的候选企业做寻源分析：按企业评分 资质排序 产品配套 生产基地 技术与专利 质量与口碑输出Top10 配套供应商 Tier1 汽车零部件",
+      "provider": "google_ai_overview",
+      "configuredSearchTool": "google_ai_overview",
+      "effectiveSearchTool": "google_ai_overview"
+    },
+    "answerHead": "【命中统计】\nDB结构化命中：8条\nRAG片段命中：5条\nWEB线索命中：5条（与供应商候选分开）\n## 结论\n已完成初筛，建议按证据相关度推进候选核验。\n\n## 命中统计\n- DB结构化命中：8条\n- RAG片段命中：5条\n\n## 候选供应商TopN表\n| 排名 | 供应商 | 关联主机厂 | 结论等级 | Rerank分 | 证据强度 | 主要依据 | 风险/缺口 | 建议动作 | 可追溯链接 |\n|---|---|---|---|---:|---:|---|---|---|---|\n| 1 | 天津力神电池股份有限公司 | - | 中 | 1.50 | 7.20 | 公司简介命中（高相关） | 待补充认证/联系方式 | 核验并补全 | - |\n| 2 | 惠州亿纬锂能股份有限公司 | - | 中 | 1.50 | 5.60 | 公司简介命中（高相关） | 待补充认证/联系方式 | 核验并补全 | - |\n| 3 | 西安爱派科电力电子有限公司 | - | 中 | 1.50 | 4.00 | 公司简介命中（高相关） | 待补充认证/联系方式 | 核验并补全 | - |\n| 4 | "
+  },
+  {
+    "index": 7,
+    "query": "请筛选“有直接配套客户或间接配套客户记录”的ADAS/电芯相关供应商，并输出配套关系、认证体系、经营信息完整度。",
+    "error": "AbortError:This operation was aborted"
+  },
+  {
+    "index": 8,
+    "query": "请筛选“经营信息+认证信息+专利信息”三项都不为空的功率半导体/电磁阀供应商，输出优先推荐名单与推荐依据。",
+    "error": "AbortError:This operation was aborted"
+  }
+]

@@ -1,26 +1,49 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Button, Card, Input, Select, Space, Table, Typography, message } from 'antd'
+import { Button, Card, Input, Select, Space, Switch, Table, Typography, message } from 'antd'
 import { fetchSearchSettings, saveSearchSettings } from '../api/searchSettingsApi'
 
 const { Text } = Typography
 
 const DEFAULT_SITES = [
-  'i.gasgoo.com',
-  'auto.gasgoo.com',
-  'qcgys.com',
-  'marklines.com',
-  'globalnevs.com',
-  'd1ev.com',
-  'evpartner.com',
-  'ecaigou.com',
+  { domain: 'i.gasgoo.com', enabled: true },
+  { domain: 'auto.gasgoo.com', enabled: true },
+  { domain: 'qcgys.com', enabled: true },
+  { domain: 'marklines.com', enabled: true },
+  { domain: 'globalnevs.com', enabled: true },
+  { domain: 'd1ev.com', enabled: true },
+  { domain: 'evpartner.com', enabled: true },
+  { domain: 'ecaigou.com', enabled: true },
 ]
+
+const TOOL_OPTIONS = [
+  { label: 'Google AI Overview API', value: 'google_ai_overview' },
+  { label: 'Google Search API', value: 'google_search' },
+  { label: 'Google Light Search API', value: 'google_light' },
+  { label: 'Bing Search API', value: 'bing_search' },
+  { label: 'Baidu Search API', value: 'baidu_search' },
+  { label: 'DuckDuckGo Search API', value: 'duckduckgo' },
+]
+
+function normalizeSiteRows(list = []) {
+  const raw = Array.isArray(list) ? list : []
+  const rows = raw
+    .map((item) => (item && typeof item === 'object'
+      ? { domain: String(item.domain || '').trim().toLowerCase(), enabled: item.enabled !== false }
+      : { domain: String(item || '').trim().toLowerCase(), enabled: true }))
+    .filter((item) => item.domain)
+  return rows.length > 0 ? rows : DEFAULT_SITES.map((item) => ({ ...item }))
+}
 
 export default function SearchSettingsPage() {
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [searchTool, setSearchTool] = useState('google_ai_overview')
   const [apiKey, setApiKey] = useState('')
+  const [siteWhitelistEnabled, setSiteWhitelistEnabled] = useState(false)
   const [sites, setSites] = useState(DEFAULT_SITES)
+
+  const isAiOverview = searchTool === 'google_ai_overview'
+  const whitelistEditable = !isAiOverview && siteWhitelistEnabled
 
   useEffect(() => {
     let mounted = true
@@ -29,10 +52,11 @@ export default function SearchSettingsPage() {
       try {
         const data = await fetchSearchSettings()
         if (!mounted) return
-        setSearchTool(String(data?.searchTool || 'google_ai_overview'))
+        const nextTool = String(data?.searchTool || 'google_ai_overview')
+        setSearchTool(nextTool)
         setApiKey(String(data?.apiKey || ''))
-        const list = Array.isArray(data?.siteWhitelist) ? data.siteWhitelist : DEFAULT_SITES
-        setSites(list.map((x) => String(x || '').trim()).filter(Boolean))
+        setSiteWhitelistEnabled(nextTool === 'google_ai_overview' ? false : data?.siteWhitelistEnabled !== false)
+        setSites(normalizeSiteRows(data?.siteWhitelist))
       } catch (error) {
         message.error(`加载搜索配置失败：${error.message || error}`)
       } finally {
@@ -43,16 +67,29 @@ export default function SearchSettingsPage() {
     return () => { mounted = false }
   }, [])
 
-  const tableData = useMemo(() => sites.map((site, idx) => ({ key: `${idx}`, site })), [sites])
+  useEffect(() => {
+    if (isAiOverview) setSiteWhitelistEnabled(false)
+  }, [isAiOverview])
+
+  const tableData = useMemo(
+    () => sites.map((item, idx) => ({ key: `${idx}`, domain: item.domain, enabled: item.enabled !== false })),
+    [sites],
+  )
 
   const onAddEmptySiteRow = () => {
-    setSites((prev) => [...prev, ''])
+    setSites((prev) => [...prev, { domain: '', enabled: true }])
   }
 
   const onUpdateSite = (index, value) => {
-    const next = [...sites]
-    next[index] = String(value || '').trim().toLowerCase()
-    setSites(next)
+    setSites((prev) => prev.map((item, idx) => (
+      idx === index
+        ? { ...item, domain: String(value || '').trim().toLowerCase() }
+        : item
+    )))
+  }
+
+  const onToggleSite = (index, enabled) => {
+    setSites((prev) => prev.map((item, idx) => (idx === index ? { ...item, enabled: enabled === true } : item)))
   }
 
   const onDeleteSite = (index) => {
@@ -62,12 +99,27 @@ export default function SearchSettingsPage() {
   const onSave = async () => {
     setSaving(true)
     try {
+      const dedup = new Map()
+      for (const item of sites) {
+        const domain = String(item?.domain || '').trim().toLowerCase()
+        if (!domain) continue
+        if (!dedup.has(domain)) {
+          dedup.set(domain, { domain, enabled: item?.enabled !== false })
+          continue
+        }
+        const current = dedup.get(domain)
+        dedup.set(domain, { domain, enabled: Boolean(current?.enabled || item?.enabled) })
+      }
       const payload = {
         searchTool: String(searchTool || 'google_ai_overview'),
         apiKey: String(apiKey || '').trim(),
-        siteWhitelist: Array.from(new Set(sites.map((x) => String(x || '').trim().toLowerCase()).filter(Boolean))),
+        siteWhitelistEnabled: isAiOverview ? false : siteWhitelistEnabled === true,
+        siteWhitelist: Array.from(dedup.values()),
       }
-      await saveSearchSettings(payload)
+      const saved = await saveSearchSettings(payload)
+      setSearchTool(String(saved?.searchTool || payload.searchTool))
+      setSiteWhitelistEnabled(saved?.searchTool === 'google_ai_overview' ? false : saved?.siteWhitelistEnabled === true)
+      setSites(normalizeSiteRows(saved?.siteWhitelist))
       message.success('搜索配置已保存')
     } catch (error) {
       message.error(`保存搜索配置失败：${error.message || error}`)
@@ -85,9 +137,9 @@ export default function SearchSettingsPage() {
               <Text strong>搜索工具</Text>
               <div style={{ marginTop: 8 }}>
                 <Select
-                  style={{ width: 260 }}
+                  style={{ width: 320 }}
                   value={searchTool}
-                  options={[{ label: 'Google AI Overview', value: 'google_ai_overview' }, { label: 'SerpApi', value: 'serpapi' }]}
+                  options={TOOL_OPTIONS}
                   onChange={setSearchTool}
                 />
               </div>
@@ -96,7 +148,7 @@ export default function SearchSettingsPage() {
               <Text strong>API Key</Text>
               <div style={{ marginTop: 8 }}>
                 <Input.Password
-                  placeholder="请输入 SerpApi API Key（Google AI Overview 同样使用）"
+                  placeholder="请输入搜索 API Key"
                   value={apiKey}
                   onChange={(e) => setApiKey(e.target.value)}
                   autoComplete="off"
@@ -106,10 +158,19 @@ export default function SearchSettingsPage() {
           </Space>
         </div>
 
-        <div>
+        <div style={{ opacity: isAiOverview ? 0.55 : 1 }}>
           <Space style={{ width: '100%', justifyContent: 'space-between' }}>
-            <Text strong>搜索网站白名单</Text>
-            <Button size="small" onClick={onAddEmptySiteRow}>新增空行</Button>
+            <Space>
+              <Text strong>搜索网站白名单</Text>
+              <Switch
+                checked={siteWhitelistEnabled}
+                disabled={isAiOverview}
+                onChange={setSiteWhitelistEnabled}
+              />
+            </Space>
+            <Button size="small" onClick={onAddEmptySiteRow} disabled={!whitelistEditable}>
+              新增空行
+            </Button>
           </Space>
           <Table
             style={{ marginTop: 10 }}
@@ -119,12 +180,25 @@ export default function SearchSettingsPage() {
             columns={[
               {
                 title: '域名',
-                dataIndex: 'site',
-                key: 'site',
+                dataIndex: 'domain',
+                key: 'domain',
                 render: (_value, row, idx) => (
                   <Input
-                    value={row.site}
+                    value={row.domain}
                     onChange={(e) => onUpdateSite(idx, e.target.value)}
+                    disabled={!whitelistEditable}
+                  />
+                ),
+              },
+              {
+                title: '启用',
+                key: 'enabled',
+                width: 120,
+                render: (_value, row, idx) => (
+                  <Switch
+                    checked={row.enabled}
+                    disabled={!whitelistEditable}
+                    onChange={(checked) => onToggleSite(idx, checked)}
                   />
                 ),
               },
@@ -133,7 +207,7 @@ export default function SearchSettingsPage() {
                 key: 'action',
                 width: 120,
                 render: (_value, _row, idx) => (
-                  <Button danger size="small" onClick={() => onDeleteSite(idx)}>
+                  <Button danger size="small" disabled={!whitelistEditable} onClick={() => onDeleteSite(idx)}>
                     删除
                   </Button>
                 ),

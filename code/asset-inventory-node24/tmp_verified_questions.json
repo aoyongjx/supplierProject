@@ -1,0 +1,34 @@
+[
+  {
+    "q": "筛选动力电池/电芯相关供应商，返回企业名称、主营产品、质量体系、数据来源。",
+    "err": "AbortError:This operation was aborted"
+  },
+  {
+    "q": "筛选电驱电控相关供应商，返回企业名称、配套客户信息、认证信息、来源链接。",
+    "err": "AbortError:This operation was aborted"
+  },
+  {
+    "q": "筛选IGBT/功率半导体相关供应商，返回企业名称、产品类别、认证信息、联系方式与来源。",
+    "err": "AbortError:This operation was aborted"
+  },
+  {
+    "q": "筛选具备IATF16949或ISO9001认证的汽车零部件供应商，返回企业名称、认证信息、主营产品、来源。",
+    "err": "AbortError:This operation was aborted"
+  },
+  {
+    "q": "筛选有配套客户记录的传感器相关供应商，返回企业名称、配套关系、主营产品、来源。",
+    "err": "AbortError:This operation was aborted"
+  },
+  {
+    "q": "筛选具备生产基地信息且有认证记录的供应商，返回企业名称、生产基地、认证体系、来源。",
+    "err": "AbortError:This operation was aborted"
+  },
+  {
+    "q": "筛选BMS/电池管理系统相关供应商，返回企业名称、主营产品、认证信息、来源。",
+    "err": "AbortError:This operation was aborted"
+  },
+  {
+    "q": "筛选可联系（联系方式不为空）且有配套信息的供应商，返回企业名称、联系方式、配套关系、来源。",
+    "err": "AbortError:This operation was aborted"
+  }
+]

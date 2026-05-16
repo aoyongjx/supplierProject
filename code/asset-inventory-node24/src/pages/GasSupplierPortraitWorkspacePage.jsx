@@ -542,17 +542,51 @@ function GasSupplierPortraitWorkspacePage() {
     return walk(supplyChainTree) || `节点ID:${selectedNodeId}`
   }, [selectedNodeId, supplyChainTree])
 
+  const selectedNodeWithDescendantIds = useMemo(() => {
+    const selectedId = Number(selectedNodeId)
+    if (!Number.isInteger(selectedId) || selectedId <= 0) return new Set()
+    const ids = new Set()
+    const walk = (nodes = []) => {
+      for (const node of nodes) {
+        const nodeId = Number(node.id || node.value)
+        if (!Number.isInteger(nodeId) || nodeId <= 0) continue
+        ids.add(nodeId)
+        walk(node.children || [])
+      }
+    }
+    const findAndCollect = (nodes = []) => {
+      for (const node of nodes) {
+        const nodeId = Number(node.id || node.value)
+        if (nodeId === selectedId) {
+          ids.add(nodeId)
+          walk(node.children || [])
+          return true
+        }
+        if (findAndCollect(node.children || [])) return true
+      }
+      return false
+    }
+    findAndCollect(supplyChainTree)
+    return ids
+  }, [selectedNodeId, supplyChainTree])
+
   const visibleProfiles = useMemo(() => {
     const keyword = modalKeyword.trim().toLowerCase()
     if (!selectedNodeId) return []
     return profiles.filter((item) => {
-      const byNode = (Array.isArray(item.relatedNodeIds) ? item.relatedNodeIds : []).map((v) => Number(v)).includes(Number(selectedNodeId))
+      const relatedNodeIds = Array.isArray(item.relatedNodeIds) ? item.relatedNodeIds : []
+      const normalizedNodeIds = relatedNodeIds.map((v) => Number(v)).filter((v) => Number.isInteger(v) && v > 0)
+      const singleRelatedNodeId = Number(item.relatedNodeId)
+      if (Number.isInteger(singleRelatedNodeId) && singleRelatedNodeId > 0 && !normalizedNodeIds.includes(singleRelatedNodeId)) {
+        normalizedNodeIds.push(singleRelatedNodeId)
+      }
+      const byNode = normalizedNodeIds.some((nodeId) => selectedNodeWithDescendantIds.has(nodeId))
       if (!byNode) return false
       if (!keyword) return true
       const name = String(item.companyName || '').toLowerCase()
       return name.includes(keyword)
     })
-  }, [profiles, selectedNodeId, modalKeyword])
+  }, [profiles, selectedNodeId, selectedNodeWithDescendantIds, modalKeyword])
 
   const confirmSelect = async () => {
     const row = visibleProfiles.find((item) => Number(item.id) === Number(selectedProfileId))
@@ -664,7 +698,7 @@ function GasSupplierPortraitWorkspacePage() {
       <Modal
         title="选择GAS供应商"
         open={searchOpen}
-        width={980}
+        width={1180}
         footer={[
           <Button key="cancel" onClick={() => setSearchOpen(false)}>取消</Button>,
           <Button key="ok" type="primary" onClick={confirmSelect}>确认选择</Button>,
@@ -684,7 +718,7 @@ function GasSupplierPortraitWorkspacePage() {
             onChange={(event) => setModalKeyword(event.target.value)}
           />
           <Row gutter={12}>
-            <Col span={9}>
+            <Col span={8}>
               <div style={{ border: '1px solid #f0f0f0', borderRadius: 8, minHeight: 420, maxHeight: 420, overflow: 'auto', padding: 8 }}>
                 {listLoading ? <Spin /> : (
                   <Tree
@@ -696,34 +730,39 @@ function GasSupplierPortraitWorkspacePage() {
                 )}
               </div>
             </Col>
-            <Col span={15}>
-              <div style={{ border: '1px solid #f0f0f0', borderRadius: 8, minHeight: 420, maxHeight: 420, overflow: 'auto', padding: 8 }}>
+            <Col span={16}>
+              <div style={{ border: '1px solid #f0f0f0', borderRadius: 8, minHeight: 420, maxHeight: 420, overflow: 'hidden', padding: 0, background: '#fff' }}>
                 {listLoading ? <Spin /> : (
                   selectedNodeId ? (
-                    <div style={{ width: '100%' }}>
-                      <div style={{ display: 'grid', gridTemplateColumns: '28px 2fr 1fr 1fr', gap: 12, padding: '0 4px 8px', color: '#6b7280' }}>
+                    <div style={{ width: '100%', height: 420, overflowY: 'auto', overflowX: 'hidden' }}>
+                      <div style={{ position: 'sticky', top: 0, zIndex: 2, display: 'grid', gridTemplateColumns: '28px minmax(220px, 2fr) minmax(120px, 0.9fr) minmax(180px, 1.2fr)', gap: 12, padding: '10px 12px', color: '#6b7280', background: '#fafafa', borderBottom: '1px solid #f0f0f0', fontWeight: 600 }}>
                         <span />
                         <span>供应商名称</span>
                         <span>供应链节点</span>
-                        <span>年销售额</span>
+                        <span>统一社会信用代码</span>
                       </div>
                       <Radio.Group
                         style={{ width: '100%' }}
                         value={selectedProfileId}
                         onChange={(event) => setSelectedProfileId(Number(event.target.value))}
                       >
-                        <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                        <Space direction="vertical" size={0} style={{ width: '100%' }}>
                           {visibleProfiles.map((item) => (
-                            <Radio key={item.id} value={Number(item.id)} style={{ width: '100%' }}>
-                              <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr', gap: 12, width: '100%' }}>
-                                <span>
+                            <Radio key={item.id} value={Number(item.id)} style={{ width: '100%', margin: 0, padding: '10px 12px', borderBottom: '1px solid #f5f5f5' }}>
+                              <div style={{ display: 'grid', gridTemplateColumns: 'minmax(220px, 2fr) minmax(120px, 0.9fr) minmax(180px, 1.2fr)', gap: 12, width: '100%', alignItems: 'center' }}>
+                                <span title={item.companyName || `ID:${item.id}`} style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', lineHeight: '22px', fontWeight: 500 }}>
                                   {item.companyName || `ID:${item.id}`}
                                   {Number(item.id) === Number(committedProfileId) ? (
                                     <Tag color="blue" style={{ marginLeft: 8 }}>已选中</Tag>
                                   ) : null}
                                 </span>
-                                <span>{item.relatedNodeName || '-'}</span>
-                                <span>{item.businessInfo?.['年销售额'] || item.businessInfo?.annualSales || '-'}</span>
+                                <span title={item.relatedNodeName || '-'} style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: '#475569' }}>{item.relatedNodeName || '-'}</span>
+                                <span
+                                  title={item.unifiedSocialCreditCode || item.orgCode || item.industrialCommercialInfo?.['统一社会信用代码'] || '-'}
+                                  style={{ color: '#0f766e', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+                                >
+                                  {item.unifiedSocialCreditCode || item.orgCode || item.industrialCommercialInfo?.['统一社会信用代码'] || '-'}
+                                </span>
                               </div>
                             </Radio>
                           ))}

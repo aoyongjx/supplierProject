@@ -40,3 +40,8 @@
 - 完成代码或配置改动后，至少执行与改动直接相关的验证。
 - 最低要求：检查 diff，并运行必要的 `build`、`lint`、`test` 或针对性命令。
 - 无法验证时，必须明确说明阻塞原因与当前风险。
+
+## Unified Constitution (Required)
+
+- 每次任务开始前，必须先读取并执行：`E:\workspaceCodeing\CODING_CONSTITUTION.md`
+- 若本文件与统一宪章存在细节重叠，按“更严格者优先”执行。

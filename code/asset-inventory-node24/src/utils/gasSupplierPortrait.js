@@ -49,12 +49,12 @@ export const GAS_PORTRAIT_SETTING_STORAGE_KEY = 'gas-portrait-score-settings'
 export const GAS_PORTRAIT_PRESETS = {
   balanced: {
     label: '均衡型',
-    weights: { quality: 45, risk: 35, activity: 20 },
-    dimensionWeights: { b: 18, c: 12, d: 14, e: 12, f: 10, g: 8, h: 10, i: 8, j: 4, k: 4 },
+    weights: { quality: 50, risk: 25, activity: 25 },
+    dimensionWeights: { b: 24, c: 8, d: 20, e: 10, f: 8, g: 6, h: 8, i: 6, j: 4, k: 6 },
     threshold: {
-      employees: { good: 1000, mid: 300 },
-      rd: { good: 120, mid: 30 },
-      salesYi: { good: 20, mid: 5 },
+      employees: { good: 800, mid: 200 },
+      rd: { good: 80, mid: 20 },
+      salesYi: { good: 12, mid: 2 },
       certCount: { good: 3, mid: 1 },
       oemCount: { good: 4, mid: 1 },
       productCaseCount: { good: 10, mid: 3 },
@@ -67,8 +67,8 @@ export const GAS_PORTRAIT_PRESETS = {
       tradeCreditCount: { good: 8, mid: 2 },
       licenseCount: { good: 6, mid: 2 },
       gsLicenseCount: { good: 5, mid: 2 },
-      insuredCount: { good: 500, mid: 100 },
-      registeredCapitalYi: { good: 10, mid: 2 },
+      insuredCount: { good: 300, mid: 60 },
+      registeredCapitalYi: { good: 6, mid: 1 },
       courtCount: { high: 5, mid: 2 },
       industrialFilledRatio: { good: 0.8, mid: 0.5 },
     },
@@ -125,6 +125,39 @@ export const GAS_PORTRAIT_PRESETS = {
       industrialFilledRatio: { good: 0.75, mid: 0.45 },
     },
   },
+}
+
+const LEGACY_BALANCED_WEIGHTS = { quality: 45, risk: 35, activity: 20 }
+const LEGACY_BALANCED_DIMENSION_WEIGHTS = { b: 18, c: 12, d: 14, e: 12, f: 10, g: 8, h: 10, i: 8, j: 4, k: 4 }
+const LEGACY_BALANCED_THRESHOLD = {
+  employees: { good: 1000, mid: 300 },
+  rd: { good: 120, mid: 30 },
+  salesYi: { good: 20, mid: 5 },
+  insuredCount: { good: 500, mid: 100 },
+  registeredCapitalYi: { good: 10, mid: 2 },
+}
+
+function sameNumberMap(actual = {}, expected = {}) {
+  const keys = Object.keys(expected)
+  if (keys.length === 0) return false
+  return keys.every((key) => Number(actual?.[key]) === Number(expected[key]))
+}
+
+function sameThresholdMap(actual = {}, expected = {}) {
+  const keys = Object.keys(expected)
+  if (keys.length === 0) return false
+  return keys.every((key) => (
+    Number(actual?.[key]?.good) === Number(expected[key].good)
+    && Number(actual?.[key]?.mid) === Number(expected[key].mid)
+  ))
+}
+
+function shouldMigrateLegacyBalancedConfig(presetKey, weights, dimensionWeights, threshold) {
+  if (presetKey !== 'balanced') return false
+  const hitLegacyWeights = sameNumberMap(weights, LEGACY_BALANCED_WEIGHTS)
+  const hitLegacyDimensions = sameNumberMap(dimensionWeights, LEGACY_BALANCED_DIMENSION_WEIGHTS)
+  const hitLegacyThreshold = sameThresholdMap(threshold, LEGACY_BALANCED_THRESHOLD)
+  return hitLegacyWeights && hitLegacyDimensions && hitLegacyThreshold
 }
 
 export function normalizePortraitWeights(input = {}) {
@@ -185,12 +218,18 @@ export function readPortraitSettings() {
 export function savePortraitSettings(input = {}) {
   const presetKey = input?.presetKey && GAS_PORTRAIT_PRESETS[input.presetKey] ? input.presetKey : 'balanced'
   const preset = GAS_PORTRAIT_PRESETS[presetKey]
-  const weights = normalizePortraitWeights(input?.weights || preset.weights)
+  const inputWeights = input?.weights || preset.weights
+  const inputDimensionWeights = input?.dimensionWeights || preset.dimensionWeights
+  const inputThreshold = input?.threshold || preset.threshold
+  const migrated = shouldMigrateLegacyBalancedConfig(presetKey, inputWeights, inputDimensionWeights, inputThreshold)
+  const weights = normalizePortraitWeights(migrated ? preset.weights : inputWeights)
+  const dimensionWeights = migrated ? preset.dimensionWeights : inputDimensionWeights
+  const threshold = migrated ? preset.threshold : inputThreshold
   const saved = {
     preset: presetKey,
     weights,
-    dimensionWeights: input?.dimensionWeights || preset.dimensionWeights,
-    threshold: input?.threshold || preset.threshold,
+    dimensionWeights,
+    threshold,
     thresholdByPreset: input?.thresholdByPreset || {},
     fieldWeightsByPreset: input?.fieldWeightsByPreset || {},
   }

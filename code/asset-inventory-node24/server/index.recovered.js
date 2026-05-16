@@ -8538,7 +8538,8 @@ async function importSupplierProfileRows(records) {
               WHEN $30::jsonb <> '{}'::jsonb
                 AND (
                   business_info = '{}'::jsonb
-                  OR jsonb_object_length($30::jsonb) >= jsonb_object_length(business_info)
+                  OR (SELECT COUNT(*) FROM jsonb_object_keys($30::jsonb))
+                     >= (SELECT COUNT(*) FROM jsonb_object_keys(business_info))
                 )
               THEN $30::jsonb
               ELSE business_info
@@ -8547,7 +8548,8 @@ async function importSupplierProfileRows(records) {
               WHEN $31::jsonb <> '{}'::jsonb
                 AND (
                   industrial_commercial_info = '{}'::jsonb
-                  OR jsonb_object_length($31::jsonb) >= jsonb_object_length(industrial_commercial_info)
+                  OR (SELECT COUNT(*) FROM jsonb_object_keys($31::jsonb))
+                     >= (SELECT COUNT(*) FROM jsonb_object_keys(industrial_commercial_info))
                 )
               THEN $31::jsonb
               ELSE industrial_commercial_info
@@ -18424,4 +18426,3 @@ async function bootstrap() {
 }
 
 bootstrap()
-

@@ -165,3 +165,32 @@
 - 每次改动后必须先做本地自验证（接口可返回、耗时可接受）再交付。
 - Web 检索要求：优先可用结果，不允许出现明显噪声页（如 `robots.txt`、论坛/问答页）直接进入候选展示。
 - 若召回不足：先保证“有结果返回”，再逐步提升质量；禁止以“空白/无结果”交付。
+
+## 15. GAS供应链同步纠偏记忆（2026-05-12）
+
+- 用户明确约束：只修改 `GAS供应链同步/供应链爬取` 逻辑，严禁改动“获取供应商/供应商档案”爬取代码。
+- URL 约束：供应链同步必须保留用户输入原始 URL（尤其 `.../supplier/boom/c-xxxx.html`），禁止在任务创建阶段强制改写为非 boom 链接。
+- 会话约束：用户会手动在 Chrome 打开 `i.gasgoo.com` 解决登录/验证码。抓取端应优先复用该会话，避免无谓跳转到社区/错误页。
+- 失败诊断优先级：先查任务日志 `runLogs` 与 `sourceUrl/actualUrl/targetId`，禁止先做大范围重构。
+- 解析目标：供应链需要支持 1~5 级节点；`li > ol` 与 `div.*Leven > ol` 两类结构都要覆盖。
+- 入库目标：必须 `saveOrUpdate`，重复抓取不应生成孤立分支；父子关系应按层级路径（lineage/level tags）优先关联。
+- 脏数据处理：若历史重复节点导致树显示异常，应先做同分支去重与子树合并，再验证前端展示。
+- 交付标准：助手需先自测（以 `https://i.gasgoo.com/supplier/boom/c-9423.html` 为回归 URL）并给出可核验结果，再让用户复测。
+- 沟通纠偏：避免“补丁叠补丁”式解释；优先给出根因、影响范围、最小修复与验证结果。
+
+## 16. 精准寻源 WEB/RAG 稳定性红线（2026-05-14）
+
+- 严禁再出现“WEB 搜索工具配置读取链路错误”：
+  - `queryStatements.web.provider` 不允许写死常量（如 `serpapi`）。
+  - 必须同时回传并展示三项：`configuredSearchTool`（配置值）、`effectiveSearchTool`（实际执行）、`provider聚合`（命中来源分布）。
+- `google_ai_overview` 约束：
+  - 未启用站点白名单时，禁止拼接 `site:` 查询约束，避免污染 AIO 查询。
+  - 若配置为 `google_ai_overview`，返回结果不得混入非 AIO provider；出现即视为错误。
+- RAG 多知识库约束：
+  - 必须回传 `selectedKbIds` 与 `hitCountByKb(totalHits/supplierHits)`，用于确认用户勾选库是否被真实覆盖。
+  - 禁止因后处理误杀真实企业简称（如“宁德时代”）；企业判定应“语义通过优先 + 泛词拦截 + OEM剔除”。
+- 交付门槛（发布前必做）：
+  1. 用真实查询词做一次端到端自测（至少含 DB+RAG+WEB）。
+  2. 检查返回中 `configured/effective/provider` 一致性。
+  3. 检查 `hitCountByKb` 覆盖所有已选知识库。
+  4. 抽检 5 个候选，确保无“保证公司/相关公司/行业公司”等伪实体。
