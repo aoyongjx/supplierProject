@@ -2590,6 +2590,7 @@ async function initDatabase() {
 
     CREATE TABLE IF NOT EXISTS ${searchConfigTable} (
       id SMALLINT PRIMARY KEY DEFAULT 1,
+      service_provider VARCHAR(16) NOT NULL DEFAULT 'serpapi',
       search_tool VARCHAR(32) NOT NULL DEFAULT 'serpapi',
       api_key TEXT NOT NULL DEFAULT '3792a177349a630c263994796a6c461fd503273f1fe704a18bea7398b078e7be',
       site_whitelist_enabled BOOLEAN NOT NULL DEFAULT FALSE,
@@ -2632,6 +2633,7 @@ async function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_supplier_cert_dict_sort ON ${supplierCertDictTable}(sort_order ASC, id ASC);
     CREATE INDEX IF NOT EXISTS idx_gas_supplier_portrait_setting_updated_at ON ${gasSupplierPortraitSettingTable}(updated_at DESC);
     CREATE INDEX IF NOT EXISTS idx_search_config_updated_at ON ${searchConfigTable}(updated_at DESC);
+    ALTER TABLE ${searchConfigTable} ADD COLUMN IF NOT EXISTS service_provider VARCHAR(16) NOT NULL DEFAULT 'serpapi';
     ALTER TABLE ${searchConfigTable} ADD COLUMN IF NOT EXISTS site_whitelist_enabled BOOLEAN NOT NULL DEFAULT FALSE;
     DROP INDEX IF EXISTS idx_supply_chain_node_unique;
     CREATE UNIQUE INDEX IF NOT EXISTS idx_supply_chain_node_unique
@@ -17351,22 +17353,158 @@ app.put('/api/search-settings', authMiddleware, async (req, res) => {
     const normalized = normalizeSearchSettings(req.body || {})
     await pool.query(
       `
-      INSERT INTO ${searchConfigTable} (id, search_tool, api_key, site_whitelist_enabled, site_whitelist_json, updated_at)
-      VALUES (1, $1, $2, $3, $4::jsonb, NOW())
+      INSERT INTO ${searchConfigTable} (id, service_provider, search_tool, api_key, site_whitelist_enabled, site_whitelist_json, updated_at)
+      VALUES (1, $1, $2, $3, $4, $5::jsonb, NOW())
       ON CONFLICT (id)
       DO UPDATE SET
+        service_provider = EXCLUDED.service_provider,
         search_tool = EXCLUDED.search_tool,
         api_key = EXCLUDED.api_key,
         site_whitelist_enabled = EXCLUDED.site_whitelist_enabled,
         site_whitelist_json = EXCLUDED.site_whitelist_json,
         updated_at = NOW()
       `,
-      [normalized.searchTool, normalized.apiKey, normalized.siteWhitelistEnabled === true, JSON.stringify(normalized.siteWhitelist || [])],
+      [normalized.serviceProvider, normalized.searchTool, normalized.apiKey, normalized.siteWhitelistEnabled === true, JSON.stringify(normalized.siteWhitelist || [])],
     )
     const merged = { ...defaultSearchSettings, ...normalized }
     return res.json({ code: 200, message: 'success', data: merged })
   } catch (error) {
     return res.status(500).json({ code: 500, message: `保存搜索设置失败: ${error.message}`, data: null })
+  }
+})
+
+app.post('/api/search-settings/test', authMiddleware, async (req, res) => {
+  try {
+    const serviceProvider = toText(req.body?.serviceProvider || defaultSearchSettings.serviceProvider).toLowerCase() === 'serper'
+      ? 'serper'
+      : 'serpapi'
+    const searchTool = toText(req.body?.searchTool || defaultSearchSettings.searchTool).toLowerCase()
+    const apiKey = toText(req.body?.apiKey || process.env.SERPAPI_API_KEY || '')
+    const keyword = toText(req.body?.keyword || '汽车供应商')
+    if (!apiKey) {
+      return res.status(400).json({ code: 400, message: 'API Key 为空，请先填写并保存', data: null })
+    }
+    const engineMap = {
+      google_ai_overview: 'google',
+      google_search: 'google',
+      google_light: 'google_light',
+      bing_search: 'bing',
+      baidu_search: 'baidu',
+      duckduckgo: 'duckduckgo',
+    }
+    if (serviceProvider === 'serper') {
+      const endpoint = 'https://google.serper.dev/search'
+      const resp = await fetchByNetworkPolicy(endpoint, {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+          'X-API-KEY': apiKey,
+        },
+        body: JSON.stringify({
+          q: keyword,
+          num: 5,
+          gl: 'cn',
+          hl: 'zh-cn',
+        }),
+      })
+      const payload = await resp.json().catch(() => ({}))
+      if (!resp.ok) {
+        const detail = toText(payload?.message || payload?.error || `HTTP ${resp.status}`)
+        return res.status(500).json({ code: 500, message: `测试失败: ${detail}`, data: null })
+      }
+      const rows = Array.isArray(payload?.organic) ? payload.organic : []
+      const sample = rows.slice(0, 5).map((item) => ({
+        title: toText(item?.title),
+        url: toText(item?.link),
+        snippet: toText(item?.snippet),
+      }))
+      return res.json({
+        code: 200,
+        message: 'success',
+        data: {
+          ok: true,
+          serviceProvider,
+          tool: searchTool,
+          engine: 'serper-google-search',
+          totalHits: rows.length,
+          sample,
+        },
+      })
+    }
+    const engine = toText(engineMap[searchTool] || 'google')
+    const endpoint = `https://serpapi.com/search.json?engine=${encodeURIComponent(engine)}&hl=zh-cn&gl=cn&num=5&q=${encodeURIComponent(keyword)}&api_key=${encodeURIComponent(apiKey)}`
+    const resp = await fetchByNetworkPolicy(endpoint, { method: 'GET', headers: { Accept: 'application/json' } })
+    const payload = await resp.json().catch(() => ({}))
+    if (!resp.ok) {
+      const detail = toText(payload?.error || payload?.message || `HTTP ${resp.status}`)
+      return res.status(500).json({ code: 500, message: `测试失败: ${detail}`, data: null })
+    }
+    const rows = Array.isArray(payload?.organic_results) ? payload.organic_results : []
+    const sample = rows.slice(0, 5).map((item) => ({
+      title: toText(item?.title),
+      url: toText(item?.link || item?.displayed_link),
+      snippet: toText(item?.snippet),
+    }))
+    return res.json({
+      code: 200,
+      message: 'success',
+      data: {
+        ok: true,
+        serviceProvider,
+        tool: searchTool,
+        engine,
+        totalHits: rows.length,
+        sample,
+      },
+    })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `搜索测试失败: ${error.message}`, data: null })
+  }
+})
+
+app.post('/api/search-settings/quota', authMiddleware, async (req, res) => {
+  try {
+    const serviceProvider = toText(req.body?.serviceProvider || defaultSearchSettings.serviceProvider).toLowerCase() === 'serper'
+      ? 'serper'
+      : 'serpapi'
+    const searchTool = toText(req.body?.searchTool || defaultSearchSettings.searchTool).toLowerCase()
+    const apiKey = toText(req.body?.apiKey || process.env.SERPAPI_API_KEY || '')
+    if (!apiKey) {
+      return res.status(400).json({ code: 400, message: 'API Key 为空，请先填写并保存', data: null })
+    }
+    if (serviceProvider === 'serper') {
+      // Serper currently does not expose a stable public quota endpoint like SerpAPI account.json.
+      return res.json({
+        code: 200,
+        message: 'success',
+        data: {
+          serviceProvider,
+          tool: searchTool,
+          quota: {
+            note: 'Serper 暂无统一公开额度查询接口，请在 Serper 控制台查看用量。',
+          },
+        },
+      })
+    }
+    const endpoint = `https://serpapi.com/account.json?api_key=${encodeURIComponent(apiKey)}`
+    const resp = await fetchByNetworkPolicy(endpoint, { method: 'GET', headers: { Accept: 'application/json' } })
+    const payload = await resp.json().catch(() => ({}))
+    if (!resp.ok) {
+      const detail = toText(payload?.error || payload?.message || `HTTP ${resp.status}`)
+      return res.status(500).json({ code: 500, message: `额度查询失败: ${detail}`, data: null })
+    }
+    return res.json({
+      code: 200,
+      message: 'success',
+      data: {
+        serviceProvider,
+        tool: searchTool,
+        quota: payload,
+      },
+    })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `额度查询失败: ${error.message}`, data: null })
   }
 })
 
@@ -18704,6 +18842,7 @@ function normalizeSupplierWebQuery(input = '') {
 }
 
 const defaultSearchSettings = {
+  serviceProvider: 'serpapi',
   searchTool: 'google_ai_overview',
   apiKey: '',
   siteWhitelistEnabled: false,
@@ -18721,6 +18860,7 @@ const defaultSearchSettings = {
 
 function normalizeSearchSettings(input = {}) {
   const body = input && typeof input === 'object' ? input : {}
+  const providerRaw = toText(body.serviceProvider || 'serpapi').toLowerCase()
   const tool = toText(body.searchTool || 'google_ai_overview').toLowerCase()
   const apiKey = toText(body.apiKey || '')
   const sites = Array.isArray(body.siteWhitelist) ? body.siteWhitelist : []
@@ -18753,6 +18893,7 @@ function normalizeSearchSettings(input = {}) {
     normalizedSitesMap.set(domain, { domain, enabled: Boolean(current?.enabled || enabled) })
   }
   const normalizedSites = Array.from(normalizedSitesMap.values())
+  const serviceProvider = providerRaw === 'serper' ? 'serper' : 'serpapi'
   const normalizedTool = (
     tool === 'google_ai_overview'
     || tool === 'google_search'
@@ -18762,12 +18903,16 @@ function normalizeSearchSettings(input = {}) {
     || tool === 'duckduckgo'
     || tool === 'serpapi'
   ) ? tool : 'google_ai_overview'
-  const siteWhitelistEnabled = normalizedTool === 'google_ai_overview'
+  const providerAdjustedTool = serviceProvider === 'serper' && normalizedTool === 'google_ai_overview'
+    ? 'google_search'
+    : normalizedTool
+  const siteWhitelistEnabled = providerAdjustedTool === 'google_ai_overview'
     ? false
     : (typeof whitelistEnabledRaw === 'boolean' ? whitelistEnabledRaw : true)
   const fallbackSites = defaultSearchSettings.siteWhitelist.map((item) => ({ ...item }))
   return {
-    searchTool: normalizedTool,
+    serviceProvider,
+    searchTool: providerAdjustedTool,
     apiKey,
     siteWhitelistEnabled,
     siteWhitelist: normalizedSites.length > 0 ? normalizedSites : fallbackSites,
@@ -18777,7 +18922,7 @@ function normalizeSearchSettings(input = {}) {
 async function loadSearchSettings() {
   try {
     const result = await pool.query(
-      `SELECT search_tool AS "searchTool", api_key AS "apiKey", site_whitelist_enabled AS "siteWhitelistEnabled", site_whitelist_json AS "siteWhitelist" FROM ${searchConfigTable} WHERE id = 1 LIMIT 1`,
+      `SELECT service_provider AS "serviceProvider", search_tool AS "searchTool", api_key AS "apiKey", site_whitelist_enabled AS "siteWhitelistEnabled", site_whitelist_json AS "siteWhitelist" FROM ${searchConfigTable} WHERE id = 1 LIMIT 1`,
     )
     const row = result.rows[0]
     if (!row) {
@@ -18789,17 +18934,18 @@ async function loadSearchSettings() {
       const legacyNormalized = normalizeSearchSettings(legacyRaw)
       await pool.query(
         `
-        INSERT INTO ${searchConfigTable} (id, search_tool, api_key, site_whitelist_enabled, site_whitelist_json, updated_at)
-        VALUES (1, $1, $2, $3, $4::jsonb, NOW())
+        INSERT INTO ${searchConfigTable} (id, service_provider, search_tool, api_key, site_whitelist_enabled, site_whitelist_json, updated_at)
+        VALUES (1, $1, $2, $3, $4, $5::jsonb, NOW())
         ON CONFLICT (id)
         DO UPDATE SET
+          service_provider = EXCLUDED.service_provider,
           search_tool = EXCLUDED.search_tool,
           api_key = EXCLUDED.api_key,
           site_whitelist_enabled = EXCLUDED.site_whitelist_enabled,
           site_whitelist_json = EXCLUDED.site_whitelist_json,
           updated_at = NOW()
         `,
-        [legacyNormalized.searchTool, legacyNormalized.apiKey, legacyNormalized.siteWhitelistEnabled === true, JSON.stringify(legacyNormalized.siteWhitelist || [])],
+        [legacyNormalized.serviceProvider, legacyNormalized.searchTool, legacyNormalized.apiKey, legacyNormalized.siteWhitelistEnabled === true, JSON.stringify(legacyNormalized.siteWhitelist || [])],
       )
       return {
         ...defaultSearchSettings,
@@ -18809,6 +18955,7 @@ async function loadSearchSettings() {
     }
     const raw = row
       ? {
+          serviceProvider: row.serviceProvider,
           searchTool: row.searchTool,
           apiKey: row.apiKey,
           siteWhitelistEnabled: row.siteWhitelistEnabled,

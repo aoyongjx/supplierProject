@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Button, Card, Input, Select, Space, Switch, Table, Typography, message } from 'antd'
-import { fetchSearchSettings, saveSearchSettings } from '../api/searchSettingsApi'
+import { Button, Card, Input, Modal, Select, Space, Switch, Table, Typography, message } from 'antd'
+import { fetchSearchQuota, fetchSearchSettings, saveSearchSettings, testSearchSettings } from '../api/searchSettingsApi'
 
 const { Text } = Typography
 
@@ -23,6 +23,10 @@ const TOOL_OPTIONS = [
   { label: 'Baidu Search API', value: 'baidu_search' },
   { label: 'DuckDuckGo Search API', value: 'duckduckgo' },
 ]
+const PROVIDER_OPTIONS = [
+  { label: 'serpapi', value: 'serpapi' },
+  { label: 'serper', value: 'serper' },
+]
 
 function normalizeSiteRows(list = []) {
   const raw = Array.isArray(list) ? list : []
@@ -38,9 +42,15 @@ export default function SearchSettingsPage() {
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [searchTool, setSearchTool] = useState('google_ai_overview')
+  const [serviceProvider, setServiceProvider] = useState('serpapi')
   const [apiKey, setApiKey] = useState('')
   const [siteWhitelistEnabled, setSiteWhitelistEnabled] = useState(false)
   const [sites, setSites] = useState(DEFAULT_SITES)
+  const [testing, setTesting] = useState(false)
+  const [quotaLoading, setQuotaLoading] = useState(false)
+  const [resultText, setResultText] = useState('')
+  const [resultModalOpen, setResultModalOpen] = useState(false)
+  const [resultModalTitle, setResultModalTitle] = useState('执行结果')
 
   const isAiOverview = searchTool === 'google_ai_overview'
   const whitelistEditable = !isAiOverview && siteWhitelistEnabled
@@ -54,6 +64,7 @@ export default function SearchSettingsPage() {
         if (!mounted) return
         const nextTool = String(data?.searchTool || 'google_ai_overview')
         setSearchTool(nextTool)
+        setServiceProvider(String(data?.serviceProvider || 'serpapi'))
         setApiKey(String(data?.apiKey || ''))
         setSiteWhitelistEnabled(nextTool === 'google_ai_overview' ? false : data?.siteWhitelistEnabled !== false)
         setSites(normalizeSiteRows(data?.siteWhitelist))
@@ -70,6 +81,12 @@ export default function SearchSettingsPage() {
   useEffect(() => {
     if (isAiOverview) setSiteWhitelistEnabled(false)
   }, [isAiOverview])
+
+  useEffect(() => {
+    if (serviceProvider === 'serper' && searchTool === 'google_ai_overview') {
+      setSearchTool('google_search')
+    }
+  }, [serviceProvider, searchTool])
 
   const tableData = useMemo(
     () => sites.map((item, idx) => ({ key: `${idx}`, domain: item.domain, enabled: item.enabled !== false })),
@@ -111,12 +128,14 @@ export default function SearchSettingsPage() {
         dedup.set(domain, { domain, enabled: Boolean(current?.enabled || item?.enabled) })
       }
       const payload = {
+        serviceProvider: String(serviceProvider || 'serpapi'),
         searchTool: String(searchTool || 'google_ai_overview'),
         apiKey: String(apiKey || '').trim(),
         siteWhitelistEnabled: isAiOverview ? false : siteWhitelistEnabled === true,
         siteWhitelist: Array.from(dedup.values()),
       }
       const saved = await saveSearchSettings(payload)
+      setServiceProvider(String(saved?.serviceProvider || payload.serviceProvider))
       setSearchTool(String(saved?.searchTool || payload.searchTool))
       setSiteWhitelistEnabled(saved?.searchTool === 'google_ai_overview' ? false : saved?.siteWhitelistEnabled === true)
       setSites(normalizeSiteRows(saved?.siteWhitelist))
@@ -128,11 +147,81 @@ export default function SearchSettingsPage() {
     }
   }
 
+  const onTest = async () => {
+    setTesting(true)
+    try {
+      const data = await testSearchSettings({
+        serviceProvider,
+        searchTool,
+        apiKey: String(apiKey || '').trim(),
+        keyword: '汽车供应商',
+      })
+      const lines = [
+        `测试时间: ${new Date().toLocaleString('zh-CN', { hour12: false })}`,
+        `工具: ${String(data?.tool || searchTool)}`,
+        `服务商: ${String(data?.serviceProvider || serviceProvider)}`,
+        `引擎: ${String(data?.engine || '-')}`,
+        `命中数: ${Number(data?.totalHits || 0)}`,
+        '',
+        '样例结果:',
+        ...(Array.isArray(data?.sample) && data.sample.length > 0
+          ? data.sample.map((item, idx) => `${idx + 1}. ${String(item?.title || '-')}\n${String(item?.url || '-')}\n${String(item?.snippet || '-')}`)
+          : ['(无结果)']),
+      ]
+      setResultText(lines.join('\n'))
+      setResultModalTitle('测试结果')
+      setResultModalOpen(true)
+      message.success('搜索测试完成')
+    } catch (error) {
+      setResultText(`测试失败: ${error.message || error}`)
+      message.error(`测试失败：${error.message || error}`)
+    } finally {
+      setTesting(false)
+    }
+  }
+
+  const onFetchQuota = async () => {
+    setQuotaLoading(true)
+    try {
+      const data = await fetchSearchQuota({
+        serviceProvider,
+        searchTool,
+        apiKey: String(apiKey || '').trim(),
+      })
+      setResultText([
+        `查询时间: ${new Date().toLocaleString('zh-CN', { hour12: false })}`,
+        `工具: ${String(data?.tool || searchTool)}`,
+        `服务商: ${String(data?.serviceProvider || serviceProvider)}`,
+        '',
+        JSON.stringify(data?.quota || data || {}, null, 2),
+      ].join('\n'))
+      setResultModalTitle('额度查询结果')
+      setResultModalOpen(true)
+      message.success('额度查询完成')
+    } catch (error) {
+      setResultText(`额度查询失败: ${error.message || error}`)
+      message.error(`额度查询失败：${error.message || error}`)
+    } finally {
+      setQuotaLoading(false)
+    }
+  }
+
   return (
     <Card className="app-elevated-card" loading={loading} title="搜索配置">
       <Space direction="vertical" size={16} style={{ width: '100%' }}>
         <div>
           <Space align="end" size={16} wrap>
+            <div>
+              <Text strong>服务商</Text>
+              <div style={{ marginTop: 8 }}>
+                <Select
+                  style={{ width: 160 }}
+                  value={serviceProvider}
+                  options={PROVIDER_OPTIONS}
+                  onChange={setServiceProvider}
+                />
+              </div>
+            </div>
             <div>
               <Text strong>搜索工具</Text>
               <div style={{ marginTop: 8 }}>
@@ -148,12 +237,22 @@ export default function SearchSettingsPage() {
               <Text strong>API Key</Text>
               <div style={{ marginTop: 8 }}>
                 <Input.Password
-                  placeholder="请输入搜索 API Key"
+                  placeholder={`请输入 ${serviceProvider} API Key`}
                   value={apiKey}
                   onChange={(e) => setApiKey(e.target.value)}
                   autoComplete="off"
                 />
               </div>
+            </div>
+            <div>
+              <Space wrap>
+                <Button loading={testing} onClick={onTest}>
+                  测试
+                </Button>
+                <Button loading={quotaLoading} onClick={onFetchQuota}>
+                  查询额度
+                </Button>
+              </Space>
             </div>
           </Space>
         </div>
@@ -217,11 +316,32 @@ export default function SearchSettingsPage() {
         </div>
 
         <div>
-          <Button type="primary" loading={saving} onClick={onSave}>
-            保存
-          </Button>
+          <Space wrap>
+            <Button type="primary" loading={saving} onClick={onSave}>
+              保存
+            </Button>
+          </Space>
         </div>
+
       </Space>
+      <Modal
+        open={resultModalOpen}
+        title={resultModalTitle}
+        onCancel={() => setResultModalOpen(false)}
+        footer={[
+          <Button key="close" type="primary" onClick={() => setResultModalOpen(false)}>
+            关闭
+          </Button>,
+        ]}
+        width={900}
+      >
+        <Input.TextArea
+          value={resultText}
+          onChange={(e) => setResultText(e.target.value)}
+          rows={22}
+          style={{ fontFamily: 'Consolas, Menlo, Monaco, monospace' }}
+        />
+      </Modal>
     </Card>
   )
 }

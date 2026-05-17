@@ -50,3 +50,29 @@ export async function saveSearchSettings(payload = {}) {
   const result = await parseJson(response)
   return result?.data || {}
 }
+
+export async function testSearchSettings(payload = {}) {
+  const response = await requestWithFallback('/api/search-settings/test', {
+    method: 'POST',
+    headers: {
+      ...buildAuthHeaders(),
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload || {}),
+  })
+  const result = await parseJson(response)
+  return result?.data || {}
+}
+
+export async function fetchSearchQuota(payload = {}) {
+  const response = await requestWithFallback('/api/search-settings/quota', {
+    method: 'POST',
+    headers: {
+      ...buildAuthHeaders(),
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload || {}),
+  })
+  const result = await parseJson(response)
+  return result?.data || {}
+}
