@@ -39,10 +39,10 @@ function LoginPage() {
             <Tag color="blue">安全认证</Tag>
           </Space>
           <Title level={3} style={{ margin: 0 }}>
-            资产盘点系统登录
+            新能源汽车制造供应商高质量数据集
           </Title>
           <Paragraph style={{ margin: 0 }}>
-            该系统已接入东方金信 Auth 服务。请先登录后访问资产盘点列表和填报功能。
+            该系统已接入东方金信 Auth 服务。请先登录后，访问新能源汽车制造供应商高质量数据集与智能体应用。
           </Paragraph>
           <Button type="primary" size="large" icon={<LockOutlined />} onClick={handleLogin}>
             使用 Auth 登录

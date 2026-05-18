@@ -1,6 +1,6 @@
 import { Button, Card, Checkbox, Col, Dropdown, Form, Input, List, Modal, Progress, Row, Segmented, Select, Space, Switch, Table, Tag, Tooltip, Tree, Typography, Upload, message } from 'antd'
 import { CloseCircleOutlined } from '@ant-design/icons'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ForceGraph2D from 'react-force-graph-2d'
 import { useParams } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
@@ -262,11 +262,12 @@ function WikiWorkbenchHome() {
   const [renameTitle, setRenameTitle] = useState('')
   const [moveOpen, setMoveOpen] = useState(false)
   const [moveCategory, setMoveCategory] = useState('entities')
-  const [graphScope, setGraphScope] = useState('section')
+  const [graphScope, setGraphScope] = useState('all')
   const [graphVisible, setGraphVisible] = useState(false)
   const [graphLoading, setGraphLoading] = useState(false)
   const [graphSyncing, setGraphSyncing] = useState(false)
   const [graphData, setGraphData] = useState({ nodes: [], links: [] })
+  const [activeGraphNodeId, setActiveGraphNodeId] = useState('')
   const [sectionCounts, setSectionCounts] = useState({
     raw: 0,
     inbox: 0,
@@ -301,44 +302,141 @@ function WikiWorkbenchHome() {
     return () => { alive = false }
   }, [])
 
+  const reloadWorkbenchGraph = useCallback(async () => {
+    setGraphLoading(true)
+    try {
+      const data = await fetchLlmWikiGraph()
+      const next = data && typeof data === 'object' ? data : { nodes: [], links: [] }
+      const apiGraph = {
+        nodes: Array.isArray(next.nodes) ? next.nodes : [],
+        links: Array.isArray(next.links) ? next.links : [],
+      }
+      const fallbackGraph = buildGraphData(entries)
+      const resolvedGraph = apiGraph.nodes.length > 0 ? apiGraph : fallbackGraph
+      setGraphData(resolvedGraph)
+      window.setTimeout(() => {
+        graphRef.current?.zoomToFit?.(500, 50)
+      }, 180)
+    } catch (error) {
+      message.error(error?.message || '读取图谱失败')
+    } finally {
+      setGraphLoading(false)
+    }
+  }, [entries])
+
   useEffect(() => {
     if (!graphVisible) return
-    let alive = true
-    setGraphLoading(true)
-    fetchLlmWikiGraph()
-      .then((data) => {
-        if (!alive) return
-        const next = data && typeof data === 'object' ? data : { nodes: [], links: [] }
-        const apiGraph = {
-          nodes: Array.isArray(next.nodes) ? next.nodes : [],
-          links: Array.isArray(next.links) ? next.links : [],
-        }
-        const fallbackGraph = buildGraphData(entries)
-        const resolvedGraph = apiGraph.nodes.length > 0 ? apiGraph : fallbackGraph
-        setGraphData(resolvedGraph)
-      })
-      .catch((error) => {
-        if (!alive) return
-        message.error(error?.message || '读取图谱失败')
-      })
-      .finally(() => {
-        if (alive) setGraphLoading(false)
-      })
-    return () => { alive = false }
-  }, [graphVisible, entries])
+    reloadWorkbenchGraph()
+  }, [graphVisible, reloadWorkbenchGraph])
   const displayGraphData = useMemo(() => {
-    if (graphScope === 'all') return graphData
+    let baseGraph = graphData
+    if (graphScope === 'all') {
+      baseGraph = graphData
+    } else {
     const activeSection = String(section || '')
-    if (!activeSection || activeSection === 'inbox') return { nodes: [], links: [] }
-    const nodes = (Array.isArray(graphData.nodes) ? graphData.nodes : []).filter((node) => (
-      normalizeWikiSection(node?.category) === activeSection
-    ))
-    const idSet = new Set(nodes.map((x) => String(x.id || '')))
-    const links = (Array.isArray(graphData.links) ? graphData.links : []).filter((link) => (
-      idSet.has(String(link?.source || '')) && idSet.has(String(link?.target || ''))
-    ))
-    return { nodes, links }
-  }, [graphData, graphScope, section])
+      if (!activeSection || activeSection === 'inbox') {
+        baseGraph = graphData
+      } else {
+        const nodes = (Array.isArray(graphData.nodes) ? graphData.nodes : []).filter((node) => (
+          normalizeWikiSection(node?.category) === activeSection
+        ))
+        if (nodes.length === 0) {
+          baseGraph = graphData
+        } else {
+          const idSet = new Set(nodes.map((x) => String(x.id || '')))
+          const links = (Array.isArray(graphData.links) ? graphData.links : []).filter((link) => (
+            idSet.has(String(link?.source || '')) && idSet.has(String(link?.target || ''))
+          ))
+          if (links.length === 0 && nodes.length <= 1) {
+            baseGraph = graphData
+          } else {
+            baseGraph = { nodes, links }
+          }
+        }
+      }
+    }
+
+    let currentNodes = Array.isArray(baseGraph?.nodes) ? baseGraph.nodes : []
+    let currentLinks = Array.isArray(baseGraph?.links) ? baseGraph.links : []
+    if (!graphVisible || !activeEntry?.key || currentNodes.length === 0) return baseGraph
+
+    const selectedId = String(activeEntry.key || '')
+    const selectedTitle = String(activeEntry.title || '').trim()
+    let selectedNode = currentNodes.find((n) => String(n?.id || '') === selectedId)
+      || currentNodes.find((n) => String(n?.title || '').trim() === selectedTitle)
+    if (!selectedNode) {
+      const fallback = buildGraphData(entries)
+      currentNodes = Array.isArray(fallback?.nodes) ? fallback.nodes : []
+      currentLinks = Array.isArray(fallback?.links) ? fallback.links : []
+      selectedNode = currentNodes.find((n) => String(n?.id || '') === selectedId)
+        || currentNodes.find((n) => String(n?.title || '').trim() === selectedTitle)
+    }
+    if (!selectedNode) return baseGraph
+
+    const selectedNodeId = String(selectedNode.id || '')
+    const touchingLinks = currentLinks.filter((link) => {
+      const s = String(link?.source || '')
+      const t = String(link?.target || '')
+      return s === selectedNodeId || t === selectedNodeId
+    })
+    const nonTagLinks = touchingLinks.filter((x) => String(x?.relationType || '') !== 'tag_cooccurrence')
+    const fallbackTagLinks = touchingLinks.filter((x) => String(x?.relationType || '') === 'tag_cooccurrence')
+    const sortByWeight = (a, b) => Number(b?.weight || 0) - Number(a?.weight || 0)
+    const sortedTouchingLinks = [
+      ...nonTagLinks.sort(sortByWeight),
+      ...fallbackTagLinks.sort(sortByWeight),
+    ]
+    const maxNeighborCount = 8
+    const neighborIdSet = new Set()
+    const focusLinks = []
+    for (const link of sortedTouchingLinks) {
+      const s = String(link?.source || '')
+      const t = String(link?.target || '')
+      const other = s === selectedNodeId ? t : s
+      if (!other || other === selectedNodeId) continue
+      if (!neighborIdSet.has(other) && neighborIdSet.size >= maxNeighborCount) continue
+      neighborIdSet.add(other)
+      focusLinks.push(link)
+    }
+    const focusIdSet = new Set([selectedNodeId, ...neighborIdSet])
+    const focusNodes = currentNodes.filter((n) => focusIdSet.has(String(n?.id || '')))
+    if (focusNodes.length <= 1) return { nodes: [selectedNode], links: [] }
+    return { nodes: focusNodes, links: focusLinks }
+  }, [graphData, graphScope, section, activeEntry, graphVisible, entries])
+  useEffect(() => {
+    if (!graphVisible) return
+    const nodes = Array.isArray(displayGraphData?.nodes) ? displayGraphData.nodes : []
+    if (!nodes.length) return
+    const timer = window.setTimeout(() => {
+      graphRef.current?.zoomToFit?.(500, 50)
+    }, 120)
+    return () => window.clearTimeout(timer)
+  }, [graphVisible, displayGraphData])
+  useEffect(() => {
+    if (!graphVisible) return
+    const id = String(activeEntry?.key || '')
+    const title = String(activeEntry?.title || '').trim()
+    const nodes = Array.isArray(displayGraphData?.nodes) ? displayGraphData.nodes : []
+    if (!nodes.length) {
+      setActiveGraphNodeId('')
+      return
+    }
+    const hit = nodes.find((n) => String(n?.id || '') === id)
+      || nodes.find((n) => String(n?.title || '').trim() === title)
+    if (!hit) {
+      setActiveGraphNodeId('')
+      return
+    }
+    setActiveGraphNodeId(String(hit.id || ''))
+    window.requestAnimationFrame(() => {
+      const x = Number(hit?.x)
+      const y = Number(hit?.y)
+      if (Number.isFinite(x) && Number.isFinite(y)) {
+        graphRef.current?.centerAt(x, y, 350)
+        graphRef.current?.zoom(2.2, 350)
+      }
+    })
+  }, [activeEntry, displayGraphData, graphVisible])
   const treeData = useMemo(() => {
     const kw = String(keyword || '').trim().toLowerCase()
     const expandedSet = new Set((Array.isArray(expandedKeys) ? expandedKeys : []).map((x) => String(x)))
@@ -482,6 +580,8 @@ function WikiWorkbenchHome() {
     if (!row) return
     setActiveEntry(row)
     setSection(normalizeWikiSection(row.category))
+    if (!graphVisible) setGraphVisible(true)
+    reloadWorkbenchGraph()
   }
 
   const refreshEntries = () => {
@@ -594,12 +694,16 @@ function WikiWorkbenchHome() {
               const infoKey = String(info?.node?.key || '')
               if (infoKey.startsWith('section:')) {
                 setSection(infoKey.replace('section:', ''))
+                if (!graphVisible) setGraphVisible(true)
+                reloadWorkbenchGraph()
                 return
               }
               if (Array.isArray(keys) && keys.length > 0) {
                 const k = String(keys[0] || '')
                 if (k.startsWith('section:')) {
                   setSection(k.replace('section:', ''))
+                  if (!graphVisible) setGraphVisible(true)
+                  reloadWorkbenchGraph()
                   return
                 }
               }
@@ -858,7 +962,14 @@ function WikiWorkbenchHome() {
               >
                 同步
               </Button>
-              <Button size="small" type={graphVisible ? 'default' : 'primary'} onClick={() => setGraphVisible(true)}>
+              <Button
+                size="small"
+                type={graphVisible ? 'default' : 'primary'}
+                onClick={() => {
+                  if (!graphVisible) setGraphVisible(true)
+                  reloadWorkbenchGraph()
+                }}
+              >
                 显示图谱
               </Button>
             </Space>
@@ -868,12 +979,23 @@ function WikiWorkbenchHome() {
           <div style={{ height: '100%', background: '#0b1220', borderRadius: 12, overflow: 'hidden', position: 'relative' }}>
             {graphVisible ? (
               <ForceGraph2D
+                key={`workbench-graph-${graphScope}-${String(activeEntry?.key || activeEntry?.title || 'none')}`}
                 ref={graphRef}
                 graphData={displayGraphData}
                 backgroundColor="#0b1220"
                 linkColor={() => 'rgba(148,163,184,0.3)'}
-                nodeColor={(node) => nodeColorByCategory(node.category)}
-                nodeRelSize={4}
+                nodeColor={(node) => (String(node?.id || '') === activeGraphNodeId ? '#fde047' : nodeColorByCategory(node.category))}
+                nodeRelSize={6}
+                nodeCanvasObjectMode={(node) => (String(node?.id || '') === activeGraphNodeId ? 'after' : undefined)}
+                nodeCanvasObject={(node, ctx, globalScale) => {
+                  if (String(node?.id || '') !== activeGraphNodeId) return
+                  const label = String(node?.title || '')
+                  if (!label) return
+                  const fontSize = Math.max(10, 12 / globalScale)
+                  ctx.font = `${fontSize}px sans-serif`
+                  ctx.fillStyle = '#fef08a'
+                  ctx.fillText(label, Number(node.x || 0) + 8, Number(node.y || 0) + 4)
+                }}
                 nodeLabel={(node) => `${node.title}\n${node.category || ''}`}
                 onNodeClick={(node) => {
                   const hit = entries.find((x) => String(x.key) === String(node.id) || String(x.title || '') === String(node.title || ''))
