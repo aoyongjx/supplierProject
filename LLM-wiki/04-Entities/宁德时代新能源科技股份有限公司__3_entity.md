@@ -1,0 +1,21 @@
+---
+id: "db_293_entity"
+title: "宁德时代新能源科技股份有限公司"
+category: "entities"
+status: "待确认"
+sourceType: "db"
+sourceCount: 1
+createdAt: "2026-05-17 18:10"
+updatedAt: "2026-05-18 16:00"
+tags: ["db", "supplier", "entity-extract"]
+---
+
+# 宁德时代新能源科技股份有限公司
+
+# 宁德时代新能源科技股份有限公司
+
+- 主营产品：动力电池
+- 质量体系：16949系列；ISO9000系列；ISO14000；OHSAS18001
+- 区域：福建省宁德市蕉城区漳湾镇新港路2号
+- 联系方式：0593-2583668；chenyl2@catlbattery.com；www.catl.com
+- 来源：https://www.qcgys.com/company.php?mid=50722

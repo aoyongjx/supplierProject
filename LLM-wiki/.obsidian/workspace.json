@@ -1,0 +1,215 @@
+{
+  "main": {
+    "id": "0a7aec5ce4597a11",
+    "type": "split",
+    "children": [
+      {
+        "id": "861baadd40a1db1f",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "964e446ef08bf0ea",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "01-RAW/与未来同行，大瀚荣获蔚来汽车【超长续航奖】.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "与未来同行，大瀚荣获蔚来汽车【超长续航奖】"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "vertical"
+  },
+  "left": {
+    "id": "79df25f66f087106",
+    "type": "split",
+    "children": [
+      {
+        "id": "2cfff9b79f91ce8e",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "2f190f7ace7bc9eb",
+            "type": "leaf",
+            "state": {
+              "type": "file-explorer",
+              "state": {
+                "sortOrder": "alphabetical",
+                "autoReveal": false
+              },
+              "icon": "lucide-folder-closed",
+              "title": "文件列表"
+            }
+          },
+          {
+            "id": "01fd937f15573f02",
+            "type": "leaf",
+            "state": {
+              "type": "search",
+              "state": {
+                "query": "",
+                "matchingCase": false,
+                "explainSearch": false,
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical"
+              },
+              "icon": "lucide-search",
+              "title": "搜索"
+            }
+          },
+          {
+            "id": "2a98da3b7bc0ee95",
+            "type": "leaf",
+            "state": {
+              "type": "bookmarks",
+              "state": {},
+              "icon": "lucide-bookmark",
+              "title": "书签"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300
+  },
+  "right": {
+    "id": "c8ce8739efa7efe7",
+    "type": "split",
+    "children": [
+      {
+        "id": "a5db494311237280",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "1f48ca125b338f7e",
+            "type": "leaf",
+            "state": {
+              "type": "backlink",
+              "state": {
+                "file": "01-RAW/与未来同行，大瀚荣获蔚来汽车【超长续航奖】.md",
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical",
+                "showSearch": false,
+                "searchQuery": "",
+                "backlinkCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-coming-in",
+              "title": "与未来同行，大瀚荣获蔚来汽车【超长续航奖】 的反向链接列表"
+            }
+          },
+          {
+            "id": "5000bbaa1d641278",
+            "type": "leaf",
+            "state": {
+              "type": "outgoing-link",
+              "state": {
+                "file": "01-RAW/与未来同行，大瀚荣获蔚来汽车【超长续航奖】.md",
+                "linksCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-going-out",
+              "title": "与未来同行，大瀚荣获蔚来汽车【超长续航奖】 的出链列表"
+            }
+          },
+          {
+            "id": "f392106ca8336c3b",
+            "type": "leaf",
+            "state": {
+              "type": "tag",
+              "state": {
+                "sortOrder": "frequency",
+                "useHierarchy": true,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-tags",
+              "title": "标签"
+            }
+          },
+          {
+            "id": "640822f7909ee671",
+            "type": "leaf",
+            "state": {
+              "type": "all-properties",
+              "state": {
+                "sortOrder": "frequency",
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-archive",
+              "title": "添加笔记属性"
+            }
+          },
+          {
+            "id": "84fd971b3ac16937",
+            "type": "leaf",
+            "state": {
+              "type": "outline",
+              "state": {
+                "file": "01-RAW/与未来同行，大瀚荣获蔚来汽车【超长续航奖】.md",
+                "followCursor": false,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-list",
+              "title": "与未来同行，大瀚荣获蔚来汽车【超长续航奖】 的大纲"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300,
+    "collapsed": true
+  },
+  "left-ribbon": {
+    "hiddenItems": {
+      "switcher:打开快速切换": false,
+      "graph:查看关系图谱": false,
+      "canvas:新建白板": false,
+      "daily-notes:打开/创建今天的日记": false,
+      "templates:插入模板": false,
+      "command-palette:打开命令面板": false,
+      "bases:新建数据库": false
+    }
+  },
+  "active": "964e446ef08bf0ea",
+  "lastOpenFiles": [
+    "01-RAW/均胜电子获“蔚来质量卓越合作伙伴”奖.docx.md",
+    "01-RAW/宾科汽车荣获蔚来质量卓越合作伙伴奖.txt.md",
+    "01-RAW/安森美获蔚来“守望奖”.md",
+    "01-RAW/1.jpg.md",
+    "09-Obsidian wiki/未命名.md",
+    "09-Obsidian wiki/未命名.canvas",
+    "00-Index.md",
+    "09-Obsidian wiki",
+    "04-Entities/安徽恒创睿能环保科技集团有限公司__8_entity.md",
+    "03-Sources/均胜电子获“蔚来质量卓越合作伙伴”奖.docx 来源.md",
+    "03-Sources/金属材料.md",
+    "03-Sources/格林美股份有限公司.md",
+    "03-Sources/高压点火线.md",
+    "03-Sources/迪一远景新能源动力科技（无锡）有限公司.md",
+    "03-Sources/传感器.md",
+    "03-Sources/重庆裕祥新能源电池有限公司.md",
+    "03-Sources/北京晶域信安科技有限公司.md",
+    "03-Sources/安智（上海）汽车零部件有限公司.md",
+    "03-Sources/[MCP] serpapi - 供应商如何精准选择__5-3143ae.md",
+    "03-Sources/[MCP] serpapi - 比亚迪招投标规定__0-c3efc9.md",
+    "03-Sources/（参考样例）基于智能供应链的汽车行业产业大脑_V2.0_20250226.docx.md",
+    "01-RAW/Novelis Inc.__books_97.md",
+    "01-RAW/https investors.novelis.com.md",
+    "01-RAW/与未来同行，大瀚荣获蔚来汽车【超长续航奖】.md",
+    "01-RAW/同心致远 共筑新程｜金帝股份荣获蔚来汽车“稳链先锋奖”，协同赋能新能源赛道.md",
+    "01-RAW/共同成长，携手前行 海微获蔚来供应链双项大奖.md"
+  ]
+}

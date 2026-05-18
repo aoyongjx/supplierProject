@@ -309,44 +309,44 @@ function DataSourceManagementPage() {
                 size="small"
                 style={{ marginBottom: 8, borderColor: Number(selectedId) === Number(item.id) ? '#1677ff' : undefined, cursor: 'pointer' }}
                 onClick={() => setSelectedId(item.id)}
-                extra={(
-                  <Space size={4}>
-                    <Tooltip title="编辑">
-                      <Button
-                        size="small"
-                        type="text"
-                        icon={<EditOutlined />}
-                        onClick={(e) => {
-                          e.preventDefault()
-                          e.stopPropagation()
-                          setSelectedId(item.id)
-                          openEdit(item)
-                        }}
-                      />
-                    </Tooltip>
-                    <Tooltip title="删除">
-                      <Button
-                        size="small"
-                        type="text"
-                        danger
-                        icon={<DeleteOutlined />}
-                        style={{ border: 'none', boxShadow: 'none', background: 'transparent' }}
-                        onClick={(e) => {
-                          e.preventDefault()
-                          e.stopPropagation()
-                          setSelectedId(item.id)
-                          removeSource(item)
-                        }}
-                      />
-                    </Tooltip>
-                  </Space>
-                )}
               >
                 <Space direction="vertical" size={2} style={{ width: '100%' }}>
-                  <Space>
-                    <Text strong>{item.name}</Text>
-                    <Tag color="blue">PG</Tag>
-                  </Space>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, width: '100%' }}>
+                    <Space>
+                      <Text strong>{item.name}</Text>
+                      <Tag color="blue">PG</Tag>
+                    </Space>
+                    <Space size={4}>
+                      <Tooltip title="编辑">
+                        <Button
+                          size="small"
+                          type="text"
+                          icon={<EditOutlined />}
+                          onClick={(e) => {
+                            e.preventDefault()
+                            e.stopPropagation()
+                            setSelectedId(item.id)
+                            openEdit(item)
+                          }}
+                        />
+                      </Tooltip>
+                      <Tooltip title="删除">
+                        <Button
+                          size="small"
+                          type="text"
+                          danger
+                          icon={<DeleteOutlined />}
+                          style={{ border: 'none', boxShadow: 'none', background: 'transparent' }}
+                          onClick={(e) => {
+                            e.preventDefault()
+                            e.stopPropagation()
+                            setSelectedId(item.id)
+                            removeSource(item)
+                          }}
+                        />
+                      </Tooltip>
+                    </Space>
+                  </div>
                   <Text type="secondary" style={{ fontSize: 12 }}>{item.host}:{item.port}/{item.databaseName}</Text>
                 </Space>
               </Card>

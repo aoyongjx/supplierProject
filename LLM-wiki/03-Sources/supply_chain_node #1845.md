@@ -1,0 +1,38 @@
+---
+id: "db_supply_chain_node_1845"
+title: "supply_chain_node #1845"
+category: "sources"
+status: "待确认"
+sourceType: "db"
+sourceCount: 1
+createdAt: "2026-05-17 17:54"
+updatedAt: "2026-05-17 23:31"
+tags: ["db", "supply_chain_node"]
+---
+
+# supply_chain_node #1845
+
+# supply_chain_node #1845
+
+```json
+{
+  "id": 1845,
+  "node_url": "https://www.qcgys.com/category.php?cid=107&pid=147&catid=150",
+  "page_url": "https://www.qcgys.com/category.php?cid=107&pid=147&catid=150",
+  "parent_id": 1840,
+  "created_at": "2026-04-21T15:04:28.012204+08:00",
+  "level1_url": "https://www.qcgys.com/category.php?cid=107&pid=140&catid=140",
+  "level2_url": "https://www.qcgys.com/category.php?cid=107&pid=147&catid=147",
+  "level3_url": "https://www.qcgys.com/category.php?cid=107&pid=147&catid=150",
+  "node_level": 3,
+  "node_title": "高压点火线",
+  "page_title": "高压点火线",
+  "source_url": "https://www.chinaautosupplier.com/",
+  "updated_at": "2026-04-21T15:04:28.012204+08:00",
+  "text_sample": "电子电器零部件 > 点火装置 > 高压点火线",
+  "supplier_url": "",
+  "crawl_info_id": null,
+  "business_entity": "供应链",
+  "supply_chain_info": "电子电器零部件 > 点火装置 > 高压点火线"
+}
+```

@@ -17577,6 +17577,7 @@ function normalizeLlmWikiSyncSource(value = '') {
 function normalizeLlmWikiSection(category = '') {
   const token = toText(category).toLowerCase()
   if (token.includes('raw') || token.includes('原始')) return 'raw'
+  if (token.includes('obsidian')) return 'obsidian'
   if (token.includes('企业') || token.includes('entities')) return 'entities'
   if (token.includes('产品') || token.includes('concept') || token.includes('概念')) return 'concepts'
   if (token.includes('认证') || token.includes('sources') || token.includes('来源')) return 'sources'
@@ -17584,6 +17585,125 @@ function normalizeLlmWikiSection(category = '') {
   if (token.includes('overview') || token.includes('总览')) return 'overview'
   if (token.includes('log') || token.includes('日志')) return 'logs'
   return 'inbox'
+}
+
+function sanitizeObsidianFileName(input = '') {
+  const raw = toText(input || '未命名词条')
+    .replace(/[\\/:*?"<>|]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return (raw || '未命名词条').slice(0, 96)
+}
+
+function toObsidianSectionName(category = '') {
+  const section = normalizeLlmWikiSection(category)
+  const map = {
+    raw: '01-RAW',
+    inbox: '02-Inbox',
+    sources: '03-Sources',
+    entities: '04-Entities',
+    concepts: '05-Concepts',
+    comparisons: '06-Comparisons',
+    overview: '07-Overview',
+    logs: '08-Logs',
+    obsidian: '09-Obsidian wiki',
+  }
+  return map[section] || '09-Others'
+}
+
+function buildObsidianMarkdownFromWikiEntry(row = {}) {
+  const title = toText(row?.title || '未命名词条')
+  const status = toText(row?.status || '待确认')
+  const category = toText(row?.category || '')
+  const sourceType = toText(row?.sourceType || row?.source_type || 'manual')
+  const sourceCount = Math.max(0, Number(row?.sourceCount ?? row?.source_count ?? 0) || 0)
+  const createdAt = toLlmWikiDateTimeText(row?.createdAt || row?.created_at)
+  const updatedAt = toLlmWikiDateTimeText(row?.updatedAt || row?.updated_at)
+  const tags = Array.isArray(row?.tags) ? row.tags.map((x) => toText(x)).filter(Boolean) : []
+  const markdown = toText(row?.markdown || '')
+  const content = toText(row?.content || '')
+  const body = markdown || content || '(空内容)'
+  const tagsLine = tags.length > 0 ? `[${tags.map((x) => `"${x.replace(/"/g, '\\"')}"`).join(', ')}]` : '[]'
+
+  return [
+    '---',
+    `id: "${toText(row?.id)}"`,
+    `title: "${title.replace(/"/g, '\\"')}"`,
+    `category: "${category.replace(/"/g, '\\"')}"`,
+    `status: "${status.replace(/"/g, '\\"')}"`,
+    `sourceType: "${sourceType.replace(/"/g, '\\"')}"`,
+    `sourceCount: ${sourceCount}`,
+    `createdAt: "${createdAt.replace(/"/g, '\\"')}"`,
+    `updatedAt: "${updatedAt.replace(/"/g, '\\"')}"`,
+    `tags: ${tagsLine}`,
+    '---',
+    '',
+    `# ${title}`,
+    '',
+    body,
+    '',
+  ].join('\n')
+}
+
+const obsidianImportTextExtensions = new Set(['.md', '.markdown', '.txt'])
+
+function normalizeObsidianImportFolderName(input = '') {
+  const value = toText(input).trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
+  return value
+}
+
+async function listSubDirectories(rootPath = '') {
+  const entries = await fs.readdir(rootPath, { withFileTypes: true })
+  return entries
+    .filter((item) => item.isDirectory() && !item.name.startsWith('.'))
+    .map((item) => item.name)
+    .sort((a, b) => a.localeCompare(b, 'zh-Hans-CN'))
+}
+
+async function collectObsidianFilesRecursively(rootPath = '', selectedFolders = []) {
+  const files = []
+  const folders = Array.isArray(selectedFolders) ? selectedFolders : []
+  for (const folderRaw of folders) {
+    const folder = normalizeObsidianImportFolderName(folderRaw)
+    if (!folder) continue
+    const folderAbsPath = path.resolve(rootPath, folder)
+    let stat = null
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      stat = await fs.stat(folderAbsPath)
+    } catch {
+      stat = null
+    }
+    if (!stat || !stat.isDirectory()) continue
+    const stack = [folderAbsPath]
+    while (stack.length > 0) {
+      const current = stack.pop()
+      // eslint-disable-next-line no-await-in-loop
+      const children = await fs.readdir(current, { withFileTypes: true })
+      for (const child of children) {
+        const childPath = path.join(current, child.name)
+        if (child.isDirectory()) {
+          if (!child.name.startsWith('.')) stack.push(childPath)
+          continue
+        }
+        const ext = path.extname(child.name).toLowerCase()
+        if (!obsidianImportTextExtensions.has(ext)) continue
+        files.push(childPath)
+      }
+    }
+  }
+  return files
+}
+
+function stripMarkdownForPlainText(markdown = '') {
+  return toText(markdown)
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/`[^`]*`/g, ' ')
+    .replace(/!\[[^\]]*]\([^)]+\)/g, ' ')
+    .replace(/\[[^\]]*]\([^)]+\)/g, ' ')
+    .replace(/[#>*_\-\[\]]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
 }
 
 async function rebuildLlmWikiSectionCounts(owner = '', client = pool) {
@@ -17602,6 +17722,7 @@ async function rebuildLlmWikiSectionCounts(owner = '', client = pool) {
     comparisons: 0,
     overview: 0,
     logs: 0,
+    obsidian: 0,
   }
   for (const row of (rowsResult.rows || [])) {
     const sec = normalizeLlmWikiSection(row?.category)
@@ -17636,6 +17757,7 @@ function buildLlmWikiSectionDeleteFilter(section = '') {
   if (sec === 'comparisons') return { sql: `(LOWER(category) LIKE '%comparison%' OR category LIKE '%对比%' OR category LIKE '%专题%')`, params: [] }
   if (sec === 'overview') return { sql: `(LOWER(category) LIKE '%overview%' OR category LIKE '%总览%')`, params: [] }
   if (sec === 'logs') return { sql: `(LOWER(category) LIKE '%log%' OR category LIKE '%日志%')`, params: [] }
+  if (sec === 'obsidian') return { sql: `(LOWER(category) LIKE '%obsidian%')`, params: [] }
   return { sql: `FALSE`, params: [] }
 }
 
@@ -19419,6 +19541,279 @@ app.post('/api/llm-wiki/raw-import/items/:id/resync', authMiddleware, async (req
   }
 })
 
+app.post('/api/llm-wiki/import/obsidian/folders', authMiddleware, async (req, res) => {
+  const rootPathInput = toText(req.body?.rootPath || '')
+  if (!rootPathInput) return res.status(400).json({ code: 400, message: '缺少 rootPath', data: null })
+  const rootPath = path.resolve(rootPathInput)
+  try {
+    const stat = await fs.stat(rootPath)
+    if (!stat.isDirectory()) return res.status(400).json({ code: 400, message: 'rootPath 必须是目录', data: null })
+    const names = await listSubDirectories(rootPath)
+    const folders = names.map((name) => ({ label: name, value: name }))
+    return res.json({ code: 200, message: 'success', data: { rootPath, folders } })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `读取目录失败: ${error.message}`, data: null })
+  }
+})
+
+app.post('/api/llm-wiki/import/obsidian-from-path', authMiddleware, async (req, res) => {
+  const owner = toText(req.authUser?.userName || req.authUser?.username || 'unknown')
+  const rootPathInput = toText(req.body?.rootPath || '')
+  const selectedFolders = Array.isArray(req.body?.selectedFolders)
+    ? req.body.selectedFolders.map((x) => normalizeObsidianImportFolderName(x)).filter(Boolean)
+    : []
+  const enableEntityExtract = req.body?.extractEntities === true
+  const enableConceptExtract = req.body?.extractConcepts === true
+  const enableOverview = req.body?.generateOverview === true
+  if (!rootPathInput) return res.status(400).json({ code: 400, message: '缺少 rootPath', data: null })
+  if (selectedFolders.length === 0) return res.status(400).json({ code: 400, message: '请至少选择一个目录', data: null })
+  const rootPath = path.resolve(rootPathInput)
+
+  try {
+    const stat = await fs.stat(rootPath)
+    if (!stat.isDirectory()) return res.status(400).json({ code: 400, message: 'rootPath 必须是目录', data: null })
+    const filePaths = await collectObsidianFilesRecursively(rootPath, selectedFolders)
+    if (filePaths.length === 0) {
+      return res.status(400).json({ code: 400, message: '未找到可导入的 Markdown/TXT 文件', data: null })
+    }
+    const baseRows = []
+    const textBodies = []
+    const entityRows = []
+    const conceptRows = []
+    for (const absPath of filePaths) {
+      // eslint-disable-next-line no-await-in-loop
+      const markdown = await fs.readFile(absPath, 'utf8')
+      const relPath = path.relative(rootPath, absPath).split(path.sep).join('/')
+      const title = toText(extractTitleFromMarkdown(markdown) || path.basename(absPath, path.extname(absPath)))
+      const plainText = stripMarkdownForPlainText(markdown)
+      const sourceMeta = {
+        source: 'obsidian-import',
+        rootPath,
+        relativePath: relPath,
+        folder: relPath.split('/').slice(0, -1).join('/'),
+        importedAt: new Date().toISOString(),
+      }
+      const sourceIdSafe = slugifyForId(relPath).slice(0, 60)
+      baseRows.push({
+        sourceId: `obsidian_${sourceIdSafe}`,
+        title: title.slice(0, 255),
+        category: 'obsidian',
+        content: plainText.slice(0, 20000),
+        markdown: toText(markdown).slice(0, 50000),
+        tags: ['obsidian', 'import'],
+        sourceType: 'obsidian-import',
+        sourceMeta,
+      })
+      textBodies.push(`${title}\n${plainText}`)
+
+      if (enableEntityExtract) {
+        const entities = collectLikelyEntityNames(`${title}\n${plainText}`, 6)
+        for (const entity of entities) {
+          entityRows.push({
+            sourceId: `obsidian_entity_${sourceIdSafe}_${slugifyForId(entity)}`,
+            title: entity.slice(0, 255),
+            category: 'entities',
+            content: `实体：${entity}\n来源：${title}\n路径：${relPath}`,
+            markdown: `# ${entity}\n\n- 来源：${title}\n- 路径：${relPath}`,
+            tags: ['entity', 'obsidian-import'],
+            sourceType: 'obsidian-import',
+            sourceMeta: { ...sourceMeta, entityFrom: title },
+          })
+        }
+      }
+
+      if (enableConceptExtract) {
+        const tokenSet = new Set(extractConceptTokensFromText(`${title}\n${plainText}`).slice(0, 12))
+        for (const token of tokenSet) {
+          conceptRows.push({
+            sourceId: `obsidian_concept_${sourceIdSafe}_${slugifyForId(token)}`,
+            title: token.slice(0, 255),
+            category: 'concepts',
+            content: `概念：${token}\n来源：${title}\n路径：${relPath}`,
+            markdown: `# ${token}\n\n- 来源：${title}\n- 路径：${relPath}`,
+            tags: ['concept', 'obsidian-import'],
+            sourceType: 'obsidian-import',
+            sourceMeta: { ...sourceMeta, conceptFrom: title },
+          })
+        }
+      }
+    }
+
+    const rows = [...baseRows, ...entityRows, ...conceptRows]
+    if (enableOverview) {
+      rows.push({
+        sourceId: `obsidian_overview_${Date.now()}`,
+        title: `Obsidian 导入总览（${new Date().toISOString().slice(0, 10)}）`,
+        category: 'overview',
+        content: `导入目录 ${selectedFolders.join(', ')}，文件 ${baseRows.length} 条，实体 ${entityRows.length} 条，概念 ${conceptRows.length} 条。`,
+        markdown: `# Obsidian 导入总览\n\n- 根目录：${rootPath}\n- 选择目录：${selectedFolders.join(', ')}\n- 文件数：${baseRows.length}\n- 实体词条：${entityRows.length}\n- 概念词条：${conceptRows.length}\n\n## 摘要\n${textBodies.join('\n\n').slice(0, 5000) || '无'}`,
+        tags: ['overview', 'obsidian-import'],
+        sourceType: 'obsidian-import',
+        sourceMeta: { rootPath, selectedFolders, fileCount: baseRows.length, entityCount: entityRows.length, conceptCount: conceptRows.length },
+      })
+    }
+
+    const client = await pool.connect()
+    try {
+      await client.query('BEGIN')
+      const upsertResult = await upsertLlmWikiRowsByOwner(owner, rows, client)
+      await appendLlmWikiLogEntry(
+        owner,
+        'Obsidian 导入完成',
+        `# Obsidian 导入完成\n\n- 根目录：${rootPath}\n- 目录：${selectedFolders.join(', ')}\n- 文件：${baseRows.length}\n- 新增：${upsertResult.inserted}\n- 更新：${upsertResult.updated}`,
+        'obsidian-import',
+        { rootPath, selectedFolders, fileCount: baseRows.length, insertedWiki: upsertResult.inserted, updatedWiki: upsertResult.updated },
+        ['logs', 'obsidian-import'],
+      )
+      await client.query('COMMIT')
+      return res.json({
+        code: 200,
+        message: 'success',
+        data: {
+          rootPath,
+          selectedFolders,
+          fileCount: baseRows.length,
+          insertedWiki: upsertResult.inserted,
+          updatedWiki: upsertResult.updated,
+          entityCount: entityRows.length,
+          conceptCount: conceptRows.length,
+        },
+      })
+    } catch (error) {
+      await client.query('ROLLBACK')
+      throw error
+    } finally {
+      client.release()
+    }
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `导入Obsidian失败: ${error.message}`, data: null })
+  }
+})
+
+app.get('/api/llm-wiki/export/obsidian', authMiddleware, async (req, res) => {
+  const owner = toText(req.authUser?.userName || req.authUser?.username || 'unknown')
+  try {
+    const result = await pool.query(
+      `
+      SELECT
+        id, title, category, status, content, markdown, tags,
+        source_type AS "sourceType",
+        source_count AS "sourceCount",
+        created_at AS "createdAt",
+        updated_at AS "updatedAt"
+      FROM ${llmWikiEntryTable}
+      WHERE owner = $1
+      ORDER BY updated_at DESC, id DESC
+      `,
+      [owner],
+    )
+    const rows = Array.isArray(result.rows) ? result.rows : []
+    if (rows.length === 0) {
+      return res.status(400).json({ code: 400, message: '当前知识树没有可导出的词条', data: null })
+    }
+
+    const { default: JSZip } = await import('jszip')
+    const zip = new JSZip()
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+    const root = zip.folder(`LLM-Wiki-Obsidian-${stamp}`)
+    const folderUsedNames = new Map()
+    const indexLines = ['# LLM-Wiki 导出索引', '', `- owner: ${owner}`, `- exportedAt: ${new Date().toISOString()}`, `- total: ${rows.length}`, '', '## 词条列表', '']
+
+    for (const row of rows) {
+      const sectionFolder = toObsidianSectionName(row?.category)
+      const sec = root.folder(sectionFolder)
+      const baseName = sanitizeObsidianFileName(row?.title || row?.id || 'wiki-entry')
+      const folderKey = sectionFolder
+      const usedSet = folderUsedNames.get(folderKey) || new Set()
+      let fileName = `${baseName}.md`
+      if (usedSet.has(fileName)) {
+        const suffix = toText(row?.id || '').slice(-8) || Math.random().toString(36).slice(2, 8)
+        fileName = `${baseName}__${suffix}.md`
+      }
+      usedSet.add(fileName)
+      folderUsedNames.set(folderKey, usedSet)
+      sec.file(fileName, buildObsidianMarkdownFromWikiEntry(row))
+      indexLines.push(`- [${toText(row?.title || row?.id)}](${sectionFolder}/${fileName})`)
+    }
+
+    root.file('00-Index.md', indexLines.join('\n'))
+    const buffer = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE', compressionOptions: { level: 9 } })
+    const downloadName = `llm-wiki-obsidian-${new Date().toISOString().slice(0, 10)}.zip`
+    res.setHeader('Content-Type', 'application/zip')
+    res.setHeader('Content-Disposition', `attachment; filename=\"${downloadName}\"`)
+    res.setHeader('Cache-Control', 'no-store')
+    return res.status(200).send(buffer)
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `导出Obsidian失败: ${error.message}`, data: null })
+  }
+})
+
+app.post('/api/llm-wiki/export/obsidian-to-path', authMiddleware, async (req, res) => {
+  const targetPathInput = toText(req.body?.targetPath || '')
+  if (!targetPathInput) {
+    return res.status(400).json({ code: 400, message: '缺少 targetPath', data: null })
+  }
+  const targetPath = path.resolve(targetPathInput)
+  const isWindowsAbs = /^[a-zA-Z]:\\/.test(targetPath)
+  const isUnixAbs = targetPath.startsWith('/')
+  if (!isWindowsAbs && !isUnixAbs) {
+    return res.status(400).json({ code: 400, message: 'targetPath 必须是绝对路径', data: null })
+  }
+
+  try {
+    const result = await pool.query(
+      `
+      SELECT
+        id, title, category, status, content, markdown, tags,
+        source_type AS "sourceType",
+        source_count AS "sourceCount",
+        created_at AS "createdAt",
+        updated_at AS "updatedAt"
+      FROM ${llmWikiEntryTable}
+      ORDER BY updated_at DESC, id DESC
+      `,
+    )
+    const rows = Array.isArray(result.rows) ? result.rows : []
+    if (rows.length === 0) {
+      return res.status(400).json({ code: 400, message: '当前知识树没有可导出的词条', data: null })
+    }
+
+    await fs.mkdir(targetPath, { recursive: true })
+    const folderUsedNames = new Map()
+    const indexLines = ['# LLM-Wiki 导出索引', '', `- scope: all entries (same as wiki tree)`, `- exportedAt: ${new Date().toISOString()}`, `- total: ${rows.length}`, '', '## 词条列表', '']
+
+    for (const row of rows) {
+      const sectionFolder = toObsidianSectionName(row?.category)
+      const sectionPath = path.join(targetPath, sectionFolder)
+      await fs.mkdir(sectionPath, { recursive: true })
+      const baseName = sanitizeObsidianFileName(row?.title || row?.id || 'wiki-entry')
+      const folderKey = sectionFolder
+      const usedSet = folderUsedNames.get(folderKey) || new Set()
+      let fileName = `${baseName}.md`
+      if (usedSet.has(fileName)) {
+        const suffix = toText(row?.id || '').slice(-8) || Math.random().toString(36).slice(2, 8)
+        fileName = `${baseName}__${suffix}.md`
+      }
+      usedSet.add(fileName)
+      folderUsedNames.set(folderKey, usedSet)
+      await fs.writeFile(path.join(sectionPath, fileName), buildObsidianMarkdownFromWikiEntry(row), 'utf8')
+      indexLines.push(`- [${toText(row?.title || row?.id)}](${sectionFolder}/${fileName})`)
+    }
+    await fs.writeFile(path.join(targetPath, '00-Index.md'), indexLines.join('\n'), 'utf8')
+
+    return res.json({
+      code: 200,
+      message: 'success',
+      data: {
+        exportedCount: rows.length,
+        targetPath,
+      },
+    })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `导出Obsidian到目录失败: ${error.message}`, data: null })
+  }
+})
+
 app.get('/api/llm-wiki/entries', authMiddleware, async (req, res) => {
   try {
     const result = await pool.query(
@@ -19467,6 +19862,7 @@ app.get('/api/llm-wiki/section-counts', authMiddleware, async (req, res) => {
       comparisons: 0,
       overview: 0,
       logs: 0,
+      obsidian: 0,
     }
     for (const row of rows) {
       const key = toText(row.section).toLowerCase()

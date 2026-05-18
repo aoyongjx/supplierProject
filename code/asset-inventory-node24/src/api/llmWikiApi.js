@@ -379,6 +379,7 @@ export async function fetchLlmWikiSectionCounts() {
     comparisons: 0,
     overview: 0,
     logs: 0,
+    obsidian: 0,
   }
 }
 
@@ -504,5 +505,83 @@ export async function resyncLlmWikiRawImportItem(id) {
       },
     },
   )
+  return result?.data || null
+}
+
+export async function exportLlmWikiObsidianZip() {
+  const response = await requestWithFallback('/api/llm-wiki/export/obsidian', {
+    method: 'GET',
+    headers: buildAuthHeaders(),
+  })
+  if (response.status === 401) {
+    clearTokens()
+    if (window.location.pathname !== '/login') window.location.replace('/login')
+    throw new Error('登录已失效，请重新登录')
+  }
+  if (!response.ok) {
+    let errMsg = `导出失败（HTTP ${response.status}）`
+    try {
+      const payload = await response.json()
+      if (payload?.message) errMsg = payload.message
+    } catch {
+      const text = await response.text().catch(() => '')
+      if (text) errMsg = text
+    }
+    throw new Error(errMsg)
+  }
+  const disposition = String(response.headers.get('content-disposition') || '')
+  const m = disposition.match(/filename\*?=(?:UTF-8''|\"?)([^\";]+)/i)
+  const fileName = m ? decodeURIComponent(String(m[1]).replace(/\"/g, '').trim()) : `llm-wiki-obsidian-${new Date().toISOString().slice(0, 10)}.zip`
+  const blob = await response.blob()
+  return { blob, fileName }
+}
+
+export async function exportLlmWikiObsidianToPath(targetPath = '') {
+  const safePath = String(targetPath || '').trim()
+  if (!safePath) throw new Error('请填写导出路径')
+  const response = await requestWithFallback('/api/llm-wiki/export/obsidian-to-path', {
+    method: 'POST',
+    headers: {
+      ...buildAuthHeaders(),
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ targetPath: safePath }),
+  })
+  const result = await parseJson(response)
+  return result?.data || null
+}
+
+export async function listLlmWikiObsidianFolders(rootPath = '') {
+  const safePath = String(rootPath || '').trim()
+  if (!safePath) throw new Error('请填写目录路径')
+  const response = await requestWithFallback('/api/llm-wiki/import/obsidian/folders', {
+    method: 'POST',
+    headers: {
+      ...buildAuthHeaders(),
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ rootPath: safePath }),
+  })
+  const result = await parseJson(response)
+  return result?.data || { rootPath: safePath, folders: [] }
+}
+
+export async function importLlmWikiObsidianFromPath(payload = {}) {
+  const rootPath = String(payload?.rootPath || '').trim()
+  const selectedFolders = Array.isArray(payload?.selectedFolders) ? payload.selectedFolders : []
+  if (!rootPath) throw new Error('请填写 Obsidian 目录')
+  if (selectedFolders.length === 0) throw new Error('请至少选择一个目录')
+  const response = await requestWithFallback('/api/llm-wiki/import/obsidian-from-path', {
+    method: 'POST',
+    headers: {
+      ...buildAuthHeaders(),
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      rootPath,
+      selectedFolders,
+    }),
+  })
+  const result = await parseJson(response)
   return result?.data || null
 }

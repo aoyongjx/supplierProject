@@ -1,0 +1,21 @@
+---
+id: "db_305_entity"
+title: "浙江天能新材料有限公司"
+category: "entities"
+status: "待确认"
+sourceType: "db"
+sourceCount: 1
+createdAt: "2026-05-17 18:10"
+updatedAt: "2026-05-18 16:00"
+tags: ["db", "supplier", "entity-extract"]
+---
+
+# 浙江天能新材料有限公司
+
+# 浙江天能新材料有限公司
+
+- 主营产品：主要从事废旧锂电池的回收、处置及再利用，具备年处理2.3万吨废旧动力锂电池梯级利用及绿色回收再利用能力
+- 质量体系：ISO 9001、ISO 14001、ISO 45001、ISO 50001
+- 区域：浙江
+- 联系方式：法人代表： 施利勇
+- 来源：https://www.qcgys.com/company.php?mid=69931

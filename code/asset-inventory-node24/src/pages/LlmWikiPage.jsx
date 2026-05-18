@@ -16,10 +16,12 @@ import {
   fetchLlmWikiSettings,
   fetchLlmWikiGraph,
   fetchLlmWikiRawImportItems,
+  importLlmWikiObsidianFromPath,
   fetchLlmWikiSyncDbTables,
   fetchLlmWikiSyncRagKbs,
   fetchLlmWikiSyncTasks,
   importLlmWikiRawMaterials,
+  exportLlmWikiObsidianToPath,
   previewLlmWikiRawImportItem,
   deleteLlmWikiRawImportItem,
   resyncLlmWikiRawImportItem,
@@ -31,7 +33,7 @@ import {
 import { fetchKnowledgeBases } from '../api/knowledgeBaseApi'
 
 const { Title, Text } = Typography
-const WIKI_SECTIONS = ['raw', 'inbox', 'sources', 'entities', 'concepts', 'comparisons', 'overview', 'logs']
+const WIKI_SECTIONS = ['raw', 'inbox', 'sources', 'entities', 'concepts', 'comparisons', 'overview', 'logs', 'obsidian']
 const WIKI_PANEL_HEIGHT = 'calc(100vh - 235px)'
 const WIKI_LIST_VIEW_HEIGHT = 'calc(100vh - 285px)'
 const WIKI_SECTION_LABELS = {
@@ -43,7 +45,19 @@ const WIKI_SECTION_LABELS = {
   comparisons: '对比 Comparisons',
   overview: '总览 Overview',
   logs: '日志 Logs',
+  obsidian: 'Obsidian',
 }
+const OBSIDIAN_IMPORT_FOLDERS = [
+  '01-RAW',
+  '02-Inbox',
+  '03-Sources',
+  '04-Entities',
+  '05-Concepts',
+  '06-Comparisons',
+  '07-Overview',
+  '08-Logs',
+  '09-Obsidian wiki',
+]
 
 function parseWikiLinks(raw = '') {
   const text = String(raw || '')
@@ -157,6 +171,7 @@ function normalizeWikiSection(category = '') {
   if (token.includes('专题') || token.includes('comparisons') || token.includes('对比')) return 'comparisons'
   if (token.includes('overview') || token.includes('总览')) return 'overview'
   if (token.includes('log') || token.includes('日志')) return 'logs'
+  if (token.includes('obsidian')) return 'obsidian'
   return 'inbox'
 }
 
@@ -266,6 +281,13 @@ function WikiWorkbenchHome() {
   const [graphVisible, setGraphVisible] = useState(false)
   const [graphLoading, setGraphLoading] = useState(false)
   const [graphSyncing, setGraphSyncing] = useState(false)
+  const [exportingObsidian, setExportingObsidian] = useState(false)
+  const [exportObsidianOpen, setExportObsidianOpen] = useState(false)
+  const [exportObsidianPath, setExportObsidianPath] = useState('E:\\workspaceCodeing\\LLM-wiki')
+  const [importObsidianOpen, setImportObsidianOpen] = useState(false)
+  const [importingObsidian, setImportingObsidian] = useState(false)
+  const [importObsidianPath, setImportObsidianPath] = useState('E:\\workspaceCodeing\\LLM-wiki')
+  const [importSelectedFolders, setImportSelectedFolders] = useState(['09-Obsidian wiki'])
   const [graphData, setGraphData] = useState({ nodes: [], links: [] })
   const [activeGraphNodeId, setActiveGraphNodeId] = useState('')
   const [sectionCounts, setSectionCounts] = useState({
@@ -277,6 +299,7 @@ function WikiWorkbenchHome() {
     comparisons: 0,
     overview: 0,
     logs: 0,
+    obsidian: 0,
   })
 
   useEffect(() => {
@@ -295,6 +318,7 @@ function WikiWorkbenchHome() {
           comparisons: Number(counts?.comparisons || 0),
           overview: Number(counts?.overview || 0),
           logs: Number(counts?.logs || 0),
+          obsidian: Number(counts?.obsidian || 0),
         })
         setActiveEntry(list[0] || null)
       })
@@ -597,6 +621,7 @@ function WikiWorkbenchHome() {
           comparisons: Number(counts?.comparisons || 0),
           overview: Number(counts?.overview || 0),
           logs: Number(counts?.logs || 0),
+          obsidian: Number(counts?.obsidian || 0),
         })
         setEntries(list)
         if (activeEntry?.key) {
@@ -661,12 +686,76 @@ function WikiWorkbenchHome() {
     })
   }
 
+  const handleExportObsidian = async () => {
+    setExportObsidianOpen(true)
+  }
+
+  const handleImportObsidian = async () => {
+    setImportObsidianOpen(true)
+  }
+
+  const submitExportObsidian = async () => {
+    if (exportingObsidian) return
+    const targetPath = String(exportObsidianPath || '').trim()
+    if (!targetPath) {
+      message.warning('请填写导出路径')
+      return
+    }
+    setExportingObsidian(true)
+    try {
+      const result = await exportLlmWikiObsidianToPath(targetPath)
+      setExportObsidianOpen(false)
+      message.success(`已导出 ${Number(result?.exportedCount || 0)} 条到：${result?.targetPath || targetPath}`)
+    } catch (error) {
+      message.error(error?.message || '导出 Obsidian 失败')
+    } finally {
+      setExportingObsidian(false)
+    }
+  }
+
+  const submitImportObsidian = async () => {
+    if (importingObsidian) return
+    const rootPath = String(importObsidianPath || '').trim()
+    const selectedFolders = Array.isArray(importSelectedFolders) ? importSelectedFolders.map((x) => String(x)).filter(Boolean) : []
+    if (!rootPath) {
+      message.warning('请填写 Obsidian 根目录')
+      return
+    }
+    if (selectedFolders.length === 0) {
+      message.warning('请至少选择一个目录')
+      return
+    }
+    setImportingObsidian(true)
+    try {
+      const result = await importLlmWikiObsidianFromPath({
+        rootPath,
+        selectedFolders,
+      })
+      setImportObsidianOpen(false)
+      message.success(`导入完成：新增 ${Number(result?.insertedWiki || 0)}，更新 ${Number(result?.updatedWiki || 0)}，文件 ${Number(result?.fileCount || 0)} 条`)
+      refreshEntries()
+    } catch (error) {
+      message.error(error?.message || '导入 Obsidian 失败')
+    } finally {
+      setImportingObsidian(false)
+    }
+  }
+
   return (
     <Row gutter={12} style={{ height: WIKI_PANEL_HEIGHT }}>
       <Col span={5} style={{ height: '100%', display: 'flex' }}>
         <Card
           className="app-elevated-card wiki-tree-card"
-          title={`知识树 (${Object.values(sectionCounts || {}).reduce((sum, n) => sum + Number(n || 0), 0)})`}
+          headStyle={{ minHeight: 'auto', paddingTop: 10, paddingBottom: 10 }}
+          title={(
+            <div style={{ width: '100%' }}>
+              <div style={{ marginBottom: 6 }}>{`知识树 (${Object.values(sectionCounts || {}).reduce((sum, n) => sum + Number(n || 0), 0)})`}</div>
+              <Space size={6}>
+                <Button size="small" type="primary" onClick={handleExportObsidian} loading={exportingObsidian}>导出</Button>
+                <Button size="small" onClick={handleImportObsidian}>导入</Button>
+              </Space>
+            </div>
+          )}
           style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column' }}
           bodyStyle={{ flex: 1, minHeight: 0, overflow: 'hidden' }}
         >
@@ -820,6 +909,50 @@ function WikiWorkbenchHome() {
             />
           </div>
         </Card>
+        <Modal
+          title="导出至 Obsidian"
+          open={exportObsidianOpen}
+          onCancel={() => setExportObsidianOpen(false)}
+          footer={(
+            <Space>
+              <Button onClick={() => setExportObsidianOpen(false)}>关闭</Button>
+              <Button type="primary" loading={exportingObsidian} onClick={submitExportObsidian}>导出</Button>
+            </Space>
+          )}
+        >
+          <Space direction="vertical" style={{ width: '100%' }} size={8}>
+            <Text type="secondary">请选择 Obsidian Vault 目录</Text>
+            <Input value={exportObsidianPath} onChange={(e) => setExportObsidianPath(e.target.value)} placeholder="例如：E:\\workspaceCodeing\\LLM-wiki" />
+          </Space>
+        </Modal>
+        <Modal
+          title="导入 Obsidian"
+          open={importObsidianOpen}
+          onCancel={() => setImportObsidianOpen(false)}
+          footer={(
+            <Space>
+              <Button onClick={() => setImportObsidianOpen(false)}>关闭</Button>
+              <Button type="primary" loading={importingObsidian} onClick={submitImportObsidian}>导入</Button>
+            </Space>
+          )}
+        >
+          <Space direction="vertical" style={{ width: '100%' }} size={10}>
+            <Text type="secondary">请选择 Obsidian 目录（可多选）</Text>
+            <Space size={8}>
+              <Button size="small" onClick={() => setImportSelectedFolders([...OBSIDIAN_IMPORT_FOLDERS])}>全选</Button>
+              <Button size="small" onClick={() => setImportSelectedFolders([])}>清空</Button>
+            </Space>
+            <Select
+              mode="multiple"
+              style={{ width: '100%' }}
+              placeholder="请选择要导入的目录"
+              value={importSelectedFolders}
+              options={OBSIDIAN_IMPORT_FOLDERS.map((name) => ({ label: name, value: name }))}
+              onChange={(vals) => setImportSelectedFolders(Array.isArray(vals) ? vals.map((x) => String(x)) : [])}
+              maxTagCount="responsive"
+            />
+          </Space>
+        </Modal>
       </Col>
       <Col span={11} style={{ height: '100%', display: 'flex' }}>
         <Card
