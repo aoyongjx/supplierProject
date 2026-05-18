@@ -696,6 +696,17 @@ html[data-ui-style-family='bento'] .hero-card {
   background: #fffbe6 !important;
 }
 
+.wiki-tree-card .ant-tree .ant-tree-switcher,
+.wiki-tree-card .ant-tree .ant-tree-node-content-wrapper,
+.wiki-tree-card .ant-tree .ant-tree-title {
+  cursor: pointer !important;
+}
+
+.wiki-tree-card .ant-tree .ant-tree-node-content-wrapper:hover {
+  background: #f5f7ff !important;
+  border-radius: 6px;
+}
+
 @media (max-width: 980px) {
   .kb-layout {
     grid-template-columns: 1fr;

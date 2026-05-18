@@ -781,6 +781,14 @@ const knowledgeBaseTable = `"${schemaName}"."knowledge_base"`
 const knowledgeBaseDocumentTable = `"${schemaName}"."knowledge_base_document"`
 const knowledgeBaseVectorTable = `"${schemaName}"."knowledge_base_vector"`
 const supplierOpinionVectorTable = `"${schemaName}"."supplier_opinion_vector"`
+const llmWikiEntryTable = `"${schemaName}"."llm_wiki_entry"`
+const llmWikiSettingTable = `"${schemaName}"."llm_wiki_setting"`
+const llmWikiSyncTaskTable = `"${schemaName}"."llm_wiki_sync_task"`
+const llmWikiSectionCountTable = `"${schemaName}"."llm_wiki_section_count"`
+const llmWikiGraphNodeTable = `"${schemaName}"."llm_wiki_graph_node"`
+const llmWikiGraphEdgeTable = `"${schemaName}"."llm_wiki_graph_edge"`
+const llmWikiRawImportBatchTable = `"${schemaName}"."llm_wiki_raw_import_batch"`
+const llmWikiRawImportItemTable = `"${schemaName}"."llm_wiki_raw_import_item"`
 const crawlExportDir = path.join(process.cwd(), 'crawl_exports')
 
 function sanitizeFilePart(input = '') {
@@ -2599,6 +2607,101 @@ async function initDatabase() {
       CHECK (id = 1)
     );
 
+    CREATE TABLE IF NOT EXISTS ${llmWikiEntryTable} (
+      id VARCHAR(64) PRIMARY KEY,
+      owner VARCHAR(128) NOT NULL DEFAULT '',
+      title VARCHAR(255) NOT NULL DEFAULT '',
+      category VARCHAR(64) NOT NULL DEFAULT '',
+      status VARCHAR(32) NOT NULL DEFAULT '待确认',
+      content TEXT NOT NULL DEFAULT '',
+      markdown TEXT NOT NULL DEFAULT '',
+      source_count INT NOT NULL DEFAULT 0,
+      source_type VARCHAR(32) NOT NULL DEFAULT 'manual',
+      source_meta JSONB NOT NULL DEFAULT '{}',
+      tags JSONB NOT NULL DEFAULT '[]',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS ${llmWikiSettingTable} (
+      owner VARCHAR(128) NOT NULL DEFAULT '',
+      setting_key VARCHAR(64) NOT NULL DEFAULT 'default',
+      settings_json JSONB NOT NULL DEFAULT '{}',
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (owner, setting_key)
+    );
+
+    CREATE TABLE IF NOT EXISTS ${llmWikiSectionCountTable} (
+      owner VARCHAR(128) NOT NULL DEFAULT '',
+      section VARCHAR(32) NOT NULL DEFAULT '',
+      total_count INT NOT NULL DEFAULT 0,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (owner, section)
+    );
+
+    CREATE TABLE IF NOT EXISTS ${llmWikiSyncTaskTable} (
+      id VARCHAR(64) PRIMARY KEY,
+      owner VARCHAR(128) NOT NULL DEFAULT '',
+      source_type VARCHAR(16) NOT NULL DEFAULT 'db',
+      status VARCHAR(24) NOT NULL DEFAULT 'running',
+      total_count INT NOT NULL DEFAULT 0,
+      inserted_count INT NOT NULL DEFAULT 0,
+      updated_count INT NOT NULL DEFAULT 0,
+      error_message TEXT NOT NULL DEFAULT '',
+      summary_json JSONB NOT NULL DEFAULT '{}',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      finished_at TIMESTAMPTZ
+    );
+
+    CREATE TABLE IF NOT EXISTS ${llmWikiGraphNodeTable} (
+      node_id VARCHAR(64) PRIMARY KEY,
+      title VARCHAR(255) NOT NULL DEFAULT '',
+      category VARCHAR(64) NOT NULL DEFAULT '',
+      status VARCHAR(32) NOT NULL DEFAULT '',
+      source_count INT NOT NULL DEFAULT 0,
+      tags JSONB NOT NULL DEFAULT '[]',
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS ${llmWikiGraphEdgeTable} (
+      source_id VARCHAR(64) NOT NULL,
+      target_id VARCHAR(64) NOT NULL,
+      relation_type VARCHAR(32) NOT NULL DEFAULT 'reference',
+      weight INT NOT NULL DEFAULT 1,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (source_id, target_id, relation_type)
+    );
+
+    CREATE TABLE IF NOT EXISTS ${llmWikiRawImportBatchTable} (
+      id VARCHAR(64) PRIMARY KEY,
+      owner VARCHAR(128) NOT NULL DEFAULT '',
+      bucket VARCHAR(16) NOT NULL DEFAULT 'papers',
+      status VARCHAR(24) NOT NULL DEFAULT 'success',
+      total_count INT NOT NULL DEFAULT 0,
+      success_count INT NOT NULL DEFAULT 0,
+      summary_json JSONB NOT NULL DEFAULT '{}',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS ${llmWikiRawImportItemTable} (
+      id BIGSERIAL PRIMARY KEY,
+      batch_id VARCHAR(64) NOT NULL REFERENCES ${llmWikiRawImportBatchTable}(id) ON DELETE CASCADE,
+      owner VARCHAR(128) NOT NULL DEFAULT '',
+      bucket VARCHAR(16) NOT NULL DEFAULT 'papers',
+      item_type VARCHAR(16) NOT NULL DEFAULT 'text',
+      title VARCHAR(255) NOT NULL DEFAULT '',
+      source_url TEXT NOT NULL DEFAULT '',
+      file_name VARCHAR(255) NOT NULL DEFAULT '',
+      mime_type VARCHAR(128) NOT NULL DEFAULT '',
+      content_text TEXT NOT NULL DEFAULT '',
+      payload_json JSONB NOT NULL DEFAULT '{}',
+      status VARCHAR(24) NOT NULL DEFAULT 'success',
+      message TEXT NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
     CREATE INDEX IF NOT EXISTS idx_crawl_info_source_file ON ${crawlInfoTable}(source_file, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_crawl_info_business_entity ON ${crawlInfoTable}(business_entity);
     CREATE INDEX IF NOT EXISTS idx_supply_chain_node_parent ON ${supplyChainNodeTable}(parent_id, node_level);
@@ -2633,6 +2736,15 @@ async function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_supplier_cert_dict_sort ON ${supplierCertDictTable}(sort_order ASC, id ASC);
     CREATE INDEX IF NOT EXISTS idx_gas_supplier_portrait_setting_updated_at ON ${gasSupplierPortraitSettingTable}(updated_at DESC);
     CREATE INDEX IF NOT EXISTS idx_search_config_updated_at ON ${searchConfigTable}(updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_llm_wiki_entry_owner_updated ON ${llmWikiEntryTable}(owner, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_llm_wiki_entry_category ON ${llmWikiEntryTable}(category, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_llm_wiki_sync_task_owner_created ON ${llmWikiSyncTaskTable}(owner, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_llm_wiki_sync_task_source_created ON ${llmWikiSyncTaskTable}(source_type, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_llm_wiki_graph_node_category ON ${llmWikiGraphNodeTable}(category, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_llm_wiki_graph_edge_target ON ${llmWikiGraphEdgeTable}(target_id, relation_type);
+    CREATE INDEX IF NOT EXISTS idx_llm_wiki_raw_batch_owner_created ON ${llmWikiRawImportBatchTable}(owner, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_llm_wiki_raw_item_bucket_created ON ${llmWikiRawImportItemTable}(bucket, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_llm_wiki_raw_item_owner_created ON ${llmWikiRawImportItemTable}(owner, created_at DESC);
     ALTER TABLE ${searchConfigTable} ADD COLUMN IF NOT EXISTS service_provider VARCHAR(16) NOT NULL DEFAULT 'serpapi';
     ALTER TABLE ${searchConfigTable} ADD COLUMN IF NOT EXISTS site_whitelist_enabled BOOLEAN NOT NULL DEFAULT FALSE;
     DROP INDEX IF EXISTS idx_supply_chain_node_unique;
@@ -12269,9 +12381,9 @@ async function authMiddleware(req, res, next) {
   const token = getBearerToken(req)
   if ((authDevBypass || !isProduction) && !token) {
     req.authUser = {
-      username: 'dev-anon',
-      userName: 'dev-anon',
-      displayName: '开发环境匿名用户',
+      username: 'dev-user',
+      userName: 'dev-user',
+      displayName: '开发环境默认用户',
     }
     req.accessToken = 'dev'
     return next()
@@ -17339,6 +17451,2383 @@ app.put('/api/menu-visibility-settings', authMiddleware, async (req, res) => {
   }
 })
 
+const defaultLlmWikiSettings = {
+  enabled: true,
+  wikiFirst: true,
+  autoWriteback: true,
+  db: true,
+  rag: true,
+  web: false,
+  onlyConfirmed: false,
+}
+
+function toLlmWikiDateTimeText(value) {
+  const text = toText(value)
+  if (!text) return ''
+  const d = new Date(text)
+  if (Number.isNaN(d.getTime())) return text
+  const yyyy = d.getFullYear()
+  const mm = String(d.getMonth() + 1).padStart(2, '0')
+  const dd = String(d.getDate()).padStart(2, '0')
+  const hh = String(d.getHours()).padStart(2, '0')
+  const mi = String(d.getMinutes()).padStart(2, '0')
+  return `${yyyy}-${mm}-${dd} ${hh}:${mi}`
+}
+
+function normalizeLlmWikiStatus(value = '') {
+  const v = toText(value)
+  if (v === '已确认') return '已确认'
+  if (v === '待确认') return '待确认'
+  return '待确认'
+}
+
+function normalizeLlmWikiCategory(value = '') {
+  const v = toText(value)
+  if (!v) return '专题'
+  return v.slice(0, 64)
+}
+
+function normalizeLlmWikiCategoryWithSourceType(category = '', sourceType = '') {
+  const src = toText(sourceType).toLowerCase()
+  if (src === 'sync' || src === 'chat' || src === 'rag' || src === 'system') return 'logs'
+  return normalizeLlmWikiCategory(category)
+}
+
+function buildLlmWikiEntryKey(seed = '') {
+  const raw = toText(seed)
+  if (raw) return raw.slice(0, 64)
+  const rnd = Math.random().toString(36).slice(2, 8)
+  return `e${Date.now()}${rnd}`.slice(0, 64)
+}
+
+function resolveWikiSourceLabel(sourceMeta = {}, fallbackId = '') {
+  const meta = sourceMeta && typeof sourceMeta === 'object' ? sourceMeta : {}
+  const directUrl = toText(meta.url || meta.detailUrl || meta.pageUrl || meta.profileUrl)
+  if (directUrl) return directUrl
+  const kbId = toText(meta.kbId)
+  if (kbId) return `库内文档（知识库: ${kbId}${fallbackId ? ` / doc: ${fallbackId}` : ''}）`
+  if (fallbackId) return `库内记录（id: ${fallbackId}）`
+  return '库内记录（无外链）'
+}
+
+function patchMissingSourceInMarkdown(markdown = '', sourceLabel = '') {
+  const text = toText(markdown)
+  const label = toText(sourceLabel) || '库内记录（无外链）'
+  if (!text) return `- 来源：${label}`
+  if (/[-*]\s*来源：\s*$/m.test(text)) {
+    return text.replace(/([-*]\s*来源：)\s*$/m, `$1 ${label}`)
+  }
+  if (/[-*]\s*来源：\s*(\S+)/m.test(text)) return text
+  return `${text}\n- 来源：${label}`
+}
+
+function toLlmWikiEntryOutput(row = {}) {
+  const sourceMeta = row.sourceMeta || row.source_meta || {}
+  const sourceLabel = resolveWikiSourceLabel(sourceMeta, toText(row.id))
+  const category = toText(row.category)
+  const patchedMarkdown = normalizeLlmWikiCategory(category) === 'sources'
+    ? patchMissingSourceInMarkdown(toText(row.markdown), sourceLabel)
+    : toText(row.markdown)
+  return {
+    key: toText(row.id),
+    title: toText(row.title),
+    category,
+    status: normalizeLlmWikiStatus(row.status),
+    updatedAt: toLlmWikiDateTimeText(row.updatedAt || row.updated_at),
+    sourceCount: Math.max(0, Number(row.sourceCount ?? row.source_count ?? 0) || 0),
+    content: toText(row.content),
+    markdown: patchedMarkdown,
+    sourceType: toText(row.sourceType || row.source_type),
+    sourceMeta,
+    tags: Array.isArray(row.tags) ? row.tags : [],
+  }
+}
+
+function normalizeLlmWikiSyncSource(value = '') {
+  const token = toText(value).toLowerCase()
+  if (token === 'db' || token === 'rag' || token === 'web') return token
+  return 'db'
+}
+
+function normalizeLlmWikiSection(category = '') {
+  const token = toText(category).toLowerCase()
+  if (token.includes('raw') || token.includes('原始')) return 'raw'
+  if (token.includes('企业') || token.includes('entities')) return 'entities'
+  if (token.includes('产品') || token.includes('concept') || token.includes('概念')) return 'concepts'
+  if (token.includes('认证') || token.includes('sources') || token.includes('来源')) return 'sources'
+  if (token.includes('专题') || token.includes('comparison') || token.includes('对比')) return 'comparisons'
+  if (token.includes('overview') || token.includes('总览')) return 'overview'
+  if (token.includes('log') || token.includes('日志')) return 'logs'
+  return 'inbox'
+}
+
+async function rebuildLlmWikiSectionCounts(owner = '', client = pool) {
+  const safeOwner = toText(owner || '').trim()
+  if (!safeOwner) return {}
+  const rowsResult = await client.query(
+    `SELECT category FROM ${llmWikiEntryTable} WHERE owner = $1`,
+    [safeOwner],
+  )
+  const bins = {
+    raw: 0,
+    inbox: 0,
+    sources: 0,
+    entities: 0,
+    concepts: 0,
+    comparisons: 0,
+    overview: 0,
+    logs: 0,
+  }
+  for (const row of (rowsResult.rows || [])) {
+    const sec = normalizeLlmWikiSection(row?.category)
+    bins[sec] = Math.max(0, Number(bins[sec] || 0)) + 1
+  }
+  for (const sec of Object.keys(bins)) {
+    await client.query(
+      `
+      INSERT INTO ${llmWikiSectionCountTable} (owner, section, total_count, updated_at)
+      VALUES ($1, $2, $3, NOW())
+      ON CONFLICT (owner, section)
+      DO UPDATE SET total_count = EXCLUDED.total_count, updated_at = NOW()
+      `,
+      [safeOwner, sec, Number(bins[sec] || 0)],
+    )
+  }
+  return bins
+}
+
+function buildLlmWikiSectionDeleteFilter(section = '') {
+  const sec = toText(section).toLowerCase()
+  if (sec === 'raw') {
+    return {
+      sql: `(LOWER(category) LIKE '%raw%' OR LOWER(category) LIKE '%source%' OR category LIKE '%原始%' OR category LIKE '%来源%')`,
+      params: [],
+    }
+  }
+  if (sec === 'inbox') return { sql: `(LOWER(category) = 'inbox' OR category LIKE '%收件箱%')`, params: [] }
+  if (sec === 'sources') return { sql: `(LOWER(category) LIKE '%source%' OR category LIKE '%来源%')`, params: [] }
+  if (sec === 'entities') return { sql: `(LOWER(category) LIKE '%entities%' OR category LIKE '%实体%' OR category LIKE '%企业%')`, params: [] }
+  if (sec === 'concepts') return { sql: `(LOWER(category) LIKE '%concept%' OR category LIKE '%概念%' OR category LIKE '%产品%')`, params: [] }
+  if (sec === 'comparisons') return { sql: `(LOWER(category) LIKE '%comparison%' OR category LIKE '%对比%' OR category LIKE '%专题%')`, params: [] }
+  if (sec === 'overview') return { sql: `(LOWER(category) LIKE '%overview%' OR category LIKE '%总览%')`, params: [] }
+  if (sec === 'logs') return { sql: `(LOWER(category) LIKE '%log%' OR category LIKE '%日志%')`, params: [] }
+  return { sql: `FALSE`, params: [] }
+}
+
+function toLlmWikiSyncTaskOutput(row = {}) {
+  return {
+    id: toText(row.id),
+    sourceType: normalizeLlmWikiSyncSource(row.source_type || row.sourceType),
+    status: toText(row.status || 'unknown'),
+    totalCount: Math.max(0, Number(row.total_count ?? row.totalCount ?? 0) || 0),
+    insertedCount: Math.max(0, Number(row.inserted_count ?? row.insertedCount ?? 0) || 0),
+    updatedCount: Math.max(0, Number(row.updated_count ?? row.updatedCount ?? 0) || 0),
+    errorMessage: toText(row.error_message || row.errorMessage),
+    summary: row.summary_json || row.summary || {},
+    createdAt: toLlmWikiDateTimeText(row.created_at || row.createdAt),
+    finishedAt: toLlmWikiDateTimeText(row.finished_at || row.finishedAt),
+  }
+}
+
+function parseLlmWikiLinks(raw = '') {
+  const text = toText(raw)
+  const links = []
+  const wikiRe = /\[\[([^[\]]+)\]\]/g
+  const mdRe = /\[[^\]]*?\]\(([^)]+\.md(?:#[^)]+)?)\)/g
+  let match = null
+  while ((match = wikiRe.exec(text))) {
+    const token = toText(match?.[1]).trim()
+    if (token) links.push(token)
+  }
+  while ((match = mdRe.exec(text))) {
+    const token = toText(match?.[1]).trim()
+    if (!token) continue
+    const file = token.split('#')[0].split('/').pop() || ''
+    const title = file.replace(/\.md$/i, '').trim()
+    if (title) links.push(title)
+  }
+  return links
+}
+
+function buildGraphFromLlmWikiEntries(entries = []) {
+  const rows = Array.isArray(entries) ? entries : []
+  const nodes = rows.map((row) => ({
+    nodeId: toText(row.id),
+    title: toText(row.title),
+    category: toText(row.category),
+    status: toText(row.status),
+    sourceCount: Math.max(0, Number(row.source_count || row.sourceCount || 0) || 0),
+    tags: Array.isArray(row.tags) ? row.tags.map((x) => toText(x)).filter(Boolean) : [],
+  })).filter((item) => item.nodeId)
+
+  const titleToNodeId = new Map()
+  for (const node of nodes) {
+    if (!node.title) continue
+    titleToNodeId.set(node.title, node.nodeId)
+  }
+
+  const edges = new Map()
+  const addEdge = (sourceId, targetId, relationType = 'reference', delta = 1) => {
+    const s = toText(sourceId).trim()
+    const t = toText(targetId).trim()
+    if (!s || !t || s === t) return
+    const type = toText(relationType || 'reference') || 'reference'
+    const key = `${s}::${t}::${type}`
+    edges.set(key, (edges.get(key) || 0) + Math.max(1, Number(delta || 1) || 1))
+  }
+
+  for (const row of rows) {
+    const sourceId = toText(row.id)
+    const refs = [
+      ...parseLlmWikiLinks(row.markdown),
+      ...parseLlmWikiLinks(row.content),
+    ]
+    for (const ref of refs) {
+      const targetId = titleToNodeId.get(ref)
+      if (targetId) addEdge(sourceId, targetId, 'reference', 1)
+    }
+  }
+
+  for (let i = 0; i < nodes.length; i += 1) {
+    const s = nodes[i]
+    const sourceTags = Array.isArray(s.tags) ? s.tags : []
+    if (sourceTags.length === 0) continue
+    for (let j = i + 1; j < nodes.length; j += 1) {
+      const t = nodes[j]
+      const targetTags = Array.isArray(t.tags) ? t.tags : []
+      if (targetTags.length === 0) continue
+      const shared = sourceTags.some((tag) => targetTags.includes(tag))
+      if (!shared) continue
+      const a = s.nodeId < t.nodeId ? s.nodeId : t.nodeId
+      const b = s.nodeId < t.nodeId ? t.nodeId : s.nodeId
+      addEdge(a, b, 'tag_cooccurrence', 1)
+    }
+  }
+
+  const edgeRows = Array.from(edges.entries()).map(([key, weight]) => {
+    const [sourceId, targetId, relationType] = key.split('::')
+    return { sourceId, targetId, relationType, weight: Math.max(1, Number(weight || 1) || 1) }
+  })
+
+  return { nodes, edges: edgeRows }
+}
+
+async function syncLlmWikiGraphToDb(client = pool) {
+  const entriesResult = await client.query(
+    `
+    SELECT id, title, category, status, content, markdown, source_count, tags
+    FROM ${llmWikiEntryTable}
+    ORDER BY updated_at DESC, id DESC
+    `,
+  )
+  const entries = Array.isArray(entriesResult.rows) ? entriesResult.rows : []
+  const graph = buildGraphFromLlmWikiEntries(entries)
+
+  await client.query(`DELETE FROM ${llmWikiGraphEdgeTable}`)
+  await client.query(`DELETE FROM ${llmWikiGraphNodeTable}`)
+
+  if (graph.nodes.length > 0) {
+    const batchSize = 500
+    for (let offset = 0; offset < graph.nodes.length; offset += batchSize) {
+      const chunk = graph.nodes.slice(offset, offset + batchSize)
+      const values = []
+      const placeholders = []
+      for (let i = 0; i < chunk.length; i += 1) {
+        const n = chunk[i]
+        const b = i * 6
+        placeholders.push(`($${b + 1}::text, $${b + 2}::text, $${b + 3}::text, $${b + 4}::text, $${b + 5}::int, $${b + 6}::jsonb, NOW())`)
+        values.push(n.nodeId, n.title, n.category, n.status, n.sourceCount, JSON.stringify(n.tags || []))
+      }
+      await client.query(
+        `
+        INSERT INTO ${llmWikiGraphNodeTable}
+        (node_id, title, category, status, source_count, tags, updated_at)
+        VALUES ${placeholders.join(',')}
+        `,
+        values,
+      )
+    }
+  }
+
+  if (graph.edges.length > 0) {
+    const batchSize = 500
+    for (let offset = 0; offset < graph.edges.length; offset += batchSize) {
+      const chunk = graph.edges.slice(offset, offset + batchSize)
+      const values = []
+      const placeholders = []
+      for (let i = 0; i < chunk.length; i += 1) {
+        const e = chunk[i]
+        const b = i * 5
+        placeholders.push(`($${b + 1}::text, $${b + 2}::text, $${b + 3}::text, $${b + 4}::int, NOW())`)
+        values.push(e.sourceId, e.targetId, e.relationType, e.weight)
+      }
+      await client.query(
+        `
+        INSERT INTO ${llmWikiGraphEdgeTable}
+        (source_id, target_id, relation_type, weight, updated_at)
+        VALUES ${placeholders.join(',')}
+        `,
+        values,
+      )
+    }
+  }
+
+  return {
+    nodeCount: graph.nodes.length,
+    edgeCount: graph.edges.length,
+  }
+}
+
+function slugifyForId(text = '') {
+  return toText(text).toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40) || 'item'
+}
+
+const llmWikiConceptStopwords = new Set([
+  '供应商',
+  '供应商档案',
+  '数据库',
+  '同步',
+  '来源',
+  '详情',
+  '链接',
+  '企业',
+  '公司',
+  '记录',
+  '词条',
+  '知识库',
+  '文档',
+  '状态',
+  '数据',
+  '信息',
+  '更新时间',
+  '联系方式',
+  '区域',
+  '主营产品',
+  '质量体系',
+  '来源表',
+  '总览',
+  '默认',
+  '未知',
+  'null',
+  'docx',
+  'pdf',
+  'mcp',
+])
+
+const llmWikiCompanySuffixRe = /(有限公司|股份有限公司|集团|科技|材料|新能源|有限责任公司|研究院|公司)$/
+const llmWikiConceptCatalog = [
+  'IATF16949',
+  'ISO9001',
+  'ISO14001',
+  'ISO45001',
+  'ADAS',
+  '辅助驾驶',
+  '自动驾驶',
+  '电芯',
+  '电池回收',
+  '三元前驱体',
+  '磷酸铁锂',
+  'IGBT',
+  'SiC',
+  '碳化硅',
+  '功率半导体',
+  '电磁阀',
+  '传感器',
+  '毫米波雷达',
+  '激光雷达',
+  'BMS',
+  'EMS',
+]
+
+function isLikelyConceptToken(text = '') {
+  const token = toText(text).trim()
+  if (!token) return false
+  if (token.length < 2 || token.length > 32) return false
+  const lower = token.toLowerCase()
+  if (llmWikiConceptStopwords.has(token) || llmWikiConceptStopwords.has(lower)) return false
+  if (/^\d+$/.test(token)) return false
+  if (/^[#_/\-]+$/.test(token)) return false
+  if (/^(https?:\/\/|www\.)/i.test(token)) return false
+  if (/^(db|rag|web|json|markdown)$/i.test(token)) return false
+  if (/\.(pdf|docx?|xlsx?|pptx?)$/i.test(token)) return false
+  if (/\[mcp\]/i.test(token)) return false
+  if (llmWikiCompanySuffixRe.test(token)) return false
+  return /[\u4e00-\u9fa5a-zA-Z]/.test(token)
+}
+
+function extractConceptTokensFromText(text = '') {
+  const input = toText(text)
+  if (!input) return []
+  const tokens = []
+  const matches = input.match(/[\u4e00-\u9fa5A-Za-z0-9+.-]{2,32}/g) || []
+  for (const raw of matches) {
+    const token = toText(raw).trim().replace(/^[^\u4e00-\u9fa5A-Za-z0-9]+|[^\u4e00-\u9fa5A-Za-z0-9]+$/g, '')
+    if (!isLikelyConceptToken(token)) continue
+    tokens.push(token)
+  }
+  return tokens
+}
+
+function buildConceptRowsFromDbRows(baseRows = []) {
+  const conceptMap = new Map()
+  const catalogMap = new Map(llmWikiConceptCatalog.map((x) => [x.toLowerCase(), x]))
+  for (const row of (Array.isArray(baseRows) ? baseRows : [])) {
+    const title = toText(row?.title)
+    const content = toText(row?.content)
+    const markdown = toText(row?.markdown)
+    const tags = Array.isArray(row?.tags) ? row.tags.map((x) => toText(x)) : []
+    const text = `${title}\n${content}\n${markdown}\n${tags.join(' ')}`
+    const lowerText = text.toLowerCase()
+    for (const [k, canonical] of catalogMap.entries()) {
+      if (!lowerText.includes(k)) continue
+      if (!conceptMap.has(canonical)) conceptMap.set(canonical, { count: 0, refs: new Set() })
+      const item = conceptMap.get(canonical)
+      item.count += 2
+      if (title) item.refs.add(title)
+    }
+    const rowTokens = extractConceptTokensFromText(text)
+    for (const token of rowTokens) {
+      if (!conceptMap.has(token)) {
+        conceptMap.set(token, { count: 0, refs: new Set() })
+      }
+      const item = conceptMap.get(token)
+      item.count += 1
+      if (title) item.refs.add(title)
+    }
+  }
+  const sorted = [...conceptMap.entries()]
+    .filter(([concept, info]) => {
+      if (!isLikelyConceptToken(concept)) return false
+      const count = Number(info?.count || 0)
+      const isCatalog = llmWikiConceptCatalog.includes(concept)
+      return isCatalog ? count >= 1 : count >= 2
+    })
+    .sort((a, b) => Number(b[1]?.count || 0) - Number(a[1]?.count || 0))
+    .slice(0, 80)
+  return sorted.map(([concept, info]) => {
+    const refs = [...(info?.refs || new Set())].slice(0, 8)
+    return {
+      sourceId: `db_concept_${slugifyForId(concept)}`,
+      title: concept,
+      category: 'concepts',
+      content: `出现次数：${Number(info?.count || 0)}\n关联词条：${refs.join('、')}`,
+      markdown: `# ${concept}\n\n- 概念：${concept}\n- 出现次数：${Number(info?.count || 0)}\n- 关联词条：${refs.length > 0 ? refs.join('、') : '无'}`,
+      tags: ['db', 'concept', 'auto-extract'],
+      sourceMeta: { generated: true, frequency: Number(info?.count || 0), refs },
+    }
+  })
+}
+
+async function refineConceptsByLlm(candidateConcepts = [], baseRows = []) {
+  const candidates = Array.isArray(candidateConcepts) ? candidateConcepts : []
+  if (candidates.length === 0) return []
+  const apiKey = toText(process.env.OPENAI_API_KEY || process.env.LANGCHAIN_API_KEY || process.env.EMBEDDING_API_KEY)
+  if (!apiKey) return []
+  const sampleRows = (Array.isArray(baseRows) ? baseRows : []).slice(0, 20)
+  const contextLines = sampleRows.map((row, idx) => {
+    const title = toText(row?.title)
+    const content = toText(row?.content).slice(0, 160)
+    const tags = Array.isArray(row?.tags) ? row.tags.map((x) => toText(x)).filter(Boolean).join(', ') : ''
+    return `${idx + 1}. ${title} | ${content} | tags=${tags}`
+  })
+  const prompt = [
+    '你是工业供应链 Wiki 的概念抽取器。',
+    '请从候选概念中保留“可作为知识词条”的概念，去掉泛词、噪声词，并做同义合并。',
+    '仅返回 JSON 数组字符串，例如：["电池回收","IGBT","IATF16949"]。',
+    '候选概念：',
+    JSON.stringify(candidates.slice(0, 120)),
+    '样本文本：',
+    contextLines.join('\n'),
+  ].join('\n')
+  try {
+    const result = await callLangchainCompatibleChat([
+      { role: 'system', content: '你只输出 JSON 数组，不要输出其他文本。' },
+      { role: 'user', content: prompt },
+    ], { temperature: 0.1 })
+    const answer = toText(result?.answer)
+    const jsonText = (answer.match(/\[[\s\S]*\]/) || [])[0]
+    if (!jsonText) return []
+    const parsed = JSON.parse(jsonText)
+    if (!Array.isArray(parsed)) return []
+    return parsed
+      .map((x) => toText(x).trim())
+      .filter((x) => isLikelyConceptToken(x))
+      .slice(0, 80)
+  } catch {
+    return []
+  }
+}
+
+function buildCatalogFallbackConceptRows(baseRows = [], prefix = 'db') {
+  const rows = Array.isArray(baseRows) ? baseRows : []
+  const text = rows
+    .slice(0, 120)
+    .map((row) => `${toText(row?.title)}\n${toText(row?.content)}\n${toText(row?.markdown)}`)
+    .join('\n')
+    .toLowerCase()
+  const hits = []
+  for (const concept of llmWikiConceptCatalog) {
+    if (text.includes(concept.toLowerCase())) hits.push(concept)
+  }
+  return hits.map((concept) => ({
+    sourceId: `${prefix}_concept_${slugifyForId(concept)}`,
+    title: concept,
+    category: 'concepts',
+    content: `概念：${concept}`,
+    markdown: `# ${concept}\n\n- 概念：${concept}\n- 来源：行业词典兜底抽取`,
+    tags: [prefix, 'concept', 'catalog-fallback'],
+    sourceMeta: { generated: true, mode: 'catalog-fallback' },
+  }))
+}
+
+function buildMandatoryConceptRow(baseRows = [], prefix = 'db') {
+  const rows = Array.isArray(baseRows) ? baseRows : []
+  const firstTitle = toText(rows[0]?.title || '')
+  const label = firstTitle ? `${firstTitle} 关键概念` : `${String(prefix || 'db').toUpperCase()} 关键概念`
+  return {
+    sourceId: `${prefix}_concept_mandatory_seed`,
+    title: label,
+    category: 'concepts',
+    content: `概念：${label}`,
+    markdown: `# ${label}\n\n- 概念：${label}\n- 来源：强制概念抽取（兜底）`,
+    tags: [prefix, 'concept', 'mandatory-fallback'],
+    sourceMeta: { generated: true, mode: 'mandatory-fallback' },
+  }
+}
+
+function buildDbOverviewRow(baseRows = [], selectedTables = [], conceptRows = []) {
+  const rows = Array.isArray(baseRows) ? baseRows : []
+  const tableCounter = new Map()
+  const categoryCounter = new Map()
+  const tagsCounter = new Map()
+  for (const row of rows) {
+    const tableName = toText(row?.sourceMeta?.tableName || '')
+    if (tableName) tableCounter.set(tableName, (tableCounter.get(tableName) || 0) + 1)
+    const category = toText(row?.category || 'inbox')
+    categoryCounter.set(category, (categoryCounter.get(category) || 0) + 1)
+    const tags = Array.isArray(row?.tags) ? row.tags : []
+    for (const tag of tags.map((x) => toText(x)).filter(Boolean)) {
+      tagsCounter.set(tag, (tagsCounter.get(tag) || 0) + 1)
+    }
+  }
+  const topTables = [...tableCounter.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8)
+  const topCategories = [...categoryCounter.entries()].sort((a, b) => b[1] - a[1])
+  const topTags = [...tagsCounter.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12)
+  const selectedText = (Array.isArray(selectedTables) && selectedTables.length > 0) ? selectedTables.join(', ') : 'supplier_base_info'
+  const tableLines = topTables.length > 0 ? topTables.map(([name, count]) => `- ${name}: ${count}`).join('\n') : '- 无'
+  const categoryLines = topCategories.length > 0 ? topCategories.map(([name, count]) => `- ${name}: ${count}`).join('\n') : '- 无'
+  const tagLines = topTags.length > 0 ? topTags.map(([name, count]) => `- ${name}: ${count}`).join('\n') : '- 无'
+  const conceptCount = Array.isArray(conceptRows) ? conceptRows.length : 0
+  return {
+    sourceId: `db_sync_log_${Date.now()}`,
+    title: `DB同步日志 ${new Date().toISOString().slice(0, 19).replace('T', ' ')}`,
+    category: 'logs',
+    content: `本次同步基础词条 ${rows.length} 条，概念抽取 ${conceptCount} 条。`,
+    markdown: `# DB同步日志\n\n- 同步来源表：${selectedText}\n- 基础词条数量：${rows.length}\n- 概念抽取数量：${conceptCount}\n\n## 分类分布\n${categoryLines}\n\n## 来源表分布\n${tableLines}\n\n## 高频标签\n${tagLines}`,
+    tags: ['db', 'logs', 'sync', 'auto-generate'],
+    sourceMeta: {
+      selectedTables: Array.isArray(selectedTables) ? selectedTables : [],
+      baseCount: rows.length,
+      conceptCount,
+      topTables: topTables.map(([name, count]) => ({ name, count })),
+      topCategories: topCategories.map(([name, count]) => ({ name, count })),
+      topTags: topTags.map(([name, count]) => ({ name, count })),
+    },
+  }
+}
+
+async function appendLlmWikiLogEntry(owner = '', title = '', markdown = '', sourceType = 'system', sourceMeta = {}, tags = []) {
+  const safeOwner = toText(owner || 'unknown')
+  const safeTitle = toText(title).slice(0, 255)
+  if (!safeTitle) return
+  const id = buildLlmWikiEntryKey(`log_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`)
+  const safeMarkdown = toText(markdown)
+  const safeContent = safeMarkdown.slice(0, 4000)
+  const safeTags = Array.isArray(tags) ? tags.map((x) => toText(x)).filter(Boolean).slice(0, 50) : []
+  try {
+    await pool.query(
+      `
+      INSERT INTO ${llmWikiEntryTable}
+      (id, owner, title, category, status, content, markdown, source_count, source_type, source_meta, tags, created_at, updated_at)
+      VALUES ($1, $2, $3, 'logs', '已确认', $4, $5, 1, $6, $7::jsonb, $8::jsonb, NOW(), NOW())
+      `,
+      [id, safeOwner, safeTitle, safeContent, safeMarkdown, toText(sourceType || 'system').slice(0, 32), JSON.stringify(sourceMeta || {}), JSON.stringify(safeTags)],
+    )
+  } catch {
+    // keep main flow stable
+  }
+}
+
+async function migrateLegacyLlmWikiOverviewToLogs() {
+  try {
+    await pool.query(
+      `
+      UPDATE ${llmWikiEntryTable}
+      SET
+        category = 'logs',
+        title = CASE
+          WHEN title = '数据库同步总览' THEN 'DB同步日志(历史)'
+          ELSE title
+        END,
+        tags = CASE
+          WHEN jsonb_typeof(tags) = 'array' THEN
+            (SELECT jsonb_agg(DISTINCT x) FROM jsonb_array_elements_text(tags || '["logs","sync"]'::jsonb) AS t(x))
+          ELSE '["logs","sync"]'::jsonb
+        END,
+        updated_at = NOW()
+      WHERE category IN ('overview', 'inbox')
+        AND (title = '数据库同步总览' OR title LIKE 'DB同步日志%')
+      `,
+    )
+  } catch {
+    // keep startup stable
+  }
+}
+
+async function createLlmWikiSyncTask(owner = '', sourceType = 'db', taskIdInput = '') {
+  const safeOwner = toText(owner || 'unknown')
+  const source = normalizeLlmWikiSyncSource(sourceType)
+  const taskId = toText(taskIdInput || '').trim() || `sync_${source}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`.slice(0, 64)
+  await pool.query(
+    `
+    INSERT INTO ${llmWikiSyncTaskTable}
+    (id, owner, source_type, status, total_count, inserted_count, updated_count, error_message, summary_json, created_at)
+    VALUES ($1, $2, $3, 'running', 0, 0, 0, '', '{}'::jsonb, NOW())
+    `,
+    [taskId, safeOwner, source],
+  )
+  return taskId
+}
+
+async function runLlmWikiSyncBySource(owner = '', sourceType = 'db', limit = 200, options = {}, existingTaskId = '') {
+  const safeOwner = toText(owner || 'unknown')
+  const source = normalizeLlmWikiSyncSource(sourceType)
+  const safeLimit = Math.max(1, Math.min(1000, Number(limit || 200) || 200))
+  const taskId = toText(existingTaskId || '').trim() || await createLlmWikiSyncTask(safeOwner, source)
+
+  try {
+    const updateTaskStage = async (stage = '', stageProgress = 0, extra = {}) => {
+      const bounded = Math.max(0, Math.min(100, Number(stageProgress || 0) || 0))
+      await pool.query(
+        `
+        UPDATE ${llmWikiSyncTaskTable}
+        SET summary_json = COALESCE(summary_json, '{}'::jsonb) || jsonb_build_object('stage', $2::text, 'stageProgress', $3::int, 'updatedAt', NOW()) || $4::jsonb
+        WHERE id = $1
+        `,
+        [taskId, toText(stage), bounded, JSON.stringify(extra || {})],
+      )
+    }
+    await updateTaskStage('starting', 2, { message: '任务已启动' })
+    const isTaskCancelled = async () => {
+      const result = await pool.query(`SELECT status FROM ${llmWikiSyncTaskTable} WHERE id = $1 LIMIT 1`, [taskId])
+      const status = toText(result.rows?.[0]?.status || '').toLowerCase()
+      return status === 'cancelled'
+    }
+    let rows = []
+    if (source === 'db') {
+      await updateTaskStage('collecting', 8, { message: '正在读取数据库记录' })
+      const tableNames = Array.isArray(options.tableNames) ? options.tableNames.map((x) => toText(x)).filter(Boolean) : []
+      const selected = tableNames.length > 0 ? tableNames : ['supplier_base_info']
+      const selectedCount = Math.max(1, selected.length)
+      let collectedRows = 0
+      let processedTables = 0
+      const updateCollectingProgress = async (tableName = '') => {
+        processedTables += 1
+        const p = 8 + Math.round((Math.min(processedTables, selectedCount) / selectedCount) * 18)
+        await updateTaskStage('collecting', p, {
+          message: `正在读取 ${tableName}（${processedTables}/${selectedCount}）`,
+          totalCount: collectedRows,
+          processed: collectedRows,
+        })
+      }
+      const enableEntityExtract = options.enableEntityExtract !== false
+      const enableConceptExtract = options.enableConceptExtract === true
+      const enableOverview = options.enableOverview === true
+      const genericDbTables = {
+        supply_chain_node: supplyChainNodeTable,
+        gas_supply_chain_node: gasSupplyChainNodeTable,
+        supplier_profile_customer_item: supplierProfileCustomerTable,
+        supplier_profile_product_case_item: supplierProfileProductCaseTable,
+        supplier_profile_financing_item: supplierProfileFinancingTable,
+        supplier_profile_software_copyright_item: supplierProfileSoftwareCopyrightTable,
+        supplier_profile_patent_item: supplierProfilePatentTable,
+        supplier_profile_admin_license_item: supplierProfileAdminLicenseTable,
+        supplier_profile_admin_license_gs_item: supplierProfileAdminLicenseGsTable,
+        supplier_profile_trade_credit_item: supplierProfileTradeCreditTable,
+        supplier_profile_court_notice_item: supplierProfileCourtNoticeTable,
+        supplier_profile_production_base_item: supplierProfileProductionBaseTable,
+        supplier_profile_news_item: supplierProfileNewsTable,
+        supplier_profile_equipment_item: supplierProfileEquipmentTable,
+      }
+      const supplierProfileDetailTables = new Set([
+        'supplier_profile_customer_item',
+        'supplier_profile_product_case_item',
+        'supplier_profile_financing_item',
+        'supplier_profile_software_copyright_item',
+        'supplier_profile_patent_item',
+        'supplier_profile_admin_license_item',
+        'supplier_profile_admin_license_gs_item',
+        'supplier_profile_trade_credit_item',
+        'supplier_profile_court_notice_item',
+        'supplier_profile_production_base_item',
+        'supplier_profile_news_item',
+        'supplier_profile_equipment_item',
+      ])
+      const addGenericTableRows = async (tableName = '', category = 'sources') => {
+        const sqlTable = genericDbTables[tableName]
+        if (!sqlTable) return
+        const result = await pool.query(
+          `
+          SELECT id, to_jsonb(t) AS payload
+          FROM ${sqlTable} t
+          ORDER BY id DESC
+          LIMIT $1
+          `,
+          [safeLimit],
+        )
+        const tableRows = (result.rows || []).map((row) => ({
+          sourceId: `db_${tableName}_${row.id}`,
+          title: `${tableName} #${row.id}`,
+          category,
+          content: JSON.stringify(row.payload || {}),
+          markdown: `# ${tableName} #${row.id}\n\n\`\`\`json\n${JSON.stringify(row.payload || {}, null, 2)}\n\`\`\``,
+          tags: category === 'inbox' ? ['db', tableName, 'pending-classify'] : ['db', tableName],
+          sourceMeta: { tableName, recordId: row.id },
+        }))
+        rows.push(...tableRows)
+        return tableRows.length
+      }
+      if (selected.includes('supplier_base_info')) {
+        const result = await pool.query(
+          `
+          SELECT id, company_name AS "companyName", main_products AS "mainProducts", quality_system AS "qualitySystem", region, contact_action AS "contactAction", detail_url AS "detailUrl", updated_at AS "updatedAt"
+          FROM ${supplierBaseTable}
+          ORDER BY id DESC
+          LIMIT $1
+          `,
+          [safeLimit],
+        )
+        const dbRows = (result.rows || []).map((row) => ({
+          sourceId: `db_${row.id}`,
+          title: toText(row.companyName || `供应商-${row.id}`),
+          category: 'sources',
+          content: `主营产品：${toText(row.mainProducts)}\n质量体系：${toText(row.qualitySystem)}\n区域：${toText(row.region)}\n联系方式：${toText(row.contactAction)}`,
+          markdown: `# ${toText(row.companyName || `供应商-${row.id}`)}\n\n- 主营产品：${toText(row.mainProducts)}\n- 质量体系：${toText(row.qualitySystem)}\n- 区域：${toText(row.region)}\n- 联系方式：${toText(row.contactAction)}\n- 来源：${toText(row.detailUrl)}`,
+          tags: ['db', 'supplier'],
+          sourceMeta: { tableName: 'supplier_base_info', detailUrl: toText(row.detailUrl), updatedAt: toLlmWikiDateTimeText(row.updatedAt) },
+        }))
+        rows.push(...dbRows)
+        collectedRows += dbRows.length
+        await updateCollectingProgress('supplier_base_info')
+      }
+      if (selected.includes('knowledge_base_document')) {
+        const kbResult = await pool.query(
+          `
+          SELECT id, name, kb_id AS "kbId", url, updated_at AS "updatedAt"
+          FROM ${knowledgeBaseDocumentTable}
+          ORDER BY id DESC
+          LIMIT $1
+          `,
+          [safeLimit],
+        )
+        const kbRows = (kbResult.rows || []).map((row) => ({
+          sourceId: `db_kb_${toText(row.id)}`,
+          title: toText(row.name || `知识文档-${row.id}`),
+          category: 'sources',
+          content: `知识库：${toText(row.kbId)}\n来源：${toText(row.url)}`,
+          markdown: `# ${toText(row.name || `知识文档-${row.id}`)}\n\n- 知识库：${toText(row.kbId)}\n- 来源：${toText(row.url)}`,
+          tags: ['db', 'kb'],
+          sourceMeta: { tableName: 'knowledge_base_document', kbId: toText(row.kbId), url: toText(row.url), updatedAt: toLlmWikiDateTimeText(row.updatedAt) },
+        }))
+        rows.push(...kbRows)
+        collectedRows += kbRows.length
+        await updateCollectingProgress('knowledge_base_document')
+      }
+      if (selected.includes('crawl_info')) {
+        const crawlResult = await pool.query(
+          `
+          SELECT id, page_title AS "pageTitle", page_url AS "pageUrl", text_sample AS "textSample", created_at AS "createdAt"
+          FROM ${crawlInfoTable}
+          ORDER BY id DESC
+          LIMIT $1
+          `,
+          [safeLimit],
+        )
+        const crawlRows = (crawlResult.rows || []).map((row) => ({
+          sourceId: `db_crawl_${row.id}`,
+          title: toText(row.pageTitle || `采集记录-${row.id}`),
+          category: 'sources',
+          content: toText(row.textSample),
+          markdown: `# ${toText(row.pageTitle || `采集记录-${row.id}`)}\n\n${toText(row.textSample)}\n\n来源：${toText(row.pageUrl)}`,
+          tags: ['db', 'crawl'],
+          sourceMeta: { tableName: 'crawl_info', pageUrl: toText(row.pageUrl), createdAt: toLlmWikiDateTimeText(row.createdAt) },
+        }))
+        rows.push(...crawlRows)
+        collectedRows += crawlRows.length
+        await updateCollectingProgress('crawl_info')
+      }
+      if (selected.includes('supplier_profile')) {
+        const compactRecordToLines = (record = {}, skipKeys = []) => {
+          const skip = new Set((Array.isArray(skipKeys) ? skipKeys : []).map((k) => toText(k)))
+          return Object.entries(record || {})
+            .filter(([key, value]) => !skip.has(key) && value !== null && value !== undefined && String(value).trim() !== '')
+            .map(([key, value]) => `${key}: ${typeof value === 'object' ? JSON.stringify(value) : toText(value)}`)
+        }
+        const sectionFromMain = (title = '', main = {}, keys = []) => {
+          const lines = []
+          for (const key of keys) {
+            const v = main?.[key]
+            if (v === null || v === undefined) continue
+            if (typeof v === 'string' && !v.trim()) continue
+            if (Array.isArray(v) && v.length === 0) continue
+            if (typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === 0) continue
+            lines.push(`${key}: ${typeof v === 'object' ? JSON.stringify(v) : toText(v)}`)
+          }
+          const body = lines.length > 0 ? lines.map((line) => `- ${line}`).join('\n') : '- 暂无'
+          return `## ${title}\n\n${body}`
+        }
+        const profileResult = await pool.query(
+          `
+          SELECT id, company_name AS "companyName", profile_source AS "profileSource", fit_oems AS "fitOems",
+                 product_fit_details AS "productFitDetails", company_intro AS "companyIntro", supplier_profile_url AS "profileUrl",
+                 to_jsonb(t) AS row_json,
+                 updated_at AS "updatedAt"
+          FROM ${supplierProfileTable} t
+          ORDER BY id DESC
+          LIMIT $1
+          `,
+          [safeLimit],
+        )
+        const profileIds = (profileResult.rows || []).map((row) => Number(row.id)).filter((n) => Number.isFinite(n))
+        const detailSectionByProfile = new Map()
+        const appendProfileSection = (profileId, sectionTitle, lines = []) => {
+          const key = Number(profileId)
+          if (!Number.isFinite(key)) return
+          if (!detailSectionByProfile.has(key)) detailSectionByProfile.set(key, new Map())
+          const cleanedLines = (Array.isArray(lines) ? lines : []).map((x) => toText(x)).filter(Boolean)
+          if (cleanedLines.length === 0) return
+          const sectionMap = detailSectionByProfile.get(key)
+          if (!sectionMap.has(sectionTitle)) sectionMap.set(sectionTitle, [])
+          sectionMap.get(sectionTitle).push(...cleanedLines)
+        }
+        if (profileIds.length > 0) {
+          const detailTables = [
+            { table: supplierProfileProductionBaseTable, title: 'A 基本信息（生产基地）' },
+            { table: supplierProfileCustomerTable, title: 'B 业务信息（配套客户）' },
+            { table: supplierProfileProductCaseTable, title: 'C 产品案例/体系认证/企业设备' },
+            { table: supplierProfileNewsTable, title: 'D 工商信息（新闻）' },
+            { table: supplierProfilePatentTable, title: 'E 专利信息' },
+            { table: supplierProfileAdminLicenseTable, title: 'F 行政许可（信用中国）' },
+            { table: supplierProfileTradeCreditTable, title: 'G 进出口信用' },
+            { table: supplierProfileFinancingTable, title: 'H 融资信息' },
+            { table: supplierProfileSoftwareCopyrightTable, title: 'I 软件著作权' },
+            { table: supplierProfileCourtNoticeTable, title: 'J 开庭公告' },
+            { table: supplierProfileAdminLicenseGsTable, title: 'K 行政许可（工商局）' },
+            { table: supplierProfileEquipmentTable, title: 'C 企业设备' },
+          ]
+          for (const item of detailTables) {
+            const perProfileLimit = 50
+            const detailResult = await pool.query(
+              `
+              SELECT x."profileId", x.row_json
+              FROM (
+                SELECT
+                  t.profile_id AS "profileId",
+                  to_jsonb(t) AS row_json,
+                  ROW_NUMBER() OVER (PARTITION BY t.profile_id ORDER BY t.id DESC) AS rn
+                FROM ${item.table} t
+                WHERE t.profile_id = ANY($1::bigint[])
+              ) x
+              WHERE x.rn <= $2
+              ORDER BY x."profileId" DESC
+              `,
+              [profileIds, perProfileLimit],
+            )
+            for (const row of (detailResult.rows || [])) {
+              const profileId = Number(row.profileId)
+              const json = row?.row_json && typeof row.row_json === 'object' ? row.row_json : {}
+              const lines = compactRecordToLines(json, ['id', 'profile_id', 'profileId', 'created_at', 'updated_at'])
+              if (lines.length === 0) continue
+              appendProfileSection(profileId, item.title, lines.slice(0, 40))
+            }
+          }
+        }
+        const profileRows = (profileResult.rows || []).map((row) => ({
+          sourceId: `db_profile_${row.id}`,
+          title: toText(row.companyName || `供应商档案-${row.id}`),
+          category: 'sources',
+          content: `来源：${toText(row.profileSource)}\n配套客户：${toText(row.fitOems)}\n产品适配：${toText(row.productFitDetails)}`,
+          markdown: (() => {
+            const main = row?.row_json && typeof row.row_json === 'object' ? row.row_json : {}
+            const sections = [
+              sectionFromMain('A 基本信息', main, ['company_name', 'company_name_en', 'legal_representative', 'registered_capital', 'org_code', 'established_date', 'address', 'postal_code', 'contacts']),
+              sectionFromMain('B 业务信息', main, ['employees_count', 'fit_oems', 'fit_situation', 'main_product_names', 'main_products', 'products', 'website', 'business_info']),
+              sectionFromMain('C 产品案例/体系认证/企业设备', main, ['product_fit_details', 'certificates', 'certificate_items']),
+              sectionFromMain('D 工商信息', main, ['industrial_commercial_info']),
+              sectionFromMain('E 专利信息（主档案补充）', main, ['patent_items']),
+              sectionFromMain('F 行政许可（信用中国）（主档案补充）', main, ['admin_license_items']),
+              sectionFromMain('G 进出口信用（主档案补充）', main, ['trade_credit_items', 'export_situation', 'export_countries']),
+              sectionFromMain('H 融资信息（主档案补充）', main, ['financing_items']),
+              sectionFromMain('I 软件著作权（主档案补充）', main, ['software_copyright_items']),
+              sectionFromMain('J 开庭公告（主档案补充）', main, ['court_notice_items']),
+              sectionFromMain('K 行政许可（工商局）（主档案补充）', main, ['admin_license_gs_items']),
+            ]
+            const detailSectionMap = detailSectionByProfile.get(Number(row.id)) || new Map()
+            const detailSections = Array.from(detailSectionMap.entries()).map(([title, lines]) => (
+              `## ${title}\n\n${(Array.isArray(lines) ? lines : []).map((line) => `- ${line}`).join('\n')}`
+            ))
+            const detailOrPlaceholder = detailSections.length > 0
+              ? detailSections.join('\n\n')
+              : '## 明细子表\n\n- 暂无'
+            return `# ${toText(row.companyName || `供应商档案-${row.id}`)}\n\n## 核心摘要\n\n- 来源：${toText(row.profileSource)}\n- 配套客户：${toText(row.fitOems)}\n- 产品适配：${toText(row.productFitDetails)}\n- 企业简介：${toText(row.companyIntro)}\n- 档案链接：${toText(row.profileUrl)}\n\n${sections.join('\n\n')}\n\n${detailOrPlaceholder}`
+          })(),
+          tags: ['db', 'supplier_profile'],
+          sourceMeta: { tableName: 'supplier_profile', profileUrl: toText(row.profileUrl), updatedAt: toLlmWikiDateTimeText(row.updatedAt) },
+        }))
+        rows.push(...profileRows)
+        collectedRows += profileRows.length
+        await updateCollectingProgress('supplier_profile')
+      }
+      for (const tableName of Object.keys(genericDbTables)) {
+        if (!selected.includes(tableName)) continue
+        if (selected.includes('supplier_profile') && supplierProfileDetailTables.has(tableName)) continue
+        await updateTaskStage('collecting', 18, { message: `正在读取 ${tableName}` })
+        const n = await addGenericTableRows(tableName, 'sources')
+        collectedRows += Number(n || 0)
+        await updateCollectingProgress(tableName)
+      }
+      const baseRows = [...rows]
+      if (enableEntityExtract) {
+        await updateTaskStage('entity_extract', 28, { message: '正在进行实体抽取' })
+        const entityRows = baseRows
+          .filter((row) => /supplier|公司|企业|profile|厂家/i.test(`${toText(row?.title)} ${toText(row?.content)} ${(Array.isArray(row?.tags) ? row.tags.join(' ') : '')}`))
+          .slice(0, safeLimit)
+          .map((row) => ({
+            ...row,
+            sourceId: `${toText(row.sourceId)}_entity`,
+            category: 'entities',
+            tags: Array.from(new Set([...(Array.isArray(row.tags) ? row.tags : []), 'entity-extract'])),
+          }))
+        rows.push(...entityRows)
+      }
+      let conceptRows = []
+      if (enableConceptExtract) {
+        await updateTaskStage('concept_extract', 45, { message: '正在进行概念抽取' })
+        const ruleConceptRows = buildConceptRowsFromDbRows(baseRows)
+        const skipLlmRefine = selected.length > 8 || baseRows.length > 400
+        const llmConcepts = skipLlmRefine ? [] : await refineConceptsByLlm(ruleConceptRows.map((x) => toText(x.title)), baseRows)
+        if (llmConcepts.length > 0) {
+          const ruleRowMap = new Map(ruleConceptRows.map((item) => [toText(item.title), item]))
+          const llmRows = llmConcepts.map((concept) => {
+            const hit = ruleRowMap.get(concept)
+            if (hit) return hit
+            return {
+              sourceId: `db_concept_${slugifyForId(concept)}`,
+              title: concept,
+              category: 'concepts',
+              content: `概念：${concept}`,
+              markdown: `# ${concept}\n\n- 概念：${concept}\n- 来源：数据库同步语义抽取`,
+              tags: ['db', 'concept', 'llm-extract'],
+              sourceMeta: { generated: true, mode: 'llm' },
+            }
+          })
+          const needSupplement = Math.max(0, 24 - llmRows.length)
+          const supplementRows = ruleConceptRows
+            .filter((item) => !llmConcepts.includes(toText(item.title)))
+            .slice(0, needSupplement)
+          conceptRows = [...llmRows, ...supplementRows]
+        } else {
+          conceptRows = ruleConceptRows.slice(0, 24)
+        }
+      }
+      if (conceptRows.length === 0) {
+        conceptRows = buildCatalogFallbackConceptRows(baseRows, 'db')
+      }
+      if (enableConceptExtract && conceptRows.length === 0) conceptRows = [buildMandatoryConceptRow(baseRows, 'db')]
+      if (conceptRows.length > 0) rows.push(...conceptRows)
+      if (enableOverview) rows.push(buildDbOverviewRow(baseRows, selected, conceptRows))
+    } else if (source === 'rag') {
+      await updateTaskStage('collecting', 10, { message: '正在读取RAG文档' })
+      const kbIds = Array.isArray(options.kbIds) ? options.kbIds.map((x) => toText(x)).filter(Boolean) : []
+      const enableEntityExtract = options.enableEntityExtract === true
+      const enableConceptExtract = options.enableConceptExtract === true
+      const enableOverview = options.enableOverview === true
+      const result = await pool.query(
+        `
+        SELECT id, kb_id AS "kbId", name, url, status, chunk_count AS "chunkCount", updated_at AS "updatedAt"
+        FROM ${knowledgeBaseDocumentTable}
+        WHERE ($2::text[] IS NULL OR array_length($2::text[], 1) IS NULL OR kb_id = ANY($2::text[]))
+        ORDER BY updated_at DESC, id DESC
+        LIMIT $1
+        `,
+        [safeLimit, kbIds.length > 0 ? kbIds : null],
+      )
+      rows = (result.rows || []).map((row) => ({
+        sourceId: `rag_${toText(row.id)}`,
+        title: toText(row.name || `知识文档-${row.id}`),
+        category: 'sources',
+        content: `知识库：${toText(row.kbId)}\n状态：${toText(row.status)}\nChunk数：${Number(row.chunkCount || 0)}`,
+        markdown: `# ${toText(row.name || `知识文档-${row.id}`)}\n\n- 知识库：${toText(row.kbId)}\n- 状态：${toText(row.status)}\n- Chunk数：${Number(row.chunkCount || 0)}\n- 来源：${toText(row.url)}`,
+        tags: ['rag', 'kb'],
+        sourceMeta: { kbId: toText(row.kbId), url: toText(row.url), updatedAt: toLlmWikiDateTimeText(row.updatedAt) },
+      }))
+      const baseRows = [...rows]
+      if (enableEntityExtract) {
+        await updateTaskStage('entity_extract', 30, { message: '正在进行实体抽取' })
+        const entityRows = baseRows
+          .filter((row) => /supplier|公司|企业|profile|厂家/i.test(`${toText(row?.title)} ${toText(row?.content)} ${(Array.isArray(row?.tags) ? row.tags.join(' ') : '')}`))
+          .slice(0, safeLimit)
+          .map((row) => ({
+            ...row,
+            sourceId: `${toText(row.sourceId)}_entity`,
+            category: 'entities',
+            tags: Array.from(new Set([...(Array.isArray(row.tags) ? row.tags : []), 'entity-extract'])),
+          }))
+        rows.push(...entityRows)
+      }
+      let conceptRows = []
+      if (enableConceptExtract) {
+        await updateTaskStage('concept_extract', 48, { message: '正在进行概念抽取' })
+        const ruleConceptRows = buildConceptRowsFromDbRows(baseRows)
+        const skipLlmRefine = baseRows.length > 400
+        const llmConcepts = skipLlmRefine ? [] : await refineConceptsByLlm(ruleConceptRows.map((x) => toText(x.title)), baseRows)
+        if (llmConcepts.length > 0) {
+          const ruleRowMap = new Map(ruleConceptRows.map((item) => [toText(item.title), item]))
+          const llmRows = llmConcepts.map((concept) => {
+            const hit = ruleRowMap.get(concept)
+            if (hit) return { ...hit, sourceId: `rag_concept_${slugifyForId(concept)}`, tags: ['rag', 'concept', 'llm-extract'] }
+            return {
+              sourceId: `rag_concept_${slugifyForId(concept)}`,
+              title: concept,
+              category: 'concepts',
+              content: `概念：${concept}`,
+              markdown: `# ${concept}\n\n- 概念：${concept}\n- 来源：RAG同步语义抽取`,
+              tags: ['rag', 'concept', 'llm-extract'],
+              sourceMeta: { generated: true, mode: 'llm' },
+            }
+          })
+          const needSupplement = Math.max(0, 24 - llmRows.length)
+          const supplementRows = ruleConceptRows
+            .filter((item) => !llmConcepts.includes(toText(item.title)))
+            .slice(0, needSupplement)
+            .map((item) => ({ ...item, sourceId: `rag_concept_${slugifyForId(item.title)}`, tags: ['rag', 'concept', 'auto-extract'] }))
+          conceptRows = [...llmRows, ...supplementRows]
+        } else {
+          conceptRows = ruleConceptRows
+            .slice(0, 24)
+            .map((item) => ({ ...item, sourceId: `rag_concept_${slugifyForId(item.title)}`, tags: ['rag', 'concept', 'auto-extract'] }))
+        }
+      }
+      if (conceptRows.length === 0) {
+        conceptRows = buildCatalogFallbackConceptRows(baseRows, 'rag')
+      }
+      if (enableConceptExtract && conceptRows.length === 0) {
+        conceptRows = [buildMandatoryConceptRow(baseRows, 'rag')]
+      }
+      if (conceptRows.length > 0) rows.push(...conceptRows)
+      if (enableOverview) {
+        rows.push({
+          sourceId: `rag_sync_log_${Date.now()}`,
+          title: `RAG同步日志 ${new Date().toISOString().slice(0, 19).replace('T', ' ')}`,
+          category: 'logs',
+          content: `本次同步基础词条 ${baseRows.length} 条，概念抽取 ${conceptRows.length} 条。`,
+          markdown: `# RAG同步日志\n\n- 选择知识库：${kbIds.length > 0 ? kbIds.join(', ') : '全部'}\n- 基础词条数量：${baseRows.length}\n- 概念抽取数量：${conceptRows.length}`,
+          tags: ['rag', 'logs', 'sync', 'auto-generate'],
+          sourceMeta: { kbIds, baseCount: baseRows.length, conceptCount: conceptRows.length },
+        })
+      }
+    } else {
+      await updateTaskStage('collecting', 12, { message: '正在读取WEB抓取结果' })
+      const result = await pool.query(
+        `
+        SELECT id, page_title AS "pageTitle", page_url AS "pageUrl", text_sample AS "textSample", business_entity AS "businessEntity", created_at AS "createdAt"
+        FROM ${crawlInfoTable}
+        ORDER BY created_at DESC, id DESC
+        LIMIT $1
+        `,
+        [safeLimit],
+      )
+      rows = (result.rows || []).map((row) => ({
+        sourceId: `web_${row.id}`,
+        title: toText(row.pageTitle || `网页来源-${row.id}`),
+        category: 'sources',
+        content: toText(row.textSample),
+        markdown: `# ${toText(row.pageTitle || `网页来源-${row.id}`)}\n\n${toText(row.textSample)}\n\n来源：${toText(row.pageUrl)}`,
+        tags: ['web', toText(row.businessEntity || '').toLowerCase()].filter(Boolean),
+        sourceMeta: { pageUrl: toText(row.pageUrl), businessEntity: toText(row.businessEntity), createdAt: toLlmWikiDateTimeText(row.createdAt) },
+      }))
+    }
+
+    let insertedCount = 0
+    let updatedCount = 0
+    const totalCount = rows.length
+    await updateTaskStage('writing', 62, { message: '正在写入Wiki词条', totalCount, processed: 0 })
+    await pool.query(
+      `
+      UPDATE ${llmWikiSyncTaskTable}
+      SET total_count = $2, updated_count = 0, inserted_count = 0
+      WHERE id = $1
+      `,
+      [taskId, totalCount],
+    )
+    const cancelledBeforeWrite = await isTaskCancelled()
+    if (cancelledBeforeWrite) {
+      await pool.query(
+        `
+        UPDATE ${llmWikiSyncTaskTable}
+        SET status = 'cancelled', finished_at = NOW()
+        WHERE id = $1
+        `,
+        [taskId],
+      )
+      const cancelledResult = await pool.query(
+        `
+        SELECT id, source_type, status, total_count, inserted_count, updated_count, error_message, summary_json, created_at, finished_at
+        FROM ${llmWikiSyncTaskTable}
+        WHERE id = $1
+        LIMIT 1
+        `,
+        [taskId],
+      )
+      return toLlmWikiSyncTaskOutput(cancelledResult.rows?.[0] || {})
+    }
+
+    const writeClient = await pool.connect()
+    try {
+      await writeClient.query('BEGIN')
+      const rowIds = rows.map((row) => buildLlmWikiEntryKey(row.sourceId))
+      const existingResult = rowIds.length > 0
+        ? await writeClient.query(
+          `SELECT id FROM ${llmWikiEntryTable} WHERE id = ANY($1::text[])`,
+          [rowIds],
+        )
+        : { rows: [] }
+      const existingIds = new Set((existingResult.rows || []).map((item) => toText(item.id)))
+      for (const row of rows) {
+        const id = buildLlmWikiEntryKey(row.sourceId)
+        if (existingIds.has(id)) updatedCount += 1
+        else insertedCount += 1
+      }
+      const chunkSize = 200
+      for (let i = 0; i < rows.length; i += chunkSize) {
+        const chunk = rows.slice(i, i + chunkSize)
+        const values = []
+        const placeholders = []
+        for (let idx = 0; idx < chunk.length; idx += 1) {
+          const row = chunk[idx]
+          const id = buildLlmWikiEntryKey(row.sourceId)
+          const base = idx * 9
+          placeholders.push(`($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, '待确认', $${base + 5}, $${base + 6}, 1, $${base + 7}, $${base + 8}::jsonb, $${base + 9}::jsonb, NOW(), NOW())`)
+          values.push(
+            id,
+            safeOwner,
+            toText(row.title).slice(0, 255),
+            normalizeLlmWikiCategory(row.category),
+            toText(row.content),
+            toText(row.markdown),
+            source,
+            JSON.stringify(row.sourceMeta || {}),
+            JSON.stringify(row.tags || []),
+          )
+        }
+        await writeClient.query(
+          `
+          INSERT INTO ${llmWikiEntryTable}
+          (id, owner, title, category, status, content, markdown, source_count, source_type, source_meta, tags, created_at, updated_at)
+          VALUES ${placeholders.join(',')}
+          ON CONFLICT (id)
+          DO UPDATE SET
+            owner = EXCLUDED.owner,
+            title = EXCLUDED.title,
+            category = EXCLUDED.category,
+            content = EXCLUDED.content,
+            markdown = EXCLUDED.markdown,
+            source_count = EXCLUDED.source_count,
+            source_type = EXCLUDED.source_type,
+            source_meta = EXCLUDED.source_meta,
+            tags = EXCLUDED.tags,
+            updated_at = NOW()
+          `,
+          values,
+        )
+      }
+      await rebuildLlmWikiSectionCounts(safeOwner, writeClient)
+      await writeClient.query(
+        `
+        UPDATE ${llmWikiSyncTaskTable}
+        SET status = 'success',
+            total_count = $2,
+            inserted_count = $3,
+            updated_count = $4,
+            summary_json = $5::jsonb,
+            finished_at = NOW()
+        WHERE id = $1
+        `,
+        [taskId, rows.length, insertedCount, updatedCount, JSON.stringify({ source, limit: safeLimit, options })],
+      )
+      await writeClient.query('COMMIT')
+    } catch (writeError) {
+      await writeClient.query('ROLLBACK')
+      throw writeError
+    } finally {
+      writeClient.release()
+    }
+    await updateTaskStage('completed', 100, { message: '同步完成', totalCount: rows.length, processed: rows.length, insertedCount, updatedCount })
+    await appendLlmWikiLogEntry(
+      safeOwner,
+      `${source.toUpperCase()} 同步完成`,
+      `# ${source.toUpperCase()} 同步完成\n\n- 新增：${insertedCount}\n- 更新：${updatedCount}\n- 总数：${rows.length}\n- 限制：${safeLimit}\n- 选项：\n\`\`\`json\n${JSON.stringify(options || {}, null, 2)}\n\`\`\``,
+      source,
+      { source, limit: safeLimit, insertedCount, updatedCount, totalCount: rows.length, options },
+      ['logs', 'sync', source],
+    )
+  } catch (error) {
+    await pool.query(
+      `
+      UPDATE ${llmWikiSyncTaskTable}
+      SET status = 'failed',
+          error_message = $2,
+          finished_at = NOW()
+      WHERE id = $1
+      `,
+      [taskId, toText(error?.message || 'sync failed').slice(0, 2000)],
+    )
+    await appendLlmWikiLogEntry(
+      safeOwner,
+      `${source.toUpperCase()} 同步失败`,
+      `# ${source.toUpperCase()} 同步失败\n\n- 错误：${toText(error?.message || 'sync failed')}`,
+      source,
+      { source, limit: safeLimit, options, error: toText(error?.message || 'sync failed') },
+      ['logs', 'sync', source, 'failed'],
+    )
+  }
+
+  const taskResult = await pool.query(
+    `
+    SELECT id, source_type, status, total_count, inserted_count, updated_count, error_message, summary_json, created_at, finished_at
+    FROM ${llmWikiSyncTaskTable}
+    WHERE id = $1
+    LIMIT 1
+    `,
+    [taskId],
+  )
+  return toLlmWikiSyncTaskOutput(taskResult.rows?.[0] || {})
+}
+
+function normalizeRawImportBucket(value = '') {
+  const token = toText(value).trim().toLowerCase()
+  if (token === 'books') return 'books'
+  if (token === 'media') return 'media'
+  return 'papers'
+}
+
+function normalizeRawImportItemType(value = '') {
+  const token = toText(value).trim().toLowerCase()
+  if (token === 'file') return 'file'
+  if (token === 'web') return 'web'
+  if (token === 'wechat') return 'wechat'
+  if (token === 'media') return 'media'
+  return 'text'
+}
+
+function splitMultilineText(value = '') {
+  return toText(value).split(/[\r\n,，;；]+/).map((x) => toText(x).trim()).filter(Boolean)
+}
+
+function decodeBase64ToUtf8(base64 = '') {
+  try {
+    return Buffer.from(toText(base64), 'base64').toString('utf8')
+  } catch {
+    return ''
+  }
+}
+
+async function extractRawImportTextFromFilePayload(file = {}) {
+  const name = toText(file?.name || 'paper.txt').slice(0, 255)
+  const mimeType = toText(file?.mimeType || '')
+  const base64 = toText(file?.contentBase64 || '')
+  if (!base64) return ''
+  const fileBuffer = Buffer.from(base64, 'base64')
+  try {
+    if (isPdfFile(name, mimeType)) return (await extractPdfTextFromBuffer(fileBuffer)).slice(0, 20000)
+    if (isWordFile(name, mimeType)) return (await extractWordTextFromBuffer(fileBuffer)).slice(0, 20000)
+    if (isPptFile(name, mimeType)) return (await extractPptTextFromBuffer(fileBuffer)).slice(0, 20000)
+    if (isExcelFile(name, mimeType)) return (await extractExcelTextFromBuffer(fileBuffer)).slice(0, 20000)
+    if (isPlainTextLikeFile(name, mimeType)) {
+      const decoded = fileBuffer.toString('utf8')
+      const text = /\.html?$/i.test(name) || mimeType.toLowerCase().includes('html')
+        ? stripHtmlForRawImport(decoded)
+        : decoded
+      return toText(text).slice(0, 20000)
+    }
+  } catch {
+    // Keep raw-import tolerant for mixed file quality and binary edge cases.
+  }
+  return ''
+}
+
+function extractTitleFromMarkdown(markdown = '') {
+  const text = toText(markdown)
+  if (!text) return ''
+  const lines = text.split(/\r?\n/)
+  for (const line of lines) {
+    const heading = line.match(/^\s*#\s+(.+?)\s*$/)
+    if (heading?.[1]) return toText(heading[1]).trim()
+  }
+  for (const line of lines.slice(0, 20)) {
+    const meta = line.match(/^\s*(title|标题)\s*[:：]\s*(.+?)\s*$/i)
+    if (meta?.[2]) return toText(meta[2]).trim()
+  }
+  return ''
+}
+
+function stripHtmlForRawImport(input = '') {
+  return toText(input)
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function stripNulChars(input = '') {
+  return String(input || '').replace(/\u0000/g, '')
+}
+
+function decodeHtmlEntitiesForRawImport(input = '') {
+  return toText(input)
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&#x27;/gi, "'")
+    .replace(/&nbsp;/g, ' ')
+}
+
+function extractWebPageTitle(html = '') {
+  const text = toText(html)
+  if (!text) return ''
+  const isGenericTitle = (value = '') => {
+    const token = toText(value).trim().toLowerCase()
+    return ['home', 'homepage', 'index', 'investors', 'investor relations', 'welcome'].includes(token)
+  }
+  const og = text.match(/<meta[^>]+property=["']og:title["'][^>]*content=["']([^"']+)["'][^>]*>/i)
+    || text.match(/<meta[^>]+content=["']([^"']+)["'][^>]*property=["']og:title["'][^>]*>/i)
+  const ogTitle = og?.[1] ? decodeHtmlEntitiesForRawImport(og[1]).trim() : ''
+  const m = text.match(/<title[^>]*>([\s\S]*?)<\/title>/i)
+  const pageTitle = m?.[1] ? decodeHtmlEntitiesForRawImport(m[1]).replace(/\s+/g, ' ').trim() : ''
+  if (ogTitle && !isGenericTitle(ogTitle)) return ogTitle
+  if (pageTitle) return pageTitle
+  if (ogTitle) return ogTitle
+  return ''
+}
+
+function buildRawTextTitle(text = '') {
+  const normalized = toText(text).replace(/\r/g, '\n')
+  const firstLine = normalized
+    .split('\n')
+    .map((line) => toText(line).trim())
+    .find(Boolean) || ''
+  if (firstLine) return firstLine.slice(0, 80)
+  return `文本摘录 ${new Date().toISOString().slice(0, 16).replace('T', ' ')}`
+}
+
+function collectLikelyEntityNames(input = '', maxCount = 10) {
+  const text = toText(input)
+  const pattern = /[\u4e00-\u9fa5A-Za-z0-9（）()·\-_]{3,42}(有限公司|股份有限公司|有限责任公司|集团|研究院|科技|公司)/g
+  const set = new Set()
+  let match = null
+  while ((match = pattern.exec(text))) {
+    const name = toText(match[0]).trim()
+    if (!name) continue
+    set.add(name)
+    if (set.size >= maxCount) break
+  }
+  return [...set]
+}
+
+function buildRawDerivedRows(bucket = 'papers', records = []) {
+  const rows = Array.isArray(records) ? records : []
+  const importTime = new Date().toISOString()
+  const rawRows = []
+  const sourceRows = []
+  const entityRows = []
+  const conceptRows = []
+  const allTextParts = []
+  for (const item of rows) {
+    const title = toText(item.title || item.fileName || item.sourceUrl || `原始资料-${item.id}`)
+    const itemType = normalizeRawImportItemType(item.itemType)
+    const sourceUrl = toText(item.sourceUrl)
+    const fileName = toText(item.fileName)
+    const mimeType = toText(item.mimeType)
+    const text = toText(item.contentText || '')
+    const sourceMeta = { bucket, itemType, rawItemId: Number(item.id || 0) || null, sourceUrl, fileName, mimeType, importedAt: importTime }
+    const baseText = [title, text, sourceUrl, fileName].filter(Boolean).join('\n')
+    allTextParts.push(baseText)
+
+    rawRows.push({
+      sourceId: `raw_${bucket}_${item.id}`,
+      title,
+      category: 'raw',
+      content: text || `${title}\n${sourceUrl || fileName || ''}`,
+      markdown: `# ${title}\n\n- 类型：${itemType}\n- 分类：${bucket}\n- 来源：${sourceUrl || fileName || '-'}\n\n${text || ''}`,
+      tags: ['raw', bucket, itemType],
+      sourceType: 'raw-import',
+      sourceMeta,
+    })
+
+    sourceRows.push({
+      sourceId: `source_${bucket}_${item.id}`,
+      title: `${title} 来源`,
+      category: 'sources',
+      content: `来源类型：${itemType}\n来源地址：${sourceUrl || '-'}\n文件：${fileName || '-'}\n${text.slice(0, 400)}`,
+      markdown: `# ${title} 来源\n\n- 来源类型：${itemType}\n- 来源地址：${sourceUrl || '-'}\n- 文件：${fileName || '-'}\n\n${text.slice(0, 1200)}`,
+      tags: ['source', 'raw-import', bucket],
+      sourceType: 'raw-import',
+      sourceMeta,
+    })
+
+    const entities = collectLikelyEntityNames(baseText, 6)
+    for (const entity of entities) {
+      entityRows.push({
+        sourceId: `entity_${bucket}_${item.id}_${slugifyForId(entity)}`,
+        title: entity,
+        category: 'entities',
+        content: `实体：${entity}\n来源：${title}`,
+        markdown: `# ${entity}\n\n- 来源：${title}\n- 分类：${bucket}`,
+        tags: ['entity', 'raw-import', bucket],
+        sourceType: 'raw-import',
+        sourceMeta: { ...sourceMeta, entityFrom: title },
+      })
+    }
+
+    const tokenSet = new Set(extractConceptTokensFromText(baseText).slice(0, 40))
+    for (const concept of llmWikiConceptCatalog) {
+      if (toText(baseText).toLowerCase().includes(toText(concept).toLowerCase())) tokenSet.add(concept)
+    }
+    for (const token of [...tokenSet].slice(0, 12)) {
+      conceptRows.push({
+        sourceId: `concept_${bucket}_${item.id}_${slugifyForId(token)}`,
+        title: token,
+        category: 'concepts',
+        content: `概念：${token}\n来源：${title}`,
+        markdown: `# ${token}\n\n- 来源：${title}\n- 分类：${bucket}`,
+        tags: ['concept', 'raw-import', bucket],
+        sourceType: 'raw-import',
+        sourceMeta: { ...sourceMeta, conceptFrom: title },
+      })
+    }
+  }
+
+  const mergedText = allTextParts.join('\n').slice(0, 4000)
+  const overviewRow = {
+    sourceId: `overview_${bucket}_${Date.now()}`,
+    title: `原始资料导入总览（${bucket}）`,
+    category: 'overview',
+    content: `本次导入 ${rows.length} 条原始资料，生成来源 ${sourceRows.length} 条，实体 ${entityRows.length} 条，概念 ${conceptRows.length} 条。`,
+    markdown: `# 原始资料导入总览（${bucket}）\n\n- 原始资料：${rows.length}\n- 来源词条：${sourceRows.length}\n- 实体词条：${entityRows.length}\n- 概念词条：${conceptRows.length}\n\n## 摘要\n${mergedText || '无可提取文本'}`,
+    tags: ['overview', 'raw-import', bucket],
+    sourceType: 'raw-import',
+    sourceMeta: { bucket, rawCount: rows.length, sourceCount: sourceRows.length, entityCount: entityRows.length, conceptCount: conceptRows.length },
+  }
+
+  return { rows: [...rawRows, ...sourceRows, ...entityRows, ...conceptRows, overviewRow], stats: { rawCount: rawRows.length, sourceCount: sourceRows.length, entityCount: entityRows.length, conceptCount: conceptRows.length } }
+}
+
+async function upsertLlmWikiRowsByOwner(owner = '', rows = [], client = pool) {
+  const safeOwner = toText(owner || 'unknown')
+  const uniqueMap = new Map()
+  for (const row of (Array.isArray(rows) ? rows : [])) {
+    const key = toText(row?.sourceId)
+    if (!key) continue
+    uniqueMap.set(key, row)
+  }
+  const list = [...uniqueMap.values()]
+  if (list.length === 0) return { inserted: 0, updated: 0 }
+  const rowIds = list.map((row) => buildLlmWikiEntryKey(row.sourceId))
+  const existingResult = await client.query(`SELECT id FROM ${llmWikiEntryTable} WHERE id = ANY($1::text[])`, [rowIds])
+  const existingIds = new Set((existingResult.rows || []).map((item) => toText(item.id)))
+  let inserted = 0
+  let updated = 0
+  const chunkSize = 200
+  for (let i = 0; i < list.length; i += chunkSize) {
+    const chunk = list.slice(i, i + chunkSize)
+    const values = []
+    const placeholders = []
+    for (let idx = 0; idx < chunk.length; idx += 1) {
+      const row = chunk[idx]
+      const id = buildLlmWikiEntryKey(row.sourceId)
+      if (existingIds.has(id)) updated += 1
+      else inserted += 1
+      const base = idx * 9
+      placeholders.push(`($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, '待确认', $${base + 5}, $${base + 6}, 1, $${base + 7}, $${base + 8}::jsonb, $${base + 9}::jsonb, NOW(), NOW())`)
+      values.push(
+        id,
+        safeOwner,
+        toText(row.title).slice(0, 255),
+        normalizeLlmWikiCategory(row.category),
+        toText(row.content),
+        toText(row.markdown || row.content),
+        toText(row.sourceType || 'raw-import'),
+        JSON.stringify(row.sourceMeta || {}),
+        JSON.stringify(row.tags || []),
+      )
+    }
+    await client.query(
+      `
+      INSERT INTO ${llmWikiEntryTable}
+      (id, owner, title, category, status, content, markdown, source_count, source_type, source_meta, tags, created_at, updated_at)
+      VALUES ${placeholders.join(',')}
+      ON CONFLICT (id)
+      DO UPDATE SET
+        owner = EXCLUDED.owner,
+        title = EXCLUDED.title,
+        category = EXCLUDED.category,
+        content = EXCLUDED.content,
+        markdown = EXCLUDED.markdown,
+        source_count = EXCLUDED.source_count,
+        source_type = EXCLUDED.source_type,
+        source_meta = EXCLUDED.source_meta,
+        tags = EXCLUDED.tags,
+        updated_at = NOW()
+      `,
+      values,
+    )
+  }
+  await rebuildLlmWikiSectionCounts(safeOwner, client)
+  return { inserted, updated }
+}
+
+app.post('/api/llm-wiki/raw-import', authMiddleware, async (req, res) => {
+  const owner = toText(req.authUser?.userName || req.authUser?.username || 'unknown')
+  const body = req.body && typeof req.body === 'object' ? req.body : {}
+  const bucket = normalizeRawImportBucket(body.bucket)
+  const booksWebUrls = splitMultilineText(body.booksWebUrls)
+  const booksWeChatUrls = splitMultilineText(body.booksWeChatUrls)
+  const booksTextRaw = toText(body.booksTexts).trim()
+  const papersFiles = Array.isArray(body.papersFiles) ? body.papersFiles : []
+  const mediaFiles = Array.isArray(body.mediaFiles) ? body.mediaFiles : []
+  const records = []
+  try {
+    if (bucket === 'papers') {
+      for (const file of papersFiles) {
+        const name = toText(file?.name || 'paper.txt').slice(0, 255)
+        const mimeType = toText(file?.mimeType || '')
+        const text = await extractRawImportTextFromFilePayload(file)
+        records.push({
+          itemType: 'file',
+          title: name,
+          fileName: name,
+          mimeType,
+          sourceUrl: '',
+          contentText: stripNulChars(text || `文件：${name}`),
+        })
+      }
+    } else if (bucket === 'media') {
+      for (const file of mediaFiles) {
+        const name = toText(file?.name || 'media').slice(0, 255)
+        const mimeType = toText(file?.mimeType || '')
+        const contentBase64 = toText(file?.contentBase64 || '')
+        records.push({
+          itemType: 'media',
+          title: name,
+          fileName: name,
+          mimeType,
+          sourceUrl: '',
+          contentBase64,
+          contentText: stripNulChars(`媒体文件：${name}\nMIME：${mimeType}\n说明：当前版本仅索引元数据，不抽帧。`),
+        })
+      }
+    } else {
+      for (const url of booksWebUrls) {
+        let contentText = ''
+        let titleText = ''
+        try {
+          const webResult = await fetchByNetworkPolicy(url, { method: 'GET' })
+          const html = await webResult.text()
+          titleText = extractWebPageTitle(html)
+          contentText = stripHtmlForRawImport(html).slice(0, 20000)
+        } catch {
+          contentText = ''
+          titleText = ''
+        }
+        records.push({
+          itemType: 'web',
+          title: toText(titleText || url).slice(0, 255),
+          sourceUrl: url,
+          contentText: stripNulChars(contentText || `网页链接：${url}`),
+        })
+      }
+      for (const url of booksWeChatUrls) {
+        let contentText = ''
+        let titleText = ''
+        try {
+          const md = await readWeixinArticleMarkdown(url)
+          contentText = toText(md).slice(0, 20000)
+          titleText = extractTitleFromMarkdown(md)
+        } catch {
+          contentText = ''
+          titleText = ''
+        }
+        records.push({
+          itemType: 'wechat',
+          title: toText(titleText || url).slice(0, 255),
+          sourceUrl: url,
+          contentText: stripNulChars(contentText || `公众号链接：${url}`),
+        })
+      }
+      if (booksTextRaw) {
+        const normalizedText = stripNulChars(booksTextRaw.slice(0, 20000))
+        records.push({
+          itemType: 'text',
+          title: buildRawTextTitle(normalizedText),
+          sourceUrl: '',
+          contentText: normalizedText,
+        })
+      }
+    }
+
+    // For books link-based imports, keep one record per (type + sourceUrl).
+    // If the same link is imported repeatedly, we replace old rows with the latest one.
+    let normalizedRecords = records
+    if (bucket === 'books') {
+      const uniq = new Map()
+      for (const row of records) {
+        const itemType = normalizeRawImportItemType(row?.itemType)
+        const sourceUrl = toText(row?.sourceUrl).trim()
+        const key = (itemType === 'web' || itemType === 'wechat') && sourceUrl
+          ? `${itemType}::${sourceUrl}`
+          : `row::${uniq.size}`
+        uniq.set(key, row)
+      }
+      normalizedRecords = [...uniq.values()]
+    }
+
+    if (normalizedRecords.length === 0) {
+      return res.status(400).json({ code: 400, message: '没有可导入的数据', data: null })
+    }
+
+    const batchId = buildLlmWikiEntryKey(`raw_batch_${bucket}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`)
+    const client = await pool.connect()
+    try {
+      await client.query('BEGIN')
+      if (bucket === 'books') {
+        const linkRows = normalizedRecords
+          .map((row) => ({
+            itemType: normalizeRawImportItemType(row?.itemType),
+            sourceUrl: toText(row?.sourceUrl).trim(),
+          }))
+          .filter((row) => (row.itemType === 'web' || row.itemType === 'wechat') && row.sourceUrl)
+        for (const row of linkRows) {
+          // eslint-disable-next-line no-await-in-loop
+          await client.query(
+            `
+            DELETE FROM ${llmWikiRawImportItemTable}
+            WHERE owner = $1 AND bucket = 'books' AND item_type = $2 AND source_url = $3
+            `,
+            [owner, row.itemType, row.sourceUrl],
+          )
+        }
+      }
+      await client.query(
+        `
+        INSERT INTO ${llmWikiRawImportBatchTable}
+        (id, owner, bucket, status, total_count, success_count, summary_json, created_at, updated_at)
+        VALUES ($1, $2, $3, 'success', $4, $4, $5::jsonb, NOW(), NOW())
+        `,
+        [batchId, owner, bucket, normalizedRecords.length, JSON.stringify({ bucket })],
+      )
+      const placeholders = []
+      const values = []
+      for (let i = 0; i < normalizedRecords.length; i += 1) {
+        const r = normalizedRecords[i]
+        const base = i * 10
+        placeholders.push(`($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7}, $${base + 8}, $${base + 9}, $${base + 10}::jsonb, 'success', '', NOW(), NOW())`)
+        values.push(
+          batchId,
+          owner,
+          bucket,
+          normalizeRawImportItemType(r.itemType),
+          toText(r.title).slice(0, 255),
+          toText(r.sourceUrl),
+          toText(r.fileName).slice(0, 255),
+          toText(r.mimeType).slice(0, 128),
+          stripNulChars(toText(r.contentText)),
+          JSON.stringify({
+            bucket,
+            sourceUrl: r.sourceUrl,
+            fileName: r.fileName,
+            mimeType: r.mimeType,
+            contentBase64: normalizeRawImportItemType(r.itemType) === 'media' ? toText(r.contentBase64 || '') : '',
+          }),
+        )
+      }
+      await client.query(
+        `
+        INSERT INTO ${llmWikiRawImportItemTable}
+        (batch_id, owner, bucket, item_type, title, source_url, file_name, mime_type, content_text, payload_json, status, message, created_at, updated_at)
+        VALUES ${placeholders.join(',')}
+        `,
+        values,
+      )
+      const insertedRowsResult = await client.query(
+        `
+        SELECT id, item_type AS "itemType", title, source_url AS "sourceUrl", file_name AS "fileName", mime_type AS "mimeType", content_text AS "contentText"
+        FROM ${llmWikiRawImportItemTable}
+        WHERE batch_id = $1
+        ORDER BY id ASC
+        `,
+        [batchId],
+      )
+      const insertedRows = Array.isArray(insertedRowsResult.rows) ? insertedRowsResult.rows : []
+      const derived = buildRawDerivedRows(bucket, insertedRows)
+      const upsertResult = await upsertLlmWikiRowsByOwner(owner, derived.rows, client)
+      await client.query(
+        `
+        UPDATE ${llmWikiRawImportBatchTable}
+        SET summary_json = $2::jsonb, updated_at = NOW()
+        WHERE id = $1
+        `,
+        [batchId, JSON.stringify({ bucket, inputCount: normalizedRecords.length, ...derived.stats, insertedWiki: upsertResult.inserted, updatedWiki: upsertResult.updated })],
+      )
+      await appendLlmWikiLogEntry(
+        owner,
+        `原始资料导入完成（${bucket}）`,
+        `# 原始资料导入完成\n\n- 分类：${bucket}\n- 导入条数：${normalizedRecords.length}\n- 新增词条：${upsertResult.inserted}\n- 更新词条：${upsertResult.updated}\n- 实体：${derived.stats.entityCount}\n- 概念：${derived.stats.conceptCount}`,
+        'raw-import',
+        { bucket, importCount: normalizedRecords.length, ...derived.stats, insertedWiki: upsertResult.inserted, updatedWiki: upsertResult.updated },
+        ['logs', 'raw-import', bucket],
+      )
+      await client.query('COMMIT')
+      return res.json({ code: 200, message: 'success', data: { batchId, bucket, inputCount: normalizedRecords.length, ...derived.stats, insertedWiki: upsertResult.inserted, updatedWiki: upsertResult.updated } })
+    } catch (error) {
+      await client.query('ROLLBACK')
+      throw error
+    } finally {
+      client.release()
+    }
+  } catch (error) {
+    await appendLlmWikiLogEntry(
+      owner,
+      `原始资料导入失败（${bucket}）`,
+      `# 原始资料导入失败\n\n- 分类：${bucket}\n- 错误：${toText(error?.message || 'unknown error')}`,
+      'raw-import',
+      { bucket, error: toText(error?.message || 'unknown error') },
+      ['logs', 'raw-import', bucket, 'failed'],
+    )
+    return res.status(500).json({ code: 500, message: `原始资料导入失败: ${error.message}`, data: null })
+  }
+})
+
+app.get('/api/llm-wiki/raw-import/items', authMiddleware, async (req, res) => {
+  const owner = toText(req.authUser?.userName || req.authUser?.username || 'unknown')
+  const bucket = normalizeRawImportBucket(req.query?.bucket)
+  const limit = Math.max(1, Math.min(200, Number(req.query?.limit || 50) || 50))
+  try {
+    const result = await pool.query(
+      `
+      SELECT id, batch_id AS "batchId", bucket, item_type AS "itemType", title, source_url AS "sourceUrl", file_name AS "fileName", mime_type AS "mimeType", LEFT(content_text, 4000) AS "contentText", status, message, created_at AS "createdAt", updated_at AS "updatedAt"
+      FROM ${llmWikiRawImportItemTable}
+      WHERE owner = $1 AND bucket = $2
+      ORDER BY created_at DESC, id DESC
+      LIMIT $3
+      `,
+      [owner, bucket, limit],
+    )
+    return res.json({ code: 200, message: 'success', data: result.rows || [] })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `读取原始资料列表失败: ${error.message}`, data: [] })
+  }
+})
+
+app.get('/api/llm-wiki/raw-import/items/:id/preview', authMiddleware, async (req, res) => {
+  const owner = toText(req.authUser?.userName || req.authUser?.username || 'unknown')
+  const id = Number(req.params?.id || 0)
+  if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ code: 400, message: '无效id', data: null })
+  try {
+    const result = await pool.query(
+      `
+      SELECT id, batch_id AS "batchId", bucket, item_type AS "itemType", title, source_url AS "sourceUrl", file_name AS "fileName", mime_type AS "mimeType", content_text AS "contentText", payload_json AS "payloadJson", status, message, created_at AS "createdAt", updated_at AS "updatedAt"
+      FROM ${llmWikiRawImportItemTable}
+      WHERE owner = $1 AND id = $2
+      LIMIT 1
+      `,
+      [owner, id],
+    )
+    const row = result.rows?.[0] || null
+    if (!row) return res.status(404).json({ code: 404, message: '记录不存在', data: null })
+    return res.json({ code: 200, message: 'success', data: row })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `读取预览失败: ${error.message}`, data: null })
+  }
+})
+
+app.get('/api/llm-wiki/raw-import/items/:id/media', authMiddleware, async (req, res) => {
+  const owner = toText(req.authUser?.userName || req.authUser?.username || 'unknown')
+  const id = Number(req.params?.id || 0)
+  if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ code: 400, message: '无效id', data: null })
+  try {
+    const result = await pool.query(
+      `
+      SELECT mime_type AS "mimeType", payload_json AS "payloadJson"
+      FROM ${llmWikiRawImportItemTable}
+      WHERE owner = $1 AND id = $2
+      LIMIT 1
+      `,
+      [owner, id],
+    )
+    const row = result.rows?.[0] || null
+    if (!row) return res.status(404).json({ code: 404, message: '记录不存在', data: null })
+    const payload = row.payloadJson && typeof row.payloadJson === 'object' ? row.payloadJson : {}
+    const mimeType = toText(row.mimeType || payload?.mimeType || 'application/octet-stream')
+    const contentBase64 = toText(payload?.contentBase64 || '')
+    if (!contentBase64) return res.status(404).json({ code: 404, message: '媒体数据不存在', data: null })
+    const buffer = Buffer.from(contentBase64, 'base64')
+    res.setHeader('Content-Type', mimeType)
+    res.setHeader('Cache-Control', 'no-store')
+    return res.status(200).send(buffer)
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `读取媒体预览失败: ${error.message}`, data: null })
+  }
+})
+
+app.delete('/api/llm-wiki/raw-import/items/:id', authMiddleware, async (req, res) => {
+  const owner = toText(req.authUser?.userName || req.authUser?.username || 'unknown')
+  const id = Number(req.params?.id || 0)
+  if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ code: 400, message: '无效id', data: null })
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const rowRes = await client.query(
+      `SELECT id, bucket FROM ${llmWikiRawImportItemTable} WHERE owner = $1 AND id = $2 LIMIT 1`,
+      [owner, id],
+    )
+    const row = rowRes.rows?.[0]
+    if (!row) {
+      await client.query('ROLLBACK')
+      return res.status(404).json({ code: 404, message: '记录不存在', data: null })
+    }
+    const delWikiRes = await client.query(
+      `
+      DELETE FROM ${llmWikiEntryTable}
+      WHERE owner = $1
+        AND source_type = 'raw-import'
+        AND (
+          source_meta->>'rawItemId' = $2
+          OR id LIKE $3
+          OR id LIKE $4
+          OR id LIKE $5
+          OR id LIKE $6
+        )
+      `,
+      [owner, String(id), `%raw_%_${id}%`, `%source_%_${id}%`, `%entity_%_${id}%`, `%concept_%_${id}%`],
+    )
+    await client.query(
+      `DELETE FROM ${llmWikiRawImportItemTable} WHERE owner = $1 AND id = $2`,
+      [owner, id],
+    )
+    await rebuildLlmWikiSectionCounts(owner, client)
+    await appendLlmWikiLogEntry(
+      owner,
+      `原始资料删除完成（item:${id}）`,
+      `# 原始资料删除完成\n\n- itemId：${id}\n- 同步删除知识树词条：${Number(delWikiRes.rowCount || 0)}`,
+      'raw-import',
+      { itemId: id, deletedWikiCount: Number(delWikiRes.rowCount || 0) },
+      ['logs', 'raw-import', 'delete'],
+    )
+    await client.query('COMMIT')
+    return res.json({ code: 200, message: 'success', data: { deletedItemId: id, deletedWikiCount: Number(delWikiRes.rowCount || 0) } })
+  } catch (error) {
+    await client.query('ROLLBACK')
+    return res.status(500).json({ code: 500, message: `删除失败: ${error.message}`, data: null })
+  } finally {
+    client.release()
+  }
+})
+
+app.post('/api/llm-wiki/raw-import/items/:id/resync', authMiddleware, async (req, res) => {
+  const owner = toText(req.authUser?.userName || req.authUser?.username || 'unknown')
+  const id = Number(req.params?.id || 0)
+  if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ code: 400, message: '无效id', data: null })
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const rowRes = await client.query(
+      `
+      SELECT id, bucket, item_type AS "itemType", title, source_url AS "sourceUrl", file_name AS "fileName", mime_type AS "mimeType", content_text AS "contentText"
+      FROM ${llmWikiRawImportItemTable}
+      WHERE owner = $1 AND id = $2
+      LIMIT 1
+      `,
+      [owner, id],
+    )
+    const row = rowRes.rows?.[0] || null
+    if (!row) {
+      await client.query('ROLLBACK')
+      return res.status(404).json({ code: 404, message: '记录不存在', data: null })
+    }
+    const derived = buildRawDerivedRows(normalizeRawImportBucket(row.bucket), [row])
+    const upsertResult = await upsertLlmWikiRowsByOwner(owner, derived.rows, client)
+    await client.query(
+      `UPDATE ${llmWikiRawImportItemTable} SET status = 'success', message = '', updated_at = NOW() WHERE owner = $1 AND id = $2`,
+      [owner, id],
+    )
+    await appendLlmWikiLogEntry(
+      owner,
+      `原始资料重同步完成（item:${id}）`,
+      `# 原始资料重同步完成\n\n- itemId：${id}\n- 新增词条：${upsertResult.inserted}\n- 更新词条：${upsertResult.updated}`,
+      'raw-import',
+      { itemId: id, insertedWiki: upsertResult.inserted, updatedWiki: upsertResult.updated },
+      ['logs', 'raw-import', 'resync'],
+    )
+    await client.query('COMMIT')
+    return res.json({ code: 200, message: 'success', data: { itemId: id, insertedWiki: upsertResult.inserted, updatedWiki: upsertResult.updated } })
+  } catch (error) {
+    await client.query('ROLLBACK')
+    try {
+      await pool.query(`UPDATE ${llmWikiRawImportItemTable} SET status = 'failed', message = $3, updated_at = NOW() WHERE owner = $1 AND id = $2`, [owner, id, toText(error?.message || 'resync failed').slice(0, 500)])
+    } catch {}
+    return res.status(500).json({ code: 500, message: `重同步失败: ${error.message}`, data: null })
+  } finally {
+    client.release()
+  }
+})
+
+app.get('/api/llm-wiki/entries', authMiddleware, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `
+      SELECT
+        id,
+        title,
+        category,
+        status,
+        content,
+        markdown,
+        source_count AS "sourceCount",
+        source_type AS "sourceType",
+        source_meta AS "sourceMeta",
+        tags,
+        updated_at AS "updatedAt"
+      FROM ${llmWikiEntryTable}
+      ORDER BY updated_at DESC, id DESC
+      `,
+    )
+    const rows = Array.isArray(result.rows) ? result.rows.map((row) => toLlmWikiEntryOutput(row)) : []
+    return res.json({ code: 200, message: 'success', data: rows })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `读取Wiki词条失败: ${error.message}`, data: [] })
+  }
+})
+
+app.get('/api/llm-wiki/section-counts', authMiddleware, async (req, res) => {
+  try {
+    const aggregate = await pool.query(
+      `
+      SELECT category, COUNT(*)::int AS "totalCount"
+      FROM ${llmWikiEntryTable}
+      GROUP BY category
+      `,
+    )
+    const rows = Array.isArray(aggregate.rows)
+      ? aggregate.rows.map((row) => ({ section: normalizeLlmWikiSection(row.category), totalCount: Number(row.totalCount || 0) }))
+      : []
+    const payload = {
+      raw: 0,
+      inbox: 0,
+      sources: 0,
+      entities: 0,
+      concepts: 0,
+      comparisons: 0,
+      overview: 0,
+      logs: 0,
+    }
+    for (const row of rows) {
+      const key = toText(row.section).toLowerCase()
+      if (!(key in payload)) continue
+      payload[key] = Math.max(0, Number(row.totalCount || 0) || 0)
+    }
+    return res.json({ code: 200, message: 'success', data: payload })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `读取Wiki分类计数失败: ${error.message}`, data: null })
+  }
+})
+
+app.post('/api/llm-wiki/graph/sync', authMiddleware, async (_req, res) => {
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const result = await syncLlmWikiGraphToDb(client)
+    await client.query('COMMIT')
+    return res.json({ code: 200, message: 'success', data: result })
+  } catch (error) {
+    await client.query('ROLLBACK')
+    return res.status(500).json({ code: 500, message: `同步图谱失败: ${error.message}`, data: null })
+  } finally {
+    client.release()
+  }
+})
+
+app.get('/api/llm-wiki/graph', authMiddleware, async (req, res) => {
+  try {
+    const category = toText(req.query?.category).trim()
+    const status = toText(req.query?.status).trim()
+    const keyword = toText(req.query?.keyword).trim().toLowerCase()
+    const onlyConfirmed = String(req.query?.onlyConfirmed || '').toLowerCase() === 'true'
+
+    const nodeResult = await pool.query(
+      `
+      SELECT node_id AS "nodeId", title, category, status, source_count AS "sourceCount", tags, updated_at AS "updatedAt"
+      FROM ${llmWikiGraphNodeTable}
+      ORDER BY updated_at DESC, node_id DESC
+      `,
+    )
+    let nodes = (nodeResult.rows || []).map((row) => ({
+      id: toText(row.nodeId),
+      title: toText(row.title),
+      category: toText(row.category),
+      status: toText(row.status),
+      sourceCount: Math.max(0, Number(row.sourceCount || 0) || 0),
+      tags: Array.isArray(row.tags) ? row.tags : [],
+      updatedAt: toLlmWikiDateTimeText(row.updatedAt),
+    }))
+    if (category && category !== 'all') nodes = nodes.filter((item) => item.category === category)
+    if (status && status !== 'all') nodes = nodes.filter((item) => item.status === status)
+    if (onlyConfirmed) nodes = nodes.filter((item) => item.status === '已确认')
+    if (keyword) {
+      nodes = nodes.filter((item) => `${item.title} ${item.category} ${(item.tags || []).join(' ')}`.toLowerCase().includes(keyword))
+    }
+    const nodeIdSet = new Set(nodes.map((item) => item.id))
+
+    const edgeResult = await pool.query(
+      `
+      SELECT source_id AS "sourceId", target_id AS "targetId", relation_type AS "relationType", weight
+      FROM ${llmWikiGraphEdgeTable}
+      `,
+    )
+    const edges = (edgeResult.rows || [])
+      .map((row) => ({
+        source: toText(row.sourceId),
+        target: toText(row.targetId),
+        relationType: toText(row.relationType),
+        weight: Math.max(1, Number(row.weight || 1) || 1),
+      }))
+      .filter((item) => nodeIdSet.has(item.source) && nodeIdSet.has(item.target))
+    return res.json({ code: 200, message: 'success', data: { nodes, links: edges } })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `读取图谱失败: ${error.message}`, data: null })
+  }
+})
+
+app.post('/api/llm-wiki/entries', authMiddleware, async (req, res) => {
+  const owner = toText(req.authUser?.userName || req.authUser?.username || 'unknown')
+  const body = req.body && typeof req.body === 'object' ? req.body : {}
+  const id = buildLlmWikiEntryKey(body.key || body.id)
+  const title = toText(body.title).slice(0, 255)
+  if (!title) return res.status(400).json({ code: 400, message: '缺少字段：title', data: null })
+  const category = normalizeLlmWikiCategoryWithSourceType(body.category, body.sourceType || 'manual')
+  const status = normalizeLlmWikiStatus(body.status)
+  const content = toText(body.content)
+  const markdown = toText(body.markdown || content)
+  const sourceCount = Math.max(0, Number(body.sourceCount || 0) || 0)
+  const sourceType = toText(body.sourceType || 'manual').slice(0, 32) || 'manual'
+  const sourceMeta = body.sourceMeta && typeof body.sourceMeta === 'object' ? body.sourceMeta : {}
+  const tags = Array.isArray(body.tags) ? body.tags.map((x) => toText(x)).filter(Boolean).slice(0, 100) : []
+  try {
+    const result = await pool.query(
+      `
+      INSERT INTO ${llmWikiEntryTable}
+      (id, owner, title, category, status, content, markdown, source_count, source_type, source_meta, tags, created_at, updated_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::jsonb, NOW(), NOW())
+      ON CONFLICT (id)
+      DO UPDATE SET
+        owner = EXCLUDED.owner,
+        title = EXCLUDED.title,
+        category = EXCLUDED.category,
+        status = EXCLUDED.status,
+        content = EXCLUDED.content,
+        markdown = EXCLUDED.markdown,
+        source_count = EXCLUDED.source_count,
+        source_type = EXCLUDED.source_type,
+        source_meta = EXCLUDED.source_meta,
+        tags = EXCLUDED.tags,
+        updated_at = NOW()
+      RETURNING
+        id, title, category, status, content, markdown,
+        source_count AS "sourceCount",
+        source_type AS "sourceType",
+        source_meta AS "sourceMeta",
+        tags,
+        updated_at AS "updatedAt"
+      `,
+      [id, owner, title, category, status, content, markdown, sourceCount, sourceType, JSON.stringify(sourceMeta || {}), JSON.stringify(tags || [])],
+    )
+    const row = result.rows?.[0] ? toLlmWikiEntryOutput(result.rows[0]) : null
+    await rebuildLlmWikiSectionCounts(owner, pool)
+    return res.json({ code: 200, message: 'success', data: row })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `保存Wiki词条失败: ${error.message}`, data: null })
+  }
+})
+
+app.delete('/api/llm-wiki/entries/:id', authMiddleware, async (req, res) => {
+  const id = buildLlmWikiEntryKey(req.params.id || '')
+  try {
+    await pool.query(
+      `DELETE FROM ${llmWikiEntryTable} WHERE id = $1`,
+      [id],
+    )
+    return res.json({ code: 200, message: 'success', data: true })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `删除Wiki词条失败: ${error.message}`, data: false })
+  }
+})
+
+app.delete('/api/llm-wiki/entries', authMiddleware, async (req, res) => {
+  const section = toText(req.query?.section).toLowerCase()
+  if (!section) return res.status(400).json({ code: 400, message: '缺少参数：section', data: null })
+  const filter = buildLlmWikiSectionDeleteFilter(section)
+  try {
+    const result = await pool.query(
+      `
+      DELETE FROM ${llmWikiEntryTable}
+      WHERE ${filter.sql}
+      `,
+      [...filter.params],
+    )
+    return res.json({ code: 200, message: 'success', data: { section, deletedCount: Number(result.rowCount || 0) } })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `清空分类失败: ${error.message}`, data: null })
+  }
+})
+
+app.get('/api/llm-wiki/settings', authMiddleware, async (req, res) => {
+  const owner = toText(req.authUser?.userName || req.authUser?.username || 'unknown')
+  try {
+    const result = await pool.query(
+      `SELECT settings_json AS "settingsJson" FROM ${llmWikiSettingTable} WHERE owner = $1 AND setting_key = $2 LIMIT 1`,
+      [owner, 'default'],
+    )
+    const settingsJson = result.rows?.[0]?.settingsJson && typeof result.rows[0].settingsJson === 'object'
+      ? result.rows[0].settingsJson
+      : {}
+    return res.json({ code: 200, message: 'success', data: { ...defaultLlmWikiSettings, ...settingsJson } })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `读取Wiki配置失败: ${error.message}`, data: defaultLlmWikiSettings })
+  }
+})
+
+app.put('/api/llm-wiki/settings', authMiddleware, async (req, res) => {
+  const owner = toText(req.authUser?.userName || req.authUser?.username || 'unknown')
+  const body = req.body && typeof req.body === 'object' ? req.body : {}
+  const next = {
+    enabled: body.enabled !== false,
+    wikiFirst: body.wikiFirst !== false,
+    autoWriteback: body.autoWriteback !== false,
+    db: body.db !== false,
+    rag: body.rag !== false,
+    web: body.web === true,
+    onlyConfirmed: body.onlyConfirmed === true,
+  }
+  try {
+    await pool.query(
+      `
+      INSERT INTO ${llmWikiSettingTable} (owner, setting_key, settings_json, updated_at)
+      VALUES ($1, $2, $3::jsonb, NOW())
+      ON CONFLICT (owner, setting_key)
+      DO UPDATE SET
+        settings_json = EXCLUDED.settings_json,
+        updated_at = NOW()
+      `,
+      [owner, 'default', JSON.stringify(next)],
+    )
+    return res.json({ code: 200, message: 'success', data: next })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `保存Wiki配置失败: ${error.message}`, data: null })
+  }
+})
+
+app.get('/api/llm-wiki/sync-tasks', authMiddleware, async (req, res) => {
+  const limit = Math.max(1, Math.min(100, Number(req.query?.limit || 20) || 20))
+  try {
+    const result = await pool.query(
+      `
+      SELECT id, source_type, status, total_count, inserted_count, updated_count, error_message, summary_json, created_at, finished_at
+      FROM ${llmWikiSyncTaskTable}
+      ORDER BY created_at DESC
+      LIMIT $1
+      `,
+      [limit],
+    )
+    const rows = Array.isArray(result.rows) ? result.rows.map((row) => toLlmWikiSyncTaskOutput(row)) : []
+    return res.json({ code: 200, message: 'success', data: rows })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `读取Wiki同步任务失败: ${error.message}`, data: [] })
+  }
+})
+
+app.post('/api/llm-wiki/sync-tasks/:id/cancel', authMiddleware, async (req, res) => {
+  const id = toText(req.params?.id).trim()
+  if (!id) return res.status(400).json({ code: 400, message: '缺少任务ID', data: null })
+  try {
+    const result = await pool.query(
+      `
+      UPDATE ${llmWikiSyncTaskTable}
+      SET status = 'cancelled', finished_at = NOW()
+      WHERE id = $1 AND status = 'running'
+      RETURNING id, source_type, status, total_count, inserted_count, updated_count, error_message, summary_json, created_at, finished_at
+      `,
+      [id],
+    )
+    if (!result.rows?.[0]) {
+      return res.status(400).json({ code: 400, message: '任务不存在或不可取消', data: null })
+    }
+    return res.json({ code: 200, message: 'success', data: toLlmWikiSyncTaskOutput(result.rows[0]) })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `取消同步任务失败: ${error.message}`, data: null })
+  }
+})
+
+app.delete('/api/llm-wiki/sync-tasks/:id', authMiddleware, async (req, res) => {
+  const id = toText(req.params?.id).trim()
+  if (!id) return res.status(400).json({ code: 400, message: '缺少任务ID', data: null })
+  try {
+    const result = await pool.query(
+      `DELETE FROM ${llmWikiSyncTaskTable} WHERE id = $1 RETURNING id`,
+      [id],
+    )
+    return res.json({ code: 200, message: 'success', data: { deletedCount: Number(result.rowCount || 0) } })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `删除同步任务失败: ${error.message}`, data: null })
+  }
+})
+
+app.delete('/api/llm-wiki/sync-tasks', authMiddleware, async (req, res) => {
+  const body = req.body && typeof req.body === 'object' ? req.body : {}
+  const ids = Array.isArray(body.ids) ? body.ids.map((x) => toText(x).trim()).filter(Boolean) : []
+  if (ids.length === 0) return res.status(400).json({ code: 400, message: '请提供有效 ids', data: null })
+  try {
+    const result = await pool.query(
+      `DELETE FROM ${llmWikiSyncTaskTable} WHERE id = ANY($1::text[]) RETURNING id`,
+      [ids],
+    )
+    return res.json({ code: 200, message: 'success', data: { deletedCount: Number(result.rowCount || 0) } })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `批量删除同步任务失败: ${error.message}`, data: null })
+  }
+})
+
+app.get('/api/llm-wiki/sync/db-tables', authMiddleware, async (_req, res) => {
+  try {
+    const result = await pool.query(
+      `
+      SELECT table_name
+      FROM information_schema.tables
+      WHERE table_schema = $1
+        AND table_type = 'BASE TABLE'
+        AND table_name IN (
+          'supplier_base_info',
+          'knowledge_base_document',
+          'crawl_info',
+          'supply_chain_node',
+          'gas_supply_chain_node',
+          'supplier_profile',
+          'supplier_profile_customer_item',
+          'supplier_profile_product_case_item',
+          'supplier_profile_financing_item',
+          'supplier_profile_software_copyright_item',
+          'supplier_profile_patent_item',
+          'supplier_profile_admin_license_item',
+          'supplier_profile_admin_license_gs_item',
+          'supplier_profile_trade_credit_item',
+          'supplier_profile_court_notice_item',
+          'supplier_profile_production_base_item',
+          'supplier_profile_news_item',
+          'supplier_profile_equipment_item'
+        )
+      ORDER BY table_name ASC
+      `,
+      [schemaName],
+    )
+    const labels = {
+      supplier_base_info: '供应商基础表 supplier_base_info',
+      knowledge_base_document: '知识库文档表 knowledge_base_document',
+      crawl_info: '采集记录表 crawl_info',
+      supply_chain_node: '供应链节点表 supply_chain_node',
+      gas_supply_chain_node: 'GAS供应链节点表 gas_supply_chain_node',
+      supplier_profile: '供应商档案主表 supplier_profile',
+      supplier_profile_customer_item: '档案明细-配套客户 supplier_profile_customer_item',
+      supplier_profile_product_case_item: '档案明细-产品案例 supplier_profile_product_case_item',
+      supplier_profile_financing_item: '档案明细-融资信息 supplier_profile_financing_item',
+      supplier_profile_software_copyright_item: '档案明细-软件著作权 supplier_profile_software_copyright_item',
+      supplier_profile_patent_item: '档案明细-专利 supplier_profile_patent_item',
+      supplier_profile_admin_license_item: '档案明细-行政许可 supplier_profile_admin_license_item',
+      supplier_profile_admin_license_gs_item: '档案明细-工商许可 supplier_profile_admin_license_gs_item',
+      supplier_profile_trade_credit_item: '档案明细-贸易信用 supplier_profile_trade_credit_item',
+      supplier_profile_court_notice_item: '档案明细-法院公告 supplier_profile_court_notice_item',
+      supplier_profile_production_base_item: '档案明细-生产基地 supplier_profile_production_base_item',
+      supplier_profile_news_item: '档案明细-新闻 supplier_profile_news_item',
+      supplier_profile_equipment_item: '档案明细-设备 supplier_profile_equipment_item',
+    }
+    const rows = (result.rows || []).map((row) => {
+      const name = toText(row.table_name)
+      return { name, label: labels[name] || name }
+    })
+    return res.json({ code: 200, message: 'success', data: rows })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `读取数据库表失败: ${error.message}`, data: [] })
+  }
+})
+
+app.get('/api/llm-wiki/sync/rag-kbs', authMiddleware, async (_req, res) => {
+  try {
+    const result = await pool.query(
+      `
+      SELECT kb_id AS "kbId", COUNT(*)::int AS "docCount", MAX(updated_at) AS "updatedAt"
+      FROM ${knowledgeBaseDocumentTable}
+      WHERE kb_id IS NOT NULL AND kb_id <> ''
+      GROUP BY kb_id
+      ORDER BY MAX(updated_at) DESC
+      `,
+    )
+    const rows = (result.rows || []).map((row) => ({
+      id: toText(row.kbId),
+      name: toText(row.kbId),
+      docCount: Math.max(0, Number(row.docCount || 0) || 0),
+      updatedAt: toLlmWikiDateTimeText(row.updatedAt),
+    }))
+    return res.json({ code: 200, message: 'success', data: rows })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `读取RAG知识库列表失败: ${error.message}`, data: [] })
+  }
+})
+
+app.post('/api/llm-wiki/sync/:sourceType', authMiddleware, async (req, res) => {
+  const owner = toText(req.authUser?.userName || req.authUser?.username || 'unknown')
+  const sourceType = normalizeLlmWikiSyncSource(req.params?.sourceType || '')
+  const limit = Math.max(1, Math.min(1000, Number(req.body?.limit || req.query?.limit || 200) || 200))
+  const options = req.body && typeof req.body === 'object' ? req.body : {}
+  try {
+    const taskId = await createLlmWikiSyncTask(owner, sourceType)
+    runLlmWikiSyncBySource(owner, sourceType, limit, options, taskId).catch((error) => {
+      console.error(`[llm-wiki] async sync failed (${taskId}):`, error?.message || error)
+    })
+    const result = await pool.query(
+      `
+      SELECT id, source_type, status, total_count, inserted_count, updated_count, error_message, summary_json, created_at, finished_at
+      FROM ${llmWikiSyncTaskTable}
+      WHERE id = $1
+      LIMIT 1
+      `,
+      [taskId],
+    )
+    return res.status(202).json({ code: 202, message: 'accepted', data: toLlmWikiSyncTaskOutput(result.rows?.[0] || {}) })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `执行Wiki同步失败: ${error.message}`, data: null })
+  }
+})
+
 app.get('/api/search-settings', authMiddleware, async (_req, res) => {
   try {
     const settings = await loadSearchSettings()
@@ -17494,12 +19983,95 @@ app.post('/api/search-settings/quota', authMiddleware, async (req, res) => {
       const detail = toText(payload?.error || payload?.message || `HTTP ${resp.status}`)
       return res.status(500).json({ code: 500, message: `额度查询失败: ${detail}`, data: null })
     }
+    const toNumberSafe = (value) => {
+      const n = Number(value)
+      return Number.isFinite(n) ? n : null
+    }
+    const readByPaths = (obj, paths = []) => {
+      for (const path of paths) {
+        const parts = String(path).split('.').filter(Boolean)
+        let cur = obj
+        let ok = true
+        for (const part of parts) {
+          if (cur && typeof cur === 'object' && Object.prototype.hasOwnProperty.call(cur, part)) cur = cur[part]
+          else { ok = false; break }
+        }
+        if (!ok) continue
+        const n = toNumberSafe(cur)
+        if (n != null) return { value: n, path }
+      }
+      return { value: null, path: '' }
+    }
+    const collectNumericLeaves = (obj, prefix = '', out = []) => {
+      if (!obj || typeof obj !== 'object') return out
+      for (const [k, v] of Object.entries(obj)) {
+        const path = prefix ? `${prefix}.${k}` : k
+        if (v && typeof v === 'object') {
+          collectNumericLeaves(v, path, out)
+          continue
+        }
+        const n = toNumberSafe(v)
+        if (n != null) out.push({ path, value: n })
+      }
+      return out
+    }
+    const totalCandidates = [
+      'plan_searches_per_month',
+      'searches_per_month',
+      'account.plan_searches_per_month',
+      'account.searches_per_month',
+      'plan.searches_per_month',
+      'plan.searches',
+      'quota.total',
+      'limits.total',
+      'account.total',
+    ]
+    const remainingCandidates = [
+      'total_searches_left',
+      'searches_left',
+      'account.total_searches_left',
+      'account.searches_left',
+      'plan.searches_left',
+      'quota.remaining',
+      'limits.remaining',
+      'account.remaining',
+    ]
+    const totalHit = readByPaths(payload, totalCandidates)
+    const remainingHit = readByPaths(payload, remainingCandidates)
+    let total = totalHit.value
+    let remaining = remainingHit.value
+    let totalField = totalHit.path
+    let remainingField = remainingHit.path
+    if (total == null || remaining == null) {
+      const leaves = collectNumericLeaves(payload)
+      const byName = (regex) => leaves.find((x) => regex.test(String(x.path).toLowerCase()))
+      if (total == null) {
+        const cand = byName(/(plan|month|total|quota|limit).*(search|request)|search.*(month|total|quota|limit)/)
+        if (cand) {
+          total = cand.value
+          totalField = cand.path
+        }
+      }
+      if (remaining == null) {
+        const cand = byName(/(left|remain|rest|available).*(search|request)|search.*(left|remain|rest|available)/)
+        if (cand) {
+          remaining = cand.value
+          remainingField = cand.path
+        }
+      }
+    }
     return res.json({
       code: 200,
       message: 'success',
       data: {
         serviceProvider,
         tool: searchTool,
+        summary: {
+          total,
+          remaining,
+          totalField,
+          remainingField,
+        },
         quota: payload,
       },
     })
@@ -21568,6 +24140,7 @@ app.delete('/api/langchain/session-state', authMiddleware, async (req, res) => {
 })
 
 app.post('/api/langchain/chat', authMiddleware, async (req, res) => {
+  const owner = toText(req.authUser?.userName || req.authUser?.username || 'unknown')
   const messageText = toText(req.body?.message)
   if (!messageText) {
     return res.status(400).json({ code: 400, message: '缺少参数：message', data: null })
@@ -21610,6 +24183,14 @@ app.post('/api/langchain/chat', authMiddleware, async (req, res) => {
       useMcp: Boolean(req.body?.useMcp),
       selectedTools: Array.isArray(req.body?.selectedTools) ? req.body.selectedTools : [],
     })
+    await appendLlmWikiLogEntry(
+      owner,
+      'LangChain问答调用',
+      `# LangChain 问答调用\n\n- 问题：${messageText}\n- 答案摘要：${toText(result.answer).slice(0, 500)}`,
+      'chat',
+      { endpoint: '/api/langchain/chat', model: toText(result?.modelReturned || result?.modelRequested), useAgent: Boolean(req.body?.useAgent) },
+      ['logs', 'chat', 'langchain'],
+    )
     return res.json({
       code: 200,
       message: 'success',
@@ -21650,6 +24231,7 @@ app.get('/api/langchain/tools', authMiddleware, async (_req, res) => {
 })
 
 app.post('/api/langchain/rag-chat', authMiddleware, async (req, res) => {
+  const owner = toText(req.authUser?.userName || req.authUser?.username || 'unknown')
   const kbId = toText(req.body?.kbId)
   const question = toText(req.body?.question)
   const topK = Math.min(Math.max(Number(req.body?.topK || 8), 1), 20)
@@ -21698,6 +24280,14 @@ app.post('/api/langchain/rag-chat', authMiddleware, async (req, res) => {
       model: req.body?.model,
       temperature: req.body?.temperature,
     })
+    await appendLlmWikiLogEntry(
+      owner,
+      'RAG问答调用',
+      `# RAG 问答调用\n\n- 知识库：${kbId}\n- 问题：${question}\n- 命中数：${outputHits.length}\n- 回答摘要：${toText(result.answer).slice(0, 500)}`,
+      'rag',
+      { endpoint: '/api/langchain/rag-chat', kbId, hitCount: outputHits.length, onlySearchResults },
+      ['logs', 'chat', 'rag'],
+    )
     return res.json({
       code: 200,
       message: 'success',
@@ -21718,6 +24308,7 @@ app.use((error, _req, res, _next) => {
 async function bootstrap() {
   try {
     await initDatabase()
+    await migrateLegacyLlmWikiOverviewToLogs()
     dbReady = true
     dbInitErrorMessage = ''
     await loadKnowledgeBaseStore()

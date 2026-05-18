@@ -188,10 +188,20 @@ export default function SearchSettingsPage() {
         searchTool,
         apiKey: String(apiKey || '').trim(),
       })
+      const total = Number.isFinite(Number(data?.summary?.total)) ? Number(data.summary.total) : null
+      const remaining = Number.isFinite(Number(data?.summary?.remaining)) ? Number(data.summary.remaining) : null
+      const usage = total != null && remaining != null ? Math.max(total - remaining, 0) : null
+      const totalField = String(data?.summary?.totalField || '')
+      const remainingField = String(data?.summary?.remainingField || '')
       setResultText([
         `查询时间: ${new Date().toLocaleString('zh-CN', { hour12: false })}`,
         `工具: ${String(data?.tool || searchTool)}`,
         `服务商: ${String(data?.serviceProvider || serviceProvider)}`,
+        `总额度: ${total != null ? total : '未知'}`,
+        `总额度字段: ${totalField || '未命中'}`,
+        `剩余额度: ${remaining != null ? remaining : '未知'}`,
+        `剩余额度字段: ${remainingField || '未命中'}`,
+        `已使用: ${usage != null ? usage : '未知'}`,
         '',
         JSON.stringify(data?.quota || data || {}, null, 2),
       ].join('\n'))

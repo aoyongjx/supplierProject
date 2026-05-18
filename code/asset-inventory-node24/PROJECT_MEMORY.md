@@ -216,3 +216,53 @@
   - “比亚迪/东风/奇瑞配套供应商”端到端可返回命中（非全0）。
   - 仍存在质量风险：RAG/WEB 仍可能出现短语型伪企业（需继续收敛实体判定与证据对齐）。
   - 复杂长查询存在超时风险（多条验证出现 AbortError），需后续做分批返回与超时策略优化。
+
+## 18. LLM-Wiki 知识树与同步交互修复（2026-05-17）
+
+- 本轮用户关键诉求：
+  - “清空分类”报 404；知识树分类节点要可直接删除。
+  - DB/RAG 同步不要卡死，需可见进度。
+  - 同步任务日志支持单删/批量删，并能取消 running 任务。
+  - 知识树交互需顺畅（可展开、可点击、hover 有反馈），避免未响应。
+
+- 已落地修复（后端）：
+  - `DELETE /api/llm-wiki/entries?section=...` 兼容策略：前端 404 时降级逐条删除。
+  - 同步改为异步任务：`POST /api/llm-wiki/sync/:sourceType` 返回 `202 accepted` + task。
+  - 同步任务新增取消接口：`POST /api/llm-wiki/sync-tasks/:id/cancel`。
+  - 同步任务日志新增删除接口：
+    - `DELETE /api/llm-wiki/sync-tasks/:id`（单条）
+    - `DELETE /api/llm-wiki/sync-tasks`（批量 ids）
+  - 同步阶段进度写回 `summary_json`：`starting/collecting/entity_extract/concept_extract/writing/completed`。
+  - 修复 Wiki 词条接口异常：`toLlmWikiEntryOutput` 中错误引用 `normalizeWikiSection`，改为 `normalizeLlmWikiCategory`。
+  - 开发态无 token 默认用户由 `dev-anon` 改为 `dev-user`，避免 owner 不一致导致“有数据但页面为空”。
+  - 新增持久化分类计数：
+    - 新表 `llm_wiki_section_count`
+    - 新接口 `GET /api/llm-wiki/section-counts`
+    - 在词条新增/删除/清空/同步完成后重建计数。
+
+- 已落地修复（前端）：
+  - 知识树分类节点右侧增加轻量删除图标（无边框、小尺寸、右对齐）。
+  - 搜索框与刷新按钮布局优化（两行模式：标题单行，控件单行）。
+  - 同步弹窗增加实时进度条与状态文案（含 taskId、已处理/总数、新增/更新）。
+  - 同步任务表增加：
+    - 单条删除
+    - 勾选批量删除（支持全选后删除）
+    - running 状态显示“取消”。
+  - 树性能/交互修复：
+    - 去掉 `defaultExpandAll`，改按需展开。
+    - 修复 `Maximum update depth exceeded`（expandedKeys 死循环）。
+    - 修复 `onSelect` 与 `onExpand` 冲突导致无法展开。
+    - 增加树节点 hover/cursor 样式，确保鼠标可见可点反馈。
+
+- 概念数量策略修正：
+  - 原因：LLM 精炼结果过少时，concepts 可能很低。
+  - 调整：若 LLM 概念不足，自动补充规则抽取结果；DB/RAG 概念目标上限提高到 24。
+
+- 实测结论（本地）：
+  - 同步任务 `sync_db_1779022270637_qx5zlg` 成功：`total=1612, inserted=19, updated=1593`。
+  - 同步后接口统计：`entries=1625, concepts=24`。
+  - `GET /api/llm-wiki/section-counts` 返回：`sources=1387, entities=200, concepts=24, logs=14`。
+
+- 仍需注意：
+  - 当前用户明确偏好“手动刷新”，后续不要默认自动轮询。
+  - 若再次出现“端口监听但空响应”，优先做后端健康探针（`/api/health`）和日志重启校验。

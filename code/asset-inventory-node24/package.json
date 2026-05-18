@@ -20,6 +20,7 @@
     "build": "vite build",
     "verify:stocks": "node scripts/verify-stocks.mjs",
     "verify:routing": "node scripts/verify-routing.mjs",
+    "verify:wiki-sync": "node scripts/verify-wiki-sync.mjs",
     "lint": "eslint .",
     "preview": "vite preview"
   },
