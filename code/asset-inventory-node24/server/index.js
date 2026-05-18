@@ -17,7 +17,7 @@ dotenv.config()
 
 const execFileAsync = promisify(execFileCallback)
 
-const { Pool } = pg
+const { Pool, Client } = pg
 const app = express()
 const port = Number(process.env.PORT || 3000)
 
@@ -789,6 +789,7 @@ const llmWikiGraphNodeTable = `"${schemaName}"."llm_wiki_graph_node"`
 const llmWikiGraphEdgeTable = `"${schemaName}"."llm_wiki_graph_edge"`
 const llmWikiRawImportBatchTable = `"${schemaName}"."llm_wiki_raw_import_batch"`
 const llmWikiRawImportItemTable = `"${schemaName}"."llm_wiki_raw_import_item"`
+const dataSourceConnectionTable = `"${schemaName}"."data_source_connection"`
 const crawlExportDir = path.join(process.cwd(), 'crawl_exports')
 
 function sanitizeFilePart(input = '') {
@@ -2606,6 +2607,25 @@ async function initDatabase() {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       CHECK (id = 1)
     );
+    
+    CREATE TABLE IF NOT EXISTS ${dataSourceConnectionTable} (
+      id BIGSERIAL PRIMARY KEY,
+      owner VARCHAR(128) NOT NULL DEFAULT '',
+      name VARCHAR(128) NOT NULL DEFAULT '',
+      db_type VARCHAR(32) NOT NULL DEFAULT 'postgresql',
+      host VARCHAR(255) NOT NULL DEFAULT '',
+      port INT NOT NULL DEFAULT 5432,
+      database_name VARCHAR(255) NOT NULL DEFAULT '',
+      username VARCHAR(255) NOT NULL DEFAULT '',
+      password_text TEXT NOT NULL DEFAULT '',
+      ssl_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+      description TEXT NOT NULL DEFAULT '',
+      last_test_status VARCHAR(24) NOT NULL DEFAULT '',
+      last_test_message TEXT NOT NULL DEFAULT '',
+      last_test_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
 
     CREATE TABLE IF NOT EXISTS ${llmWikiEntryTable} (
       id VARCHAR(64) PRIMARY KEY,
@@ -2736,6 +2756,8 @@ async function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_supplier_cert_dict_sort ON ${supplierCertDictTable}(sort_order ASC, id ASC);
     CREATE INDEX IF NOT EXISTS idx_gas_supplier_portrait_setting_updated_at ON ${gasSupplierPortraitSettingTable}(updated_at DESC);
     CREATE INDEX IF NOT EXISTS idx_search_config_updated_at ON ${searchConfigTable}(updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_data_source_connection_owner_updated ON ${dataSourceConnectionTable}(owner, updated_at DESC);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_data_source_connection_owner_name ON ${dataSourceConnectionTable}(owner, name);
     CREATE INDEX IF NOT EXISTS idx_llm_wiki_entry_owner_updated ON ${llmWikiEntryTable}(owner, updated_at DESC);
     CREATE INDEX IF NOT EXISTS idx_llm_wiki_entry_category ON ${llmWikiEntryTable}(category, updated_at DESC);
     CREATE INDEX IF NOT EXISTS idx_llm_wiki_sync_task_owner_created ON ${llmWikiSyncTaskTable}(owner, created_at DESC);
@@ -2747,6 +2769,9 @@ async function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_llm_wiki_raw_item_owner_created ON ${llmWikiRawImportItemTable}(owner, created_at DESC);
     ALTER TABLE ${searchConfigTable} ADD COLUMN IF NOT EXISTS service_provider VARCHAR(16) NOT NULL DEFAULT 'serpapi';
     ALTER TABLE ${searchConfigTable} ADD COLUMN IF NOT EXISTS site_whitelist_enabled BOOLEAN NOT NULL DEFAULT FALSE;
+    ALTER TABLE ${dataSourceConnectionTable} ADD COLUMN IF NOT EXISTS last_test_status VARCHAR(24) NOT NULL DEFAULT '';
+    ALTER TABLE ${dataSourceConnectionTable} ADD COLUMN IF NOT EXISTS last_test_message TEXT NOT NULL DEFAULT '';
+    ALTER TABLE ${dataSourceConnectionTable} ADD COLUMN IF NOT EXISTS last_test_at TIMESTAMPTZ;
     DROP INDEX IF EXISTS idx_supply_chain_node_unique;
     CREATE UNIQUE INDEX IF NOT EXISTS idx_supply_chain_node_unique
       ON ${supplyChainNodeTable}(COALESCE(parent_id, 0), node_level, node_title, source_url);
@@ -19825,6 +19850,333 @@ app.post('/api/llm-wiki/sync/:sourceType', authMiddleware, async (req, res) => {
     return res.status(202).json({ code: 202, message: 'accepted', data: toLlmWikiSyncTaskOutput(result.rows?.[0] || {}) })
   } catch (error) {
     return res.status(500).json({ code: 500, message: `执行Wiki同步失败: ${error.message}`, data: null })
+  }
+})
+
+function quotePgIdent(name = '') {
+  return `"${String(name || '').replace(/"/g, '""')}"`
+}
+
+function normalizeDataSourcePayload(body = {}) {
+  const dbType = toText(body.dbType || body.db_type || 'postgresql').toLowerCase()
+  return {
+    name: toText(body.name).slice(0, 128),
+    dbType: dbType || 'postgresql',
+    host: toText(body.host).slice(0, 255),
+    port: Math.max(1, Math.min(65535, Number(body.port || 5432) || 5432)),
+    databaseName: toText(body.databaseName || body.database_name).slice(0, 255),
+    username: toText(body.username).slice(0, 255),
+    password: toText(body.password),
+    sslEnabled: Boolean(body.sslEnabled || body.ssl_enabled),
+    description: toText(body.description),
+  }
+}
+
+function toDataSourceOutput(row = {}) {
+  return {
+    id: Number(row.id),
+    name: toText(row.name),
+    dbType: toText(row.dbType || row.db_type || 'postgresql'),
+    host: toText(row.host),
+    port: Number(row.port || 5432),
+    databaseName: toText(row.databaseName || row.database_name),
+    username: toText(row.username),
+    hasPassword: toText(row.passwordText || row.password_text).length > 0,
+    sslEnabled: Boolean(row.sslEnabled || row.ssl_enabled),
+    description: toText(row.description),
+    lastTestStatus: toText(row.lastTestStatus || row.last_test_status),
+    lastTestMessage: toText(row.lastTestMessage || row.last_test_message),
+    lastTestAt: row.lastTestAt || row.last_test_at ? toLlmWikiDateTimeText(row.lastTestAt || row.last_test_at) : '',
+    updatedAt: toLlmWikiDateTimeText(row.updatedAt || row.updated_at),
+    createdAt: toLlmWikiDateTimeText(row.createdAt || row.created_at),
+  }
+}
+
+async function testPostgresConnection(config = {}) {
+  const client = new Client({
+    host: config.host,
+    port: Number(config.port || 5432),
+    database: config.databaseName,
+    user: config.username,
+    password: config.password,
+    ssl: config.sslEnabled ? { rejectUnauthorized: false } : false,
+    connectionTimeoutMillis: 8000,
+    query_timeout: 15000,
+  })
+  try {
+    await client.connect()
+    const result = await client.query('SELECT current_database() AS db, version() AS ver')
+    const row = result.rows?.[0] || {}
+    return {
+      ok: true,
+      message: `连接成功 (${toText(row.db) || config.databaseName})`,
+      serverVersion: toText(row.ver),
+      database: toText(row.db) || config.databaseName,
+    }
+  } finally {
+    await client.end().catch(() => {})
+  }
+}
+
+async function loadDataSourceConnectionOrThrow(id, owner) {
+  const rid = Number(id)
+  if (!Number.isInteger(rid) || rid <= 0) throw new Error('数据源ID无效')
+  const result = await pool.query(
+    `
+    SELECT id, owner, name, db_type AS "dbType", host, port, database_name AS "databaseName",
+      username, password_text AS "passwordText", ssl_enabled AS "sslEnabled", description
+    FROM ${dataSourceConnectionTable}
+    WHERE id = $1::bigint AND owner = $2
+    `,
+    [rid, owner],
+  )
+  const row = result.rows?.[0]
+  if (!row) throw new Error('数据源不存在')
+  return row
+}
+
+function assertSafeReadSql(sql = '') {
+  const text = toText(sql).replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/--.*$/gm, ' ').trim()
+  if (!text) throw new Error('SQL不能为空')
+  if (!/^(select|with|explain)\b/i.test(text)) throw new Error('仅允许执行 SELECT / WITH / EXPLAIN 查询')
+  if (/[;]\s*\S/.test(text)) throw new Error('不允许多语句执行')
+  if (/\b(insert|update|delete|drop|alter|truncate|create|grant|revoke|comment|copy|vacuum|analyze|refresh|reindex)\b/i.test(text)) {
+    throw new Error('检测到高风险SQL关键字，已拒绝执行')
+  }
+  return text
+}
+
+app.get('/api/data-sources', authMiddleware, async (req, res) => {
+  const owner = toText(req.authUser?.userName || req.authUser?.username || 'unknown')
+  try {
+    const result = await pool.query(
+      `
+      SELECT id, name, db_type AS "dbType", host, port, database_name AS "databaseName", username, password_text AS "passwordText",
+        ssl_enabled AS "sslEnabled", description, last_test_status AS "lastTestStatus", last_test_message AS "lastTestMessage",
+        last_test_at AS "lastTestAt", created_at AS "createdAt", updated_at AS "updatedAt"
+      FROM ${dataSourceConnectionTable}
+      WHERE owner = $1
+      ORDER BY updated_at DESC, id DESC
+      `,
+      [owner],
+    )
+    return res.json({ code: 200, message: 'success', data: (result.rows || []).map((row) => toDataSourceOutput(row)) })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `读取数据源失败: ${error.message}`, data: [] })
+  }
+})
+
+app.post('/api/data-sources/test', authMiddleware, async (req, res) => {
+  const payload = normalizeDataSourcePayload(req.body || {})
+  if (!payload.host || !payload.databaseName || !payload.username) {
+    return res.status(400).json({ code: 400, message: 'host / databaseName / username 必填', data: { ok: false } })
+  }
+  if (payload.dbType !== 'postgresql') {
+    return res.status(400).json({ code: 400, message: '当前仅支持 PostgreSQL', data: { ok: false } })
+  }
+  try {
+    const result = await testPostgresConnection(payload)
+    return res.json({ code: 200, message: 'success', data: result })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `连接测试失败: ${error.message}`, data: { ok: false, message: error.message } })
+  }
+})
+
+app.post('/api/data-sources', authMiddleware, async (req, res) => {
+  const owner = toText(req.authUser?.userName || req.authUser?.username || 'unknown')
+  const payload = normalizeDataSourcePayload(req.body || {})
+  if (!payload.name || !payload.host || !payload.databaseName || !payload.username) {
+    return res.status(400).json({ code: 400, message: 'name / host / databaseName / username 必填', data: null })
+  }
+  try {
+    const result = await pool.query(
+      `
+      INSERT INTO ${dataSourceConnectionTable}
+      (owner, name, db_type, host, port, database_name, username, password_text, ssl_enabled, description, updated_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
+      RETURNING id, name, db_type AS "dbType", host, port, database_name AS "databaseName", username, password_text AS "passwordText",
+        ssl_enabled AS "sslEnabled", description, last_test_status AS "lastTestStatus", last_test_message AS "lastTestMessage",
+        last_test_at AS "lastTestAt", created_at AS "createdAt", updated_at AS "updatedAt"
+      `,
+      [owner, payload.name, payload.dbType, payload.host, payload.port, payload.databaseName, payload.username, payload.password, payload.sslEnabled, payload.description],
+    )
+    return res.json({ code: 200, message: 'success', data: toDataSourceOutput(result.rows?.[0] || {}) })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `保存数据源失败: ${error.message}`, data: null })
+  }
+})
+
+app.put('/api/data-sources/:id', authMiddleware, async (req, res) => {
+  const owner = toText(req.authUser?.userName || req.authUser?.username || 'unknown')
+  const payload = normalizeDataSourcePayload(req.body || {})
+  const rid = Number(req.params.id)
+  if (!Number.isInteger(rid) || rid <= 0) return res.status(400).json({ code: 400, message: '数据源ID无效', data: null })
+  if (!payload.name || !payload.host || !payload.databaseName || !payload.username) {
+    return res.status(400).json({ code: 400, message: 'name / host / databaseName / username 必填', data: null })
+  }
+  try {
+    const result = await pool.query(
+      `
+      UPDATE ${dataSourceConnectionTable}
+      SET name = $3, db_type = $4, host = $5, port = $6, database_name = $7, username = $8,
+          password_text = CASE WHEN $9 <> '' THEN $9 ELSE password_text END,
+          ssl_enabled = $10, description = $11, updated_at = NOW()
+      WHERE id = $1::bigint AND owner = $2
+      RETURNING id, name, db_type AS "dbType", host, port, database_name AS "databaseName", username, password_text AS "passwordText",
+        ssl_enabled AS "sslEnabled", description, last_test_status AS "lastTestStatus", last_test_message AS "lastTestMessage",
+        last_test_at AS "lastTestAt", created_at AS "createdAt", updated_at AS "updatedAt"
+      `,
+      [rid, owner, payload.name, payload.dbType, payload.host, payload.port, payload.databaseName, payload.username, payload.password, payload.sslEnabled, payload.description],
+    )
+    if (!result.rows?.[0]) return res.status(404).json({ code: 404, message: '数据源不存在', data: null })
+    return res.json({ code: 200, message: 'success', data: toDataSourceOutput(result.rows[0]) })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `更新数据源失败: ${error.message}`, data: null })
+  }
+})
+
+app.delete('/api/data-sources/:id', authMiddleware, async (req, res) => {
+  const owner = toText(req.authUser?.userName || req.authUser?.username || 'unknown')
+  const rid = Number(req.params.id)
+  if (!Number.isInteger(rid) || rid <= 0) return res.status(400).json({ code: 400, message: '数据源ID无效', data: null })
+  try {
+    const result = await pool.query(`DELETE FROM ${dataSourceConnectionTable} WHERE id = $1::bigint AND owner = $2 RETURNING id`, [rid, owner])
+    if (!result.rows?.[0]) return res.status(404).json({ code: 404, message: '数据源不存在', data: null })
+    return res.json({ code: 200, message: 'success', data: { id: rid } })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `删除数据源失败: ${error.message}`, data: null })
+  }
+})
+
+app.get('/api/data-sources/:id/schema', authMiddleware, async (req, res) => {
+  const owner = toText(req.authUser?.userName || req.authUser?.username || 'unknown')
+  try {
+    const source = await loadDataSourceConnectionOrThrow(req.params.id, owner)
+    if (toText(source.dbType).toLowerCase() !== 'postgresql') {
+      return res.status(400).json({ code: 400, message: '当前仅支持 PostgreSQL', data: null })
+    }
+    const client = new Client({
+      host: source.host,
+      port: Number(source.port || 5432),
+      database: source.databaseName,
+      user: source.username,
+      password: source.passwordText,
+      ssl: source.sslEnabled ? { rejectUnauthorized: false } : false,
+      connectionTimeoutMillis: 8000,
+      query_timeout: 15000,
+    })
+    await client.connect()
+    const schemaResult = await client.query(
+      `
+      SELECT schema_name AS "schemaName"
+      FROM information_schema.schemata
+      WHERE schema_name NOT IN ('pg_catalog', 'information_schema')
+      ORDER BY schema_name ASC
+      `,
+    )
+    const tableResult = await client.query(
+      `
+      SELECT table_schema AS "tableSchema", table_name AS "tableName"
+      FROM information_schema.tables
+      WHERE table_type='BASE TABLE' AND table_schema NOT IN ('pg_catalog','information_schema')
+      ORDER BY table_schema ASC, table_name ASC
+      `,
+    )
+    const tablesBySchema = new Map()
+    for (const row of tableResult.rows || []) {
+      const s = toText(row.tableSchema)
+      if (!tablesBySchema.has(s)) tablesBySchema.set(s, [])
+      tablesBySchema.get(s).push({ tableName: toText(row.tableName) })
+    }
+    const schemas = (schemaResult.rows || []).map((row) => {
+      const schemaNameText = toText(row.schemaName)
+      return { schemaName: schemaNameText, tables: tablesBySchema.get(schemaNameText) || [] }
+    })
+    await client.end().catch(() => {})
+    return res.json({ code: 200, message: 'success', data: { schemas } })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `读取数据库结构失败: ${error.message}`, data: null })
+  }
+})
+
+app.get('/api/data-sources/:id/table-preview', authMiddleware, async (req, res) => {
+  const owner = toText(req.authUser?.userName || req.authUser?.username || 'unknown')
+  const schemaNameText = toText(req.query.schema)
+  const tableNameText = toText(req.query.table)
+  if (!schemaNameText || !tableNameText) return res.status(400).json({ code: 400, message: 'schema / table 必填', data: null })
+  try {
+    const source = await loadDataSourceConnectionOrThrow(req.params.id, owner)
+    if (toText(source.dbType).toLowerCase() !== 'postgresql') {
+      return res.status(400).json({ code: 400, message: '当前仅支持 PostgreSQL', data: null })
+    }
+    const client = new Client({
+      host: source.host,
+      port: Number(source.port || 5432),
+      database: source.databaseName,
+      user: source.username,
+      password: source.passwordText,
+      ssl: source.sslEnabled ? { rejectUnauthorized: false } : false,
+      connectionTimeoutMillis: 8000,
+      query_timeout: 15000,
+    })
+    await client.connect()
+    const columnsResult = await client.query(
+      `
+      SELECT column_name AS "columnName", data_type AS "dataType", is_nullable AS "isNullable", column_default AS "defaultValue"
+      FROM information_schema.columns
+      WHERE table_schema = $1 AND table_name = $2
+      ORDER BY ordinal_position ASC
+      `,
+      [schemaNameText, tableNameText],
+    )
+    const safeSchema = quotePgIdent(schemaNameText)
+    const safeTable = quotePgIdent(tableNameText)
+    const rowsResult = await client.query(`SELECT * FROM ${safeSchema}.${safeTable} LIMIT 100`)
+    await client.end().catch(() => {})
+    return res.json({
+      code: 200,
+      message: 'success',
+      data: { columns: columnsResult.rows || [], rows: rowsResult.rows || [], rowCount: Number(rowsResult.rowCount || 0) },
+    })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `读取表预览失败: ${error.message}`, data: null })
+  }
+})
+
+app.post('/api/data-sources/:id/query', authMiddleware, async (req, res) => {
+  const owner = toText(req.authUser?.userName || req.authUser?.username || 'unknown')
+  try {
+    const sql = assertSafeReadSql(req.body?.sql)
+    const source = await loadDataSourceConnectionOrThrow(req.params.id, owner)
+    if (toText(source.dbType).toLowerCase() !== 'postgresql') {
+      return res.status(400).json({ code: 400, message: '当前仅支持 PostgreSQL', data: null })
+    }
+    const client = new Client({
+      host: source.host,
+      port: Number(source.port || 5432),
+      database: source.databaseName,
+      user: source.username,
+      password: source.passwordText,
+      ssl: source.sslEnabled ? { rejectUnauthorized: false } : false,
+      connectionTimeoutMillis: 8000,
+      query_timeout: 30000,
+    })
+    await client.connect()
+    const start = Date.now()
+    const result = await client.query(sql)
+    await client.end().catch(() => {})
+    return res.json({
+      code: 200,
+      message: 'success',
+      data: {
+        columns: Array.isArray(result.fields) ? result.fields.map((f) => ({ name: toText(f.name), dataTypeID: Number(f.dataTypeID || 0) })) : [],
+        rows: Array.isArray(result.rows) ? result.rows : [],
+        rowCount: Number(result.rowCount || 0),
+        elapsedMs: Date.now() - start,
+      },
+    })
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: `SQL执行失败: ${error.message}`, data: null })
   }
 })
 

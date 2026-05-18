@@ -45,6 +45,7 @@ import KnowledgeBaseManagementPage from './pages/KnowledgeBaseManagementPage'
 import ModelManagementPage from './pages/ModelManagementPage'
 import SearchSettingsPage from './pages/SearchSettingsPage'
 import LlmWikiPage from './pages/LlmWikiPage'
+import DataSourceManagementPage from './pages/DataSourceManagementPage'
 import SessionChatPage from './pages/SessionChatPage'
 import SessionHistoryPage from './pages/SessionHistoryPage'
 import StockKlinePage from './pages/StockKlinePage'
@@ -441,6 +442,7 @@ const baseMenuGroups = [
       { id: 'capability-vector-search', key: '/capability-center/vector-search', label: '向量检索' },
       { id: 'capability-model-management', key: '/capability-center/model-management', label: '模型管理' },
       { id: 'capability-search-settings', key: '/capability-center/search-settings', label: '搜索配置' },
+      { id: 'capability-data-source-management', key: '/capability-center/data-source-management', label: '数据源管理' },
       {
         id: 'capability-llm-wiki',
         key: 'capability-llm-wiki-menu',
@@ -519,6 +521,7 @@ const menuPermissionSections = [
       { id: 'capability-vector-search', label: '向量检索' },
       { id: 'capability-model-management', label: '模型管理' },
       { id: 'capability-search-settings', label: '搜索配置' },
+      { id: 'capability-data-source-management', label: '数据源管理' },
       { id: 'capability-llm-wiki', label: '显示 LLM-Wiki 子菜单' },
       { id: 'capability-llm-wiki-workbench', label: 'LLM-Wiki / Wiki工作台' },
       { id: 'capability-llm-wiki-graph', label: 'LLM-Wiki / 关系图谱' },
@@ -568,6 +571,9 @@ function readVisibleMenuIds() {
     }
     if (!next.has('capability-search-settings') && next.has('capability-center')) {
       next.add('capability-search-settings')
+    }
+    if (!next.has('capability-data-source-management') && next.has('capability-center')) {
+      next.add('capability-data-source-management')
     }
     if (!next.has('capability-llm-wiki') && next.has('capability-center')) {
       next.add('capability-llm-wiki')
@@ -653,6 +659,9 @@ function normalizeVisibleIds(input) {
   const set = new Set(input.map((item) => String(item)))
   if (!set.has('capability-search-settings') && set.has('capability-center')) {
     set.add('capability-search-settings')
+  }
+  if (!set.has('capability-data-source-management') && set.has('capability-center')) {
+    set.add('capability-data-source-management')
   }
   if (!set.has('capability-llm-wiki') && set.has('capability-center')) {
     set.add('capability-llm-wiki')
@@ -895,6 +904,7 @@ function App() {
     if (location.pathname.startsWith('/capability-center/vector-search')) return '/capability-center/vector-search'
     if (location.pathname.startsWith('/capability-center/model-management')) return '/capability-center/model-management'
     if (location.pathname.startsWith('/capability-center/search-settings')) return '/capability-center/search-settings'
+    if (location.pathname.startsWith('/capability-center/data-source-management')) return '/capability-center/data-source-management'
     if (location.pathname.startsWith('/capability-center/llm-wiki/workbench')) return '/capability-center/llm-wiki/workbench'
     if (location.pathname.startsWith('/capability-center/llm-wiki/graph')) return '/capability-center/llm-wiki/graph'
     if (location.pathname.startsWith('/capability-center/llm-wiki/compose')) return '/capability-center/llm-wiki/compose'
@@ -961,6 +971,7 @@ function App() {
     if (location.pathname.startsWith('/capability-center/vector-search')) return { title: '向量检索', breadcrumb: ['能力中心', '向量检索'] }
     if (location.pathname.startsWith('/capability-center/model-management')) return { title: '模型管理', breadcrumb: ['能力中心', '模型管理'] }
     if (location.pathname.startsWith('/capability-center/search-settings')) return { title: '搜索配置', breadcrumb: ['能力中心', '搜索配置'] }
+    if (location.pathname.startsWith('/capability-center/data-source-management')) return { title: '数据源管理', breadcrumb: ['能力中心', '数据源管理'] }
     if (location.pathname.startsWith('/capability-center/llm-wiki/workbench')) return { title: 'LLM-Wiki / Wiki工作台', breadcrumb: ['能力中心', 'LLM-Wiki', 'Wiki工作台'] }
     if (location.pathname.startsWith('/capability-center/llm-wiki/graph')) return { title: 'LLM-Wiki / 关系图谱', breadcrumb: ['能力中心', 'LLM-Wiki', '关系图谱'] }
     if (location.pathname.startsWith('/capability-center/llm-wiki/compose')) return { title: 'LLM-Wiki / 导入与生成', breadcrumb: ['能力中心', 'LLM-Wiki', '导入与生成'] }
@@ -1112,6 +1123,7 @@ function App() {
               <Route path="/capability-center/vector-search" element={<Suspense fallback={<Card className="app-elevated-card">加载中...</Card>}><VectorSearchPage /></Suspense>} />
               <Route path="/capability-center/model-management" element={<ModelManagementPage />} />
               <Route path="/capability-center/search-settings" element={<SearchSettingsPage />} />
+              <Route path="/capability-center/data-source-management" element={<DataSourceManagementPage />} />
               <Route path="/capability-center/llm-wiki/workbench" element={<LlmWikiPage view="workbench" />} />
               <Route path="/capability-center/llm-wiki/graph" element={<LlmWikiPage view="graph" />} />
               <Route path="/capability-center/llm-wiki/compose" element={<LlmWikiPage view="manage" />} />
@@ -1327,7 +1339,7 @@ function App() {
                             if (item.id === 'agent-precise-sourcing' || item.id === 'agent-admission-screening' || item.id === 'agent-realtime-monitoring' || item.id === 'agent-supplier-dd') {
                               set.add('agents')
                             }
-                            if (item.id === 'capability-mcp-services' || item.id === 'capability-skill-management' || item.id === 'capability-knowledge-base' || item.id === 'capability-vector-search' || item.id === 'capability-model-management') {
+                            if (item.id === 'capability-mcp-services' || item.id === 'capability-skill-management' || item.id === 'capability-knowledge-base' || item.id === 'capability-vector-search' || item.id === 'capability-model-management' || item.id === 'capability-data-source-management') {
                               set.add('capability-center')
                             }
                             if (item.id === 'langchain-multi-chat' || item.id === 'langchain-rag-chat') {
@@ -1360,6 +1372,7 @@ function App() {
                               set.delete('capability-knowledge-base')
                               set.delete('capability-vector-search')
                               set.delete('capability-model-management')
+                              set.delete('capability-data-source-management')
                             }
                             if (item.id === 'langchain-dialog') {
                               set.delete('langchain-multi-chat')
