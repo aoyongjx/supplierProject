@@ -751,7 +751,7 @@ function WikiWorkbenchHome() {
             <div style={{ width: '100%' }}>
               <div style={{ marginBottom: 6 }}>{`知识树 (${Object.values(sectionCounts || {}).reduce((sum, n) => sum + Number(n || 0), 0)})`}</div>
               <Space size={6}>
-                <Button size="small" type="primary" onClick={handleExportObsidian} loading={exportingObsidian}>导出</Button>
+                <Button size="small" onClick={handleExportObsidian} loading={exportingObsidian}>导出</Button>
                 <Button size="small" onClick={handleImportObsidian}>导入</Button>
               </Space>
             </div>

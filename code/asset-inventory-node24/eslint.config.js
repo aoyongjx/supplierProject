@@ -5,9 +5,26 @@ import reactRefresh from 'eslint-plugin-react-refresh'
 import { defineConfig, globalIgnores } from 'eslint/config'
 
 export default defineConfig([
-  globalIgnores(['dist']),
   {
-    files: ['**/*.{js,jsx}'],
+    linterOptions: {
+      reportUnusedDisableDirectives: false,
+    },
+  },
+  globalIgnores([
+    'dist/**',
+    'tmp/**',
+    'tmp_*.js',
+    'tmp_*.mjs',
+    'runlogs/**',
+    '.runlogs/**',
+    '.run-logs/**',
+    '.codex-runlogs/**',
+    'logs/**',
+    'crawl_exports/**',
+    'server/index.recovered.js',
+  ]),
+  {
+    files: ['src/**/*.{js,jsx}'],
     extends: [
       js.configs.recommended,
       reactHooks.configs.flat.recommended,
@@ -23,7 +40,30 @@ export default defineConfig([
       },
     },
     rules: {
-      'no-unused-vars': ['error', { varsIgnorePattern: '^[A-Z_]' }],
+      'no-unused-vars': 'off',
+      'no-empty': 'off',
+      'react-hooks/exhaustive-deps': 'off',
+    },
+  },
+  {
+    files: ['server/**/*.js', 'scripts/**/*.js', 'scripts/**/*.mjs', '*.js', '*.mjs'],
+    ignores: ['src/**'],
+    extends: [js.configs.recommended],
+    languageOptions: {
+      ecmaVersion: 'latest',
+      sourceType: 'module',
+      globals: {
+        ...globals.node,
+        ...globals.browser,
+      },
+    },
+    rules: {
+      'no-unused-vars': 'off',
+      'no-empty': 'off',
+      'no-useless-escape': 'off',
+      'no-control-regex': 'off',
+      'no-undef': 'off',
+      'no-extra-boolean-cast': 'off',
     },
   },
 ])

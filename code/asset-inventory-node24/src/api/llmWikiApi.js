@@ -530,8 +530,8 @@ export async function exportLlmWikiObsidianZip() {
     throw new Error(errMsg)
   }
   const disposition = String(response.headers.get('content-disposition') || '')
-  const m = disposition.match(/filename\*?=(?:UTF-8''|\"?)([^\";]+)/i)
-  const fileName = m ? decodeURIComponent(String(m[1]).replace(/\"/g, '').trim()) : `llm-wiki-obsidian-${new Date().toISOString().slice(0, 10)}.zip`
+  const m = disposition.match(/filename\*?=(?:UTF-8''|"?)([^";]+)/i)
+  const fileName = m ? decodeURIComponent(String(m[1]).replace(/"/g, '').trim()) : `llm-wiki-obsidian-${new Date().toISOString().slice(0, 10)}.zip`
   const blob = await response.blob()
   return { blob, fileName }
 }
